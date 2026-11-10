@@ -1,0 +1,100 @@
+# Smoke-test configuration: the SAME file is served by zhttpd and by nginx.
+# @RUN@, @PORT@, @TLSPORT@ and @UPORT@ are substituted by scripts/smoke.sh.
+worker_processes 2;
+error_log logs/error.log info;
+pid logs/server.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include @RUN@/conf/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    open_file_cache max=64 inactive=20s;
+    open_file_cache_valid 1s;
+    open_file_cache_errors on;
+    keepalive_timeout 65;
+    keepalive_requests 1000;
+    client_max_body_size 1m;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+    access_log logs/access.log main;
+
+    upstream echo {
+        server 127.0.0.1:@UPORT@;
+    }
+
+    map $http_x_backend $backend {
+        default echo;
+        direct  127.0.0.1:@UPORT@;
+    }
+
+    map $http_x_variant $variant {
+        default "plain";
+        ~^beta  "beta";
+    }
+
+    server {
+        listen @PORT@ default_server;
+        listen @TLSPORT@ ssl default_server;
+        server_name localhost;
+
+        ssl_certificate @CERTS@/cert.pem;
+        ssl_certificate_key @CERTS@/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_tickets on;
+
+        root @RUN@/html;
+        index index.html;
+        absolute_redirect off;
+
+        error_page 404 /errors/404.html;
+        error_page 500 502 503 504 /errors/50x.html;
+        location ^~ /errors/ { internal; }
+
+        location / {
+            try_files $uri $uri/ $uri.html =404;
+        }
+        location = /exact { return 200 "exact match\n"; }
+        location ^~ /static/ { add_header X-Static yes; expires 1h; }
+        location ~* \.(css|js)$ { add_header X-Asset regex; }
+        location /api/ {
+            proxy_pass http://echo/;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Variant $variant;
+        }
+        location /raw/ {
+            proxy_pass http://echo;
+            proxy_http_version 1.1;
+        }
+        location /down/ { proxy_pass http://127.0.0.1:9/; }
+        location /dyn/ { proxy_pass http://$backend; }
+        location /old/ { rewrite ^/old/(.*)$ /static/$1 permanent; }
+        location /internal-rewrite/ { rewrite ^/internal-rewrite/(.*)$ /static/$1 last; }
+        location = /gone { return 444; }
+        location = /teapot { return 418; }
+        location /private/ { deny all; }
+        location /var {
+            set $who "anon";
+            if ($arg_user) { set $who $arg_user; }
+            return 200 "who=$who uri=$uri args=$args variant=$variant\n";
+        }
+        location ~ ^/users/(?<id>\d+)$ { return 200 "user $id\n"; }
+    }
+
+    server {
+        listen @PORT@;
+        server_name ~^(?<sub>[a-z]+)\.example\.test$;
+        location / { return 200 "sub=$sub\n"; }
+    }
+
+    server {
+        listen @PORT@;
+        server_name *.wild.test;
+        return 301 https://www.wild.test$request_uri;
+    }
+}

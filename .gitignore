@@ -1,0 +1,41 @@
+# build
+.zig-cache/
+zig-cache/
+zig-out/
+zig-out-linux/
+
+# tools built from deps/ (platform-native)
+tools/nginx/
+tools/oha/
+tools/linux/
+tools/cargo/
+
+# third-party sources and their build trees (scripts/fetch-deps.sh)
+deps/openssl-install/
+deps/linux-aarch64/
+deps/*.tar.gz
+deps/*.tar.gz.sha256
+deps/*.log
+deps/openssl-*/
+deps/nginx-*/
+deps/pcre2-*/
+deps/zlib-*/
+
+# bench artefacts (keep bench/RESULTS.md and other summaries at bench/*.md)
+bench/certs/*.pem
+bench/results/
+bench/run/
+bench/www/static/
+bench/nginx.conf
+bench/competitors/HttpArena/
+bench/competitors/dusty-build.log
+
+# leftover pids / smoke
+.run/
+.sync/
+
+# Python / macOS junk
+__pycache__/
+*.pyc
+.DS_Store
+._*

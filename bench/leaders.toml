@@ -1,0 +1,21 @@
+# Per-protocol leader from HttpArena (https://http-arena.com), benchmarked next to nginx.
+# bench/run.sh reads this file; `status = "todo"` entries are listed in the report but not run.
+
+[http1]
+name = "dusty-tuned"
+url = "https://http-arena.com/frameworks/dusty-tuned/"
+source = "https://github.com/MDA2AV/HttpArena/tree/main/frameworks/dusty-tuned"
+upstream = "https://github.com/lalinsky/dusty"
+build = "bench/competitors/build-dusty.sh"
+binary = "bench/competitors/HttpArena/frameworks/dusty-tuned/zig-out/bin/dusty-arena"
+status = "active"
+
+[http2]
+name = "h2o"
+url = "https://http-arena.com/"
+status = "todo"   # zhttpd has no HTTP/2 yet
+
+[http3]
+name = "bun"
+url = "https://http-arena.com/"
+status = "todo"   # zhttpd has no HTTP/3 yet

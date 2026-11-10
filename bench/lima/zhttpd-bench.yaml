@@ -1,0 +1,16 @@
+# Dedicated Linux aarch64 bench VM for zhttpd vs nginx (epoll + reuseport).
+# Create/start ONLY this instance:
+#   limactl create --name=zhttpd-bench --tty=false bench/lima/zhttpd-bench.yaml
+#   limactl start zhttpd-bench
+# Never use this file to start or edit default, infra-test, Colima, or tc-prod-*.
+minimumLimaVersion: "2.0.0"
+base:
+  - template:ubuntu-24.04
+cpus: 4
+memory: "4GiB"
+disk: "30GiB"
+vmType: "vz"
+mounts:
+  - location: "~/Grok/zig-http-server"
+    writable: true
+# Leave ssh / user at Lima defaults. No custom cloud-init user-data (Lima does not accept one).
