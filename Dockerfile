@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /opt/zig
 RUN zarch="$TARGETARCH" \
     && case "$zarch" in amd64) zarch=x86_64 ;; arm64) zarch=aarch64 ;; esac \
-    && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${zarch}-${ZIG_VERSION}.tar.xz" \
+    && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zarch}-linux-${ZIG_VERSION}.tar.xz" \
     | tar -xJ --strip-components=1
 WORKDIR /src
 COPY build.zig build.zig.zon ./
