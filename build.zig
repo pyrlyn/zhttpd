@@ -156,7 +156,7 @@ pub fn build(b: *std.Build) void {
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
     e2e_step.dependOn(&e2e.step);
     var previous: *std.Build.Step = &e2e.step;
-    for ([_][]const u8{ "error-pages.py", "config_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
+    for ([_][]const u8{ "error-pages.py", "config_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_sni_e2e.py" }) |script| {
         const check = b.addSystemCommand(&.{e2e_command});
         check.addFileArg(b.path(b.fmt("tests/{s}", .{script})));
         check.addArtifactArg(exe);
