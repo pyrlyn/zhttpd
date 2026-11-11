@@ -1,4 +1,5 @@
 [tools]
+go = "1.27.1"
 zig = "0.17.1"
 python = "3.13.15"
 uv = "0.13.5"
@@ -70,3 +71,9 @@ run = "zig-out/bin/zhttpd -c config.toml"
 [tasks."deps:certs"]
 depends = ["deps:tls"]
 run = "bash scripts/gen-certs.sh"
+
+[tasks."build:raft"]
+run = "bash scripts/build-raft.sh"
+
+[tasks."test:raft"]
+run = ["go -C modules/raft test -race ./...", "zig build test-raft-e2e"]

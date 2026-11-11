@@ -31,7 +31,7 @@ struct sample {
     int64_t expires_ms;
 };
 struct backend {
-    char *path, ids[NODES][64], filename[96], temporary[104];
+    char *path, *publish_path, ids[NODES][64], filename[96], temporary[104];
     uint32_t count, local, workers, interval, ttl, cpus;
     uint64_t connections, memory;
     pthread_t thread;
@@ -161,7 +161,7 @@ static void *run(void *arg) {
     struct backend *b = arg;
     /* Reclaim a temporary file left by a crashed process with a reused PID.
      * Node IDs must identify exactly one running instance. */
-    int initial_dir = open(b->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int initial_dir = open(b->publish_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (initial_dir >= 0) { unlinkat(initial_dir, b->temporary, 0); close(initial_dir); }
     double previous_cpu = cpu_seconds();
     int64_t previous_time = milliseconds(CLOCK_MONOTONIC);
@@ -183,28 +183,35 @@ static void *run(void *arg) {
         previous_cpu = current_cpu;
         previous_time = now;
         struct sample next[NODES] = {0};
+        int output = open(b->publish_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        int published = 0;
+        if (output >= 0) {
+            /* A stalled event loop must not advertise a healthy worker forever. */
+            published = now - atomic_load(&b->heartbeat) < b->ttl &&
+                publish(b, output, milliseconds(CLOCK_REALTIME), cpu);
+            close(output);
+        }
         int dir = open(b->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (dir >= 0) {
-            /* A stalled event loop must not advertise a healthy worker forever. */
-            if (now - atomic_load(&b->heartbeat) < b->ttl &&
-                publish(b, dir, milliseconds(CLOCK_REALTIME), cpu)) collect(b, dir, next);
+            if (published) collect(b, dir, next);
             close(dir);
         }
         pthread_mutex_lock(&b->mutex);
         memcpy(b->snapshots, next, sizeof(next));
         pthread_mutex_unlock(&b->mutex);
     }
-    int dir = open(b->path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int dir = open(b->publish_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dir >= 0) { unlinkat(dir, b->filename, 0); unlinkat(dir, b->temporary, 0); close(dir); }
     return NULL;
 }
-void *zlb_start(const char *path, const char *const *ids, uint32_t count, uint32_t local,
+void *zlb_start(const char *path, const char *publish_path, const char *const *ids, uint32_t count, uint32_t local,
         uint32_t workers, uint32_t interval, uint32_t ttl, uint64_t connections, uint64_t memory, uint32_t cpus) {
     if (count > NODES || local >= count || !workers || workers > 256) return NULL;
     struct backend *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
     b->path = strdup(path);
-    if (!b->path) { free(b); return NULL; }
+    b->publish_path = strdup(publish_path);
+    if (!b->path || !b->publish_path) { free(b->path); free(b->publish_path); free(b); return NULL; }
     b->count = count; b->local = local; b->workers = workers;
     b->interval = interval; b->ttl = ttl; b->connections = connections; b->memory = memory; b->cpus = cpus;
     for (uint32_t i = 0; i < count; i++) snprintf(b->ids[i], sizeof(b->ids[i]), "%s", ids[i]);
@@ -224,7 +231,7 @@ void *zlb_start(const char *path, const char *const *ids, uint32_t count, uint32
 free_mutex:
     pthread_mutex_destroy(&b->mutex);
 free_backend:
-    free(b->path); free(b); return NULL;
+    free(b->path); free(b->publish_path); free(b); return NULL;
 }
 void zlb_stop(void *handle) {
     struct backend *b = handle;
@@ -235,7 +242,7 @@ void zlb_stop(void *handle) {
     pthread_join(b->thread, NULL);
     pthread_cond_destroy(&b->wake);
     pthread_mutex_destroy(&b->mutex);
-    free(b->path); free(b);
+    free(b->path); free(b->publish_path); free(b);
 }
 void zlb_update(void *handle, uint32_t active) {
     struct backend *b = handle;

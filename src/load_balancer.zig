@@ -7,6 +7,8 @@ pub const Settings = struct {
     enabled: bool = false,
     node_id: []const u8 = "",
     backend: []const u8 = "",
+    /// Optional local outbox; backend then contains only Raft-committed records.
+    publish_backend: ?[]const u8 = null,
     node_ids: []const []const u8 = &.{},
     node_urls: []const []const u8 = &.{},
     interval_ms: u32 = 1000,
@@ -23,6 +25,7 @@ pub const Settings = struct {
 
     pub fn validate(s: Settings) !void {
         if (!s.enabled) return;
+        if (s.publish_backend) |path| if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidLoadBalancer;
         if (s.backend.len == 0 or std.mem.indexOfScalar(u8, s.backend, 0) != null or
             s.node_ids.len < 2 or s.node_ids.len > max_nodes or s.node_ids.len != s.node_urls.len or
             s.max_connections == 0 or s.memory_limit_mb == 0 or s.cpu_capacity == 0 or
@@ -115,7 +118,7 @@ pub fn location(a: std.mem.Allocator, origin: []const u8, target: []const u8) !?
     return try std.fmt.allocPrint(a, "{s}{s}{s}" ++ marker ++ "=1", .{ origin, target, if (std.mem.indexOfScalar(u8, target, '?') != null) "&" else "?" });
 }
 
-extern fn zlb_start(backend: [*:0]const u8, ids: [*]const [*:0]const u8, count: u32, local: u32, workers: u32, interval: u32, ttl: u32, connections: u64, memory: u64, cpus: u32) ?*anyopaque;
+extern fn zlb_start(backend: [*:0]const u8, publish_backend: [*:0]const u8, ids: [*]const [*:0]const u8, count: u32, local: u32, workers: u32, interval: u32, ttl: u32, connections: u64, memory: u64, cpus: u32) ?*anyopaque;
 extern fn zlb_stop(handle: *anyopaque) void;
 extern fn zlb_update(handle: *anyopaque, active: u32) void;
 extern fn zlb_snapshot(handle: *anyopaque, out: [*]Sample) c_int;
@@ -137,7 +140,7 @@ pub const Runtime = struct {
             ids[i] = try tmp.dupeSentinel(u8, id, 0);
             if (std.mem.eql(u8, id, settings.node_id)) local = @intCast(i);
         }
-        const handle = zlb_start(try tmp.dupeSentinel(u8, settings.backend, 0), &ids, @intCast(settings.node_ids.len), local, @max(workers, 1), settings.interval_ms, settings.ttl_ms, settings.max_connections, @as(u64, settings.memory_limit_mb) * 1024 * 1024, settings.cpu_capacity) orelse return error.LoadBalancerInit;
+        const handle = zlb_start(try tmp.dupeSentinel(u8, settings.backend, 0), try tmp.dupeSentinel(u8, settings.publish_backend orelse settings.backend, 0), &ids, @intCast(settings.node_ids.len), local, @max(workers, 1), settings.interval_ms, settings.ttl_ms, settings.max_connections, @as(u64, settings.memory_limit_mb) * 1024 * 1024, settings.cpu_capacity) orelse return error.LoadBalancerInit;
         return .{ .handle = handle, .settings = settings };
     }
     pub fn deinit(r: *Runtime) void {

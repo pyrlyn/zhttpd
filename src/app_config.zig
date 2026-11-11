@@ -200,7 +200,7 @@ const Toml = struct {
                 } else return p.fail("unknown ACME setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "load_balancer")) {
                 var found = false;
-                inline for (.{ "node_id", "backend" }) |field| if (std.mem.eql(u8, key, field)) {
+                inline for (.{ "node_id", "backend", "publish_backend" }) |field| if (std.mem.eql(u8, key, field)) {
                     @field(result.load_balancer, field) = try p.string(v);
                     found = true;
                 };
@@ -465,7 +465,10 @@ fn loadConfig(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *ht
     cfg.logging_enabled = settings.modules.logging;
     cfg.load_balancer = settings.load_balancer;
     cfg.load_balancer.validateWorkers(cfg.worker_processes) catch return parser.fail("load_balancer supports at most 256 workers", .{});
-    if (cfg.load_balancer.enabled) cfg.load_balancer.backend = try std.fs.path.resolve(own, &.{ root, cfg.load_balancer.backend });
+    if (cfg.load_balancer.enabled) {
+        cfg.load_balancer.backend = try std.fs.path.resolve(own, &.{ root, cfg.load_balancer.backend });
+        if (cfg.load_balancer.publish_backend) |path| cfg.load_balancer.publish_backend = try std.fs.path.resolve(own, &.{ root, path });
+    }
     var log_builder: support.Builder = .{ .cfg = cfg, .a = own, .diag = diag };
     const origin: support.Node = .{ .name = "logging", .args = &.{}, .file = file, .line = 0 };
     if (settings.logging.error_path) |p| cfg.error_log.path = try log_builder.logPath(origin, p);

@@ -19,6 +19,7 @@
 | `src/server/proxy.zig` | HTTP upstream handling |
 | `src/server/tls.zig` | Nonblocking TLS, ALPN and SNI |
 | `src/server/multiplex.zig`, `multiplex.c` | HTTP/2 and HTTP/3 stream transport |
+| `modules/raft/`, `scripts/build-raft.sh` | Optional durable Raft companion, state machine, TLS API and committed metrics/config exports |
 | `src/load_balancer.zig`, `src/load_balancer/backend.c` | Independent load policy, one-hop redirect URLs and background shared metrics |
 | `src/server/filecache.zig` | Open-file cache |
 | `src/os.zig`, `src/server/net.zig` | Platform and socket operations |

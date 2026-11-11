@@ -150,8 +150,22 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "Run zhttpd (pass args after --)").dependOn(&run.step);
 
+    const raft_build = b.addSystemCommand(&.{ "bash", "scripts/build-raft.sh" });
+    raft_build.setCwd(b.path("."));
+    b.step("raft", "Build the optional zhttpd-raft consensus companion (Go required)").dependOn(&raft_build.step);
+    const raft_test = b.addSystemCommand(&.{ "go", "-C", "modules/raft", "test", "./..." });
+    raft_test.setCwd(b.path("."));
+    b.step("test-raft", "Test the Raft state machine and exports").dependOn(&raft_test.step);
+
     const e2e_python = b.option([]const u8, "e2e-python", "Python with tests/requirements-e2e.txt installed") orelse "python3";
     const e2e_command = if (std.mem.indexOfScalar(u8, e2e_python, '/') != null) (b.root.joinString(b.allocator, e2e_python) catch @panic("OOM")) else e2e_python;
+    const raft_e2e = b.addSystemCommand(&.{e2e_command});
+    raft_e2e.addFileArg(b.path("tests/raft_e2e.py"));
+    raft_e2e.addArtifactArg(exe);
+    raft_e2e.addArg("zig-out/bin/zhttpd-raft");
+    raft_e2e.setCwd(b.path("."));
+    raft_e2e.step.dependOn(&raft_build.step);
+    b.step("test-raft-e2e", "Test Raft failover, durable state, membership and load balancing").dependOn(&raft_e2e.step);
     const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);

@@ -55,6 +55,8 @@ Legacy `-c nginx.conf` remains supported; other direct formats use `--compatibil
 Load-aware 307 redirects are available through the optional standalone
 [`load_balancer` module](docs/load-balancing.md). It exchanges worker metrics
 through a shared directory and limits each request to one balancing redirect.
+The optional [Raft companion](docs/raft.md) replicates configuration, membership
+and metrics with a durable majority-committed log (`zig build raft`).
 
 Independent build modules: `load_balancer`, `http`, `nginx`, `apache`, `litespeed`, `caddy`,
 `settings`, `expression`, `logging`, `websocket`, `websocket_sdk`, `fastcgi`,
@@ -159,6 +161,7 @@ terminate their own process groups on failure.
 | Guide | Contents |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Builds, CLI, reload and shutdown |
+| [Raft cluster](docs/raft.md) | Durable consensus, configuration sync, membership and replicated metrics |
 | [Load-aware balancing](docs/load-balancing.md) | Shared metrics, thresholds, 307 redirects and loop prevention |
 | [Native configuration](docs/configuration.md) | TOML, modules, routing, logging and ACME |
 | [nginx configuration](docs/nginx-configuration.md) | Legacy paths, static files, proxying and TLS |
