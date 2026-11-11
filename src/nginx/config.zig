@@ -688,6 +688,8 @@ const Builder = struct {
             t.certificate = try b.fullConfPath(a0);
         } else if (eq(n, "ssl_certificate_key")) {
             t.certificate_key = try b.fullConfPath(a0);
+        } else if (eq(n, "ssl_password_file")) {
+            t.password_file = try b.fullConfPath(a0);
         } else if (eq(n, "ssl_protocols")) {
             t.protocols = d.args;
         } else if (eq(n, "ssl_ciphers")) {

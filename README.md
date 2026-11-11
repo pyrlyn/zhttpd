@@ -70,13 +70,34 @@ ACME uses mise-pinned lego, with multi-domain HTTP-01 / DNS-01 issuance, wildcar
 certificate reload in all five compatibility modes. Separate SNI certificates
 use `[[acme.certificates]]`, each with its own DNS provider and credential file.
 Domains, SANs and certificate records can be added or removed through reload.
-Configuration files, include/import dependencies, TLS certificates/private keys
-and per-certificate DNS env files are watched by default
+Configuration files, include/import dependencies, TLS certificates/private keys,
+PEM password files and per-certificate DNS env files are watched by default
 (`server.auto_reload = false` disables this). Saves trigger the same reload;
 missing certificates are issued before switching workers, while the master and
 existing HTTPS service stay running. Invalid or mismatched TLS files keep the
 active contexts. DNS env rotation immediately queues the corresponding ACME check;
 lego writes do not trigger reload loops. Failed issuance keeps the active configuration.
+Encrypted PEM keys use `[tls] password_file` in all five modes, with
+`[http.tls] password_file` and nginx `ssl_password_file` overrides. Password files
+are reloaded automatically; a wrong or missing password preserves active TLS.
+Separate SNI passwords use `[[tls.certificates]]` key/password mappings for manual
+keys or `password_file` inside each `[[acme.certificates]]` record. These override
+the fallback password source without changing other certificates.
+ACME records can enable `encrypt_key = true` with their own `password_file` to
+publish encrypted PKCS#8 keys after issuance and renewal. Private staging and an
+atomic generation switch preserve the current pair on failure. Password rotation
+re-encrypts a cached key locally without calling lego or renewing its certificate,
+including when the CA is offline. Per-SNI renewal schedules remain unchanged.
+Old encrypted generations are retired only after successful activation, with a
+durable cleanup journal for crash recovery. Active manual TLS references retain
+their generations; changed or unknown files defer deletion.
+Deferred cleanup retries independently per SNI record with bounded backoff,
+without reload or CA traffic, including with config auto-reload disabled.
+Existing plaintext ACME caches migrate locally without contacting the CA in all
+five modes. Their original files are removed only after successful activation;
+failed reloads, changed source files and active manual TLS references retain them.
+Interrupted cleanup resumes from a persistent migration manifest.
+See [password configuration and rotation](docs/configuration.md#зашифрованные-приватные-pem-ключи).
 Production CA issuance is opt-in through `[acme]`.
 
 ## HTTP/2 and HTTP/3
@@ -157,7 +178,9 @@ Watcher tests cover debounced saves, same-size/mtime edits, symlink swaps,
 missing/invalid dependency recovery, glob membership changes, direct native configs
 and accepted connections awaiting their first request during reload. TLS material
 tests rotate certs and keys separately, retain working contexts on invalid files,
-and exercise atomic/symlink replacement. Real-lego DNS env tests cover per-certificate
+and exercise atomic/symlink replacement. Encrypted-key tests cover PKCS#8 and
+traditional PEM, multiple passwords, SNI, invalid/missing password recovery,
+nonblocking FIFO rejection, and native nginx inheritance. Real-lego DNS env tests cover per-certificate
 retry isolation, missing files, credentials changed during issuance and loop prevention.
 No public certificate is requested. Fixtures use temporary files/ports and
 terminate their own process groups on failure.

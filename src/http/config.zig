@@ -143,6 +143,7 @@ pub const Tls = struct {
     acme_certificates: []const usize = &.{},
     certificate: ?[]const u8 = null,
     certificate_key: ?[]const u8 = null,
+    password_file: ?[]const u8 = null,
     protocols: []const []const u8 = &.{ "TLSv1.2", "TLSv1.3" },
     ciphers: ?[]const u8 = null,
     conf_commands: []const [2][]const u8 = &.{},

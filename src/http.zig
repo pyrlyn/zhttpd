@@ -22,6 +22,7 @@ pub const server = struct {
     pub const net = @import("server/net.zig");
     pub const multiplex = @import("server/multiplex.zig");
     pub const tls = @import("server/tls.zig");
+    pub const acme_encrypted = @import("server/acme_encrypted.zig");
     pub const vars = @import("server/vars.zig");
     pub const conn = @import("server/conn.zig");
     pub const handler = @import("server/handler.zig");

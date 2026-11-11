@@ -21,17 +21,21 @@ const Native = struct {
     http3: bool = false,
     certificate: ?[]const u8 = null,
     key: ?[]const u8 = null,
+    password_file: ?[]const u8 = null,
     max_body_size: u32 = 1048576,
     keepalive_timeout_ms: u32 = 75000,
     routes: std.ArrayList(Route) = .empty,
 };
 const Logging = struct { access: ?[]const u8 = null, format: []const u8 = "combined", error_path: ?[]const u8 = null, level: ?u8 = null };
+const KeyPassword = struct { key: []const u8 = "", password_file: []const u8 = "" };
 const Settings = struct {
     load_balancer: http.load_balancer.Settings = .{},
     acme: http.acme.Settings = .{},
     certificates: std.ArrayList(http.acme.Settings) = .empty,
     has_acme: bool = false,
     logging: Logging = .{},
+    tls_password_file: ?[]const u8 = null,
+    key_passwords: std.ArrayList(KeyPassword) = .empty,
     has_logging: bool = false,
     modules: Modules = .{},
     compatibility: ?Compatibility = null,
@@ -164,6 +168,11 @@ const Toml = struct {
                     result.has_http = true;
                     continue;
                 }
+                if (std.mem.eql(u8, table, "[[tls.certificates]]")) {
+                    try result.key_passwords.append(p.a, .{});
+                    section = "tls.certificates";
+                    continue;
+                }
                 if (std.mem.eql(u8, table, "[[acme.certificates]]")) {
                     try result.certificates.append(p.a, .{});
                     section = "acme.certificates";
@@ -171,14 +180,14 @@ const Toml = struct {
                 }
                 if (!std.mem.endsWith(u8, table, "]")) return p.fail("invalid table", .{});
                 section = std.mem.trim(u8, table[1 .. table.len - 1], " \t");
-                if (!std.mem.eql(u8, section, "modules") and !std.mem.eql(u8, section, "server") and !std.mem.eql(u8, section, "http") and !std.mem.eql(u8, section, "http.tls") and !std.mem.eql(u8, section, "logging") and !std.mem.eql(u8, section, "acme") and !std.mem.eql(u8, section, "load_balancer")) return p.fail("unknown table {s}", .{section});
+                if (!std.mem.eql(u8, section, "modules") and !std.mem.eql(u8, section, "server") and !std.mem.eql(u8, section, "http") and !std.mem.eql(u8, section, "http.tls") and !std.mem.eql(u8, section, "tls") and !std.mem.eql(u8, section, "logging") and !std.mem.eql(u8, section, "acme") and !std.mem.eql(u8, section, "load_balancer")) return p.fail("unknown table {s}", .{section});
                 const entry = try tables.getOrPut(p.a, section);
                 if (entry.found_existing) return p.fail("duplicate table {s}", .{section});
                 continue;
             }
             const sep = std.mem.indexOfScalar(u8, line, '=') orelse return p.fail("expected key = value", .{});
             const key = std.mem.trim(u8, line[0..sep], " \t");
-            const id = try std.fmt.allocPrint(p.a, "{s}.{d}.{s}", .{ section, if (std.mem.eql(u8, section, "http.routes")) result.native.routes.items.len else if (std.mem.eql(u8, section, "acme.certificates")) result.certificates.items.len else 0, key });
+            const id = try std.fmt.allocPrint(p.a, "{s}.{d}.{s}", .{ section, if (std.mem.eql(u8, section, "http.routes")) result.native.routes.items.len else if (std.mem.eql(u8, section, "acme.certificates")) result.certificates.items.len else if (std.mem.eql(u8, section, "tls.certificates")) result.key_passwords.items.len else 0, key });
             const entry = try seen.getOrPut(p.a, id);
             if (entry.found_existing) return p.fail("duplicate key {s}", .{key});
             const v = try p.value(line[sep + 1 ..]);
@@ -193,11 +202,21 @@ const Toml = struct {
                 const legacy = std.mem.eql(u8, section, "acme");
                 if (legacy) result.has_acme = true;
                 const ac = if (legacy) &result.acme else &result.certificates.items[result.certificates.items.len - 1];
-                if (std.mem.eql(u8, key, "name")) ac.name = try p.string(v) else if (std.mem.eql(u8, key, "dns_env_file")) ac.dns_env_file = try p.string(v) else if (std.mem.eql(u8, key, "domains")) ac.domains = try p.strings(v) else if (std.mem.eql(u8, key, "challenge")) ac.challenge = std.meta.stringToEnum(http.acme.Challenge, try p.string(v)) orelse return p.fail("ACME challenge must be http-01 or dns-01", .{}) else if (std.mem.eql(u8, key, "dns_provider")) ac.dns_provider = try p.string(v) else if (std.mem.eql(u8, key, "dns_resolvers")) ac.dns_resolvers = try p.strings(v) else if (std.mem.eql(u8, key, "dns_propagation_wait_seconds")) ac.dns_propagation_wait_seconds = try p.number(v) else if (std.mem.eql(u8, key, "operation_timeout_seconds")) ac.operation_timeout_seconds = try p.number(v) else if (std.mem.eql(u8, key, "domain")) ac.domain = try p.string(v) else if (std.mem.eql(u8, key, "email")) ac.email = try p.string(v) else if (std.mem.eql(u8, key, "directory")) ac.directory = try p.string(v) else if (std.mem.eql(u8, key, "storage")) ac.storage = try p.string(v) else if (std.mem.eql(u8, key, "client")) ac.client = try p.string(v) else if (std.mem.eql(u8, key, "accept_terms")) ac.accept_terms = try p.boolean(v) else if (std.mem.eql(u8, key, "check_interval_seconds")) ac.check_interval_seconds = try p.number(v) else if (std.mem.eql(u8, key, "http_port") or std.mem.eql(u8, key, "renew_before_days")) {
+                if (std.mem.eql(u8, key, "encrypt_key")) ac.encrypt_key = try p.boolean(v) else if (std.mem.eql(u8, key, "password_file")) {
+                    ac.password_file = try p.string(v);
+                    if (ac.password_file.?.len == 0) return p.fail("ACME password_file must not be empty", .{});
+                } else if (std.mem.eql(u8, key, "name")) ac.name = try p.string(v) else if (std.mem.eql(u8, key, "dns_env_file")) ac.dns_env_file = try p.string(v) else if (std.mem.eql(u8, key, "domains")) ac.domains = try p.strings(v) else if (std.mem.eql(u8, key, "challenge")) ac.challenge = std.meta.stringToEnum(http.acme.Challenge, try p.string(v)) orelse return p.fail("ACME challenge must be http-01 or dns-01", .{}) else if (std.mem.eql(u8, key, "dns_provider")) ac.dns_provider = try p.string(v) else if (std.mem.eql(u8, key, "dns_resolvers")) ac.dns_resolvers = try p.strings(v) else if (std.mem.eql(u8, key, "dns_propagation_wait_seconds")) ac.dns_propagation_wait_seconds = try p.number(v) else if (std.mem.eql(u8, key, "operation_timeout_seconds")) ac.operation_timeout_seconds = try p.number(v) else if (std.mem.eql(u8, key, "domain")) ac.domain = try p.string(v) else if (std.mem.eql(u8, key, "email")) ac.email = try p.string(v) else if (std.mem.eql(u8, key, "directory")) ac.directory = try p.string(v) else if (std.mem.eql(u8, key, "storage")) ac.storage = try p.string(v) else if (std.mem.eql(u8, key, "client")) ac.client = try p.string(v) else if (std.mem.eql(u8, key, "accept_terms")) ac.accept_terms = try p.boolean(v) else if (std.mem.eql(u8, key, "check_interval_seconds")) ac.check_interval_seconds = try p.number(v) else if (std.mem.eql(u8, key, "http_port") or std.mem.eql(u8, key, "renew_before_days")) {
                     const value_ = try p.number(v);
                     if (value_ == 0 or value_ > 65535) return p.fail("invalid ACME port/days", .{});
                     if (std.mem.eql(u8, key, "http_port")) ac.http_port = @intCast(value_) else ac.renew_before_days = @intCast(value_);
                 } else return p.fail("unknown ACME setting {s}", .{key});
+            } else if (std.mem.eql(u8, section, "tls.certificates")) {
+                const entry_ = &result.key_passwords.items[result.key_passwords.items.len - 1];
+                if (std.mem.eql(u8, key, "key")) entry_.key = try p.string(v) else if (std.mem.eql(u8, key, "password_file")) entry_.password_file = try p.string(v) else return p.fail("unknown TLS certificate setting {s}", .{key});
+            } else if (std.mem.eql(u8, section, "tls")) {
+                if (!std.mem.eql(u8, key, "password_file")) return p.fail("unknown common TLS setting {s}", .{key});
+                result.tls_password_file = try p.string(v);
+                if (result.tls_password_file.?.len == 0) return p.fail("tls.password_file must not be empty", .{});
             } else if (std.mem.eql(u8, section, "load_balancer")) {
                 var found = false;
                 inline for (.{ "node_id", "backend", "publish_backend" }) |field| if (std.mem.eql(u8, key, field)) {
@@ -231,7 +250,10 @@ const Toml = struct {
                 if (std.mem.eql(u8, key, "listen")) result.native.listen = try p.string(v) else if (std.mem.eql(u8, key, "root")) result.native.root = try p.string(v) else if (std.mem.eql(u8, key, "response")) result.native.response = try p.string(v) else if (std.mem.eql(u8, key, "index")) result.native.index = try p.string(v) else if (std.mem.eql(u8, key, "http2")) result.native.http2 = try p.boolean(v) else if (std.mem.eql(u8, key, "http3")) result.native.http3 = try p.boolean(v) else if (std.mem.eql(u8, key, "max_body_size")) result.native.max_body_size = try p.number(v) else if (std.mem.eql(u8, key, "keepalive_timeout_ms")) result.native.keepalive_timeout_ms = try p.number(v) else return p.fail("unknown HTTP setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "http.tls")) {
                 result.has_http = true;
-                if (std.mem.eql(u8, key, "certificate")) result.native.certificate = try p.string(v) else if (std.mem.eql(u8, key, "key")) result.native.key = try p.string(v) else return p.fail("unknown TLS setting {s}", .{key});
+                if (std.mem.eql(u8, key, "certificate")) result.native.certificate = try p.string(v) else if (std.mem.eql(u8, key, "key")) result.native.key = try p.string(v) else if (std.mem.eql(u8, key, "password_file")) {
+                    result.native.password_file = try p.string(v);
+                    if (result.native.password_file.?.len == 0) return p.fail("http.tls.password_file must not be empty", .{});
+                } else return p.fail("unknown TLS setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "http.routes")) {
                 const r = &result.native.routes.items[result.native.routes.items.len - 1];
                 if (std.mem.eql(u8, key, "path")) r.path = try p.string(v) else if (std.mem.eql(u8, key, "match")) r.match = std.meta.stringToEnum(@TypeOf(r.match), try p.string(v)) orelse return p.fail("route match must be prefix or exact", .{}) else if (std.mem.eql(u8, key, "response")) r.response = try p.string(v) else if (std.mem.eql(u8, key, "root")) r.root = try p.string(v) else if (std.mem.eql(u8, key, "proxy")) r.proxy = try p.string(v) else if (std.mem.eql(u8, key, "fastcgi")) r.fastcgi = try p.string(v) else if (std.mem.eql(u8, key, "wsgi")) r.wsgi = try p.string(v) else if (std.mem.eql(u8, key, "websocket")) r.websocket = try p.boolean(v) else if (std.mem.eql(u8, key, "status")) {
@@ -263,6 +285,9 @@ const Toml = struct {
         for (result.native.routes.items) |r| if (r.websocket and !result.modules.websocket) return p.fail("websocket module is disabled", .{});
         if (!result.modules.logging and result.has_logging) return p.fail("logging module is disabled", .{});
         if (result.has_acme and result.certificates.items.len > 0) return p.fail("use either [acme] or [[acme.certificates]], not both", .{});
+        for (result.key_passwords.items) |entry_| {
+            if (entry_.key.len == 0 or entry_.password_file.len == 0) return p.fail("tls.certificates requires nonempty key and password_file", .{});
+        }
         const legacy = result.has_acme;
         if (legacy) try result.certificates.append(p.a, result.acme);
         if (result.certificates.items.len > 0) {
@@ -272,6 +297,7 @@ const Toml = struct {
                 const prefix = if (legacy) "acme.0." else try std.fmt.allocPrint(p.a, "acme.certificates.{d}.", .{i + 1});
                 if (!legacy and ac.name.len == 0) return p.fail("each ACME certificate requires a name", .{});
                 for (ac.name) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') return p.fail("invalid ACME certificate name", .{});
+                if (ac.encrypt_key and ac.password_file == null) return p.fail("encrypt_key requires this ACME certificate's password_file", .{});
                 try p.normalizeAcme(ac, seen, prefix);
                 if (ac.name.len == 0) ac.name = ac.domain;
                 for (result.certificates.items[0..i]) |other| {
@@ -363,6 +389,7 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
     if ((n.http2 or n.http3) and !secure) return b.fail(origin, "HTTP/2 and HTTP/3 require [http.tls]", .{});
     if (n.certificate) |cert| s.tls.certificate = try b.fullPath(root, cert);
     if (n.key) |key| s.tls.certificate_key = try b.fullPath(root, key);
+    if (n.password_file) |path| s.tls.password_file = try b.fullPath(root, path);
     try b.listen(s, addr, secure, false);
     if (n.http3) try b.listen(s, addr, true, true);
     var fallback = false;
@@ -398,10 +425,22 @@ pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http
         for (cfg.servers) |srv| {
             if (srv.tls.certificate) |path| try sources.observe(path, .tls);
             if (srv.tls.certificate_key) |path| try sources.observe(path, .tls);
+            if (srv.tls.acme_certificates.len == 0) {
+                if (srv.tls.password_file) |path| try sources.observe(path, .password);
+            } else for (srv.tls.acme_certificates) |index| {
+                if (cfg.acme[index].password_file orelse srv.tls.password_file) |path| try sources.observe(path, .password);
+            }
         }
         for (cfg.acme) |ac| {
             try sources.observe(ac.certificate, .tls);
             try sources.observe(ac.key, .tls);
+            if (ac.encrypt_key and (!http.acme.ready(ac) or http.acme.migrationPending(gpa, ac))) {
+                for (http.acme.cache_suffixes) |suffix| {
+                    const path = try http.acme.legacyPath(gpa, ac, suffix);
+                    defer gpa.free(path);
+                    try sources.observe(path, .legacy_tls);
+                }
+            }
         }
     }
     return cfg;
@@ -426,14 +465,19 @@ fn loadConfig(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *ht
     var acme_domains: std.ArrayList([]const u8) = .empty;
     for (settings.certificates.items) |*ac| {
         ac.storage = try std.fs.path.resolve(a, &.{ root, ac.storage });
+        if (ac.password_file) |path| ac.password_file = try std.fs.path.resolve(a, &.{ root, path });
         if (ac.dns_env_file) |path| {
             ac.dns_env_file = try std.fs.path.resolve(a, &.{ root, path });
             if (opts.sources) |sources| try sources.observe(ac.dns_env_file.?, .credentials);
             if (http.acme.fingerprint(ac.dns_env_file.?) == null) return parser.fail("cannot read nonempty dns_env_file for ACME certificate {s}", .{ac.name});
         }
         if (std.mem.indexOfScalar(u8, ac.client, '/')) |_| ac.client = try std.fs.path.resolve(a, &.{ root, ac.client });
-        ac.certificate = try std.fmt.allocPrint(a, "{s}/certificates/{s}.crt", .{ ac.storage, ac.cert_name });
-        ac.key = try std.fmt.allocPrint(a, "{s}/certificates/{s}.key", .{ ac.storage, ac.cert_name });
+        const certificate_dir = if (ac.encrypt_key)
+            try std.fmt.allocPrint(a, "{s}/encrypted/{s}/current", .{ ac.storage, ac.cert_name })
+        else
+            try std.fmt.allocPrint(a, "{s}/certificates", .{ac.storage});
+        ac.certificate = try std.fmt.allocPrint(a, "{s}/{s}.crt", .{ certificate_dir, ac.cert_name });
+        ac.key = try std.fmt.allocPrint(a, "{s}/{s}.key", .{ certificate_dir, ac.cert_name });
         try acme_domains.appendSlice(a, ac.domains);
     }
     if (settings.has_acme) {
@@ -453,6 +497,33 @@ fn loadConfig(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *ht
             if (ac.challenge == .@"http-01" and !listener.opts.quic and listener.addr.port == ac.http_port) return parser.fail("HTTP-01 challenge port must be reserved for the ACME client", .{});
         };
         try applyAcme(&parser, cfg, settings.certificates.items, settings.compatibility.?);
+    }
+    if (settings.tls_password_file) |path| {
+        const password_file = try std.fs.path.resolve(own, &.{ root, path });
+        for (cfg.servers) |srv| if (srv.tls.password_file == null) {
+            srv.tls.password_file = password_file;
+        };
+    }
+    // Manual key mappings are adapter-independent. Match normalized paths, not
+    // certificate order or host spelling; one shared key has one password source.
+    for (settings.key_passwords.items, 0..) |*entry_, i| {
+        entry_.key = try std.fs.path.resolve(a, &.{ root, entry_.key });
+        entry_.password_file = try std.fs.path.resolve(a, &.{ root, entry_.password_file });
+        for (settings.key_passwords.items[0..i]) |previous| {
+            if (std.mem.eql(u8, previous.key, entry_.key)) return parser.fail("duplicate TLS password mapping for key {s}", .{entry_.key});
+        }
+        var matched = false;
+        for (cfg.servers) |srv| {
+            if (srv.tls.acme_certificates.len != 0) continue;
+            if (srv.tls.certificate_key) |key| {
+                const normalized = try std.fs.path.resolve(a, &.{key});
+                if (std.mem.eql(u8, normalized, entry_.key)) {
+                    srv.tls.password_file = entry_.password_file;
+                    matched = true;
+                }
+            }
+        }
+        if (!matched) return parser.fail("TLS password mapping requires a matching manual key: {s}", .{entry_.key});
     }
     if (settings.pid) |p| cfg.pid_path = try std.fs.path.resolve(own, &.{ root, p });
     if (settings.error_log) |p| cfg.error_log.path = if (std.mem.eql(u8, p, "stderr")) p else try std.fs.path.resolve(own, &.{ root, p });
