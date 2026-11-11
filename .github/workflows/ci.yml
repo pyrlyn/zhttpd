@@ -71,6 +71,12 @@ jobs:
           mise run deps:http
       - name: Install locked Python E2E dependencies
         run: mise run deps:python
+      - name: Select runner libc for Zig
+        # Conda clang's sysroot has linker scripts for /lib64, unlike Ubuntu.
+        # Dependency builds above still use the pinned compiler through mise.
+        run: |
+          echo "CC=/usr/bin/cc" >> "$GITHUB_ENV"
+          CC=/usr/bin/cc zig libc
       - name: Build release server with TLS, HTTP/2 and HTTP/3
         run: >-
           zig build -j2 -Doptimize=ReleaseFast -Dtls=true -Dhttp=true
