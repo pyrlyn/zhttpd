@@ -3,10 +3,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
 const z = @import("zhttpd");
-const config = z.conf.config;
-const Diag = z.conf.diag.Diag;
+const config = z.nginx.config;
+const Diag = z.http.diag.Diag;
 const net = z.server.net;
 const tls = z.server.tls;
+const multiplex = z.server.multiplex;
 const worker_mod = z.server.worker;
 const os = z.os;
 
@@ -21,8 +22,9 @@ const usage =
     \\  -T            : test configuration, dump it and exit
     \\  -q            : suppress non-error messages during configuration testing
     \\  -s signal     : send signal to a master process: stop, quit, reopen, reload
+    \\  --compatibility name : direct file format: nginx/apache/litespeed/caddy
     \\  -p prefix     : set prefix path (default: see README)
-    \\  -c filename   : set configuration file (default: /etc/nginx/nginx.conf)
+    \\  -c filename   : set configuration file (default: config.toml)
     \\  -g directives : set global directives out of configuration file (daemon/master_process/worker_processes/pid)
     \\  --strict      : unknown directives are errors instead of warnings
     \\  --directives  : print the supported/ignored directive table (Markdown) and exit
@@ -30,7 +32,8 @@ const usage =
 ;
 
 const Opts = struct {
-    conf: []const u8 = "/etc/nginx/nginx.conf",
+    conf: []const u8 = "config.toml",
+    compatibility: z.app_config.Compatibility = .nginx,
     prefix: ?[]const u8 = null,
     test_only: bool = false,
     dump: bool = false,
@@ -88,7 +91,7 @@ pub fn main(init: std.process.Init) u8 {
             eprint("zhttpd version: zhttpd/{s}\n", .{z.server.vars.version});
             return 0;
         } else if (std.mem.eql(u8, a, "-V")) {
-            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, if (tls.enabled) "OpenSSL" else "disabled" });
+            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}, HTTP/2+HTTP/3 {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, if (tls.enabled) "OpenSSL" else "disabled", if (multiplex.enabled) "enabled" else "disabled" });
             return 0;
         } else if (std.mem.eql(u8, a, "-t")) {
             o.test_only = true;
@@ -105,6 +108,12 @@ pub fn main(init: std.process.Init) u8 {
             z.conf.directives.writeMarkdown(&w) catch {};
             outWrite(w.buffered());
             return 0;
+        } else if (std.mem.eql(u8, a, "--compatibility")) {
+            const mode = nextArg(argv, &i, a) orelse return 1;
+            o.compatibility = std.meta.stringToEnum(z.app_config.Compatibility, mode) orelse {
+                eprint("zhttpd: compatibility must be self, nginx, apache, litespeed or caddy\n", .{});
+                return 1;
+            };
         } else if (std.mem.eql(u8, a, "-c")) {
             o.conf = nextArg(argv, &i, a) orelse return 1;
         } else if (std.mem.eql(u8, a, "-p")) {
@@ -135,7 +144,7 @@ pub fn main(init: std.process.Init) u8 {
 
     var diag: Diag = .{ .gpa = gpa, .echo = true };
     defer diag.deinit();
-    const cfg = config.load(gpa, conf_path, copts, &diag) catch {
+    const cfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility }, &diag) catch {
         if (o.test_only) eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
         return 1;
     };
@@ -146,14 +155,16 @@ pub fn main(init: std.process.Init) u8 {
 
     if (o.signal) |sig| return sendSignal(cfg, sig);
 
+    multiplex.validate(cfg) catch |err| {
+        eprint("zhttpd: [emerg] HTTP protocol configuration: {s} (HTTP/2 and HTTP/3 require -Dtls=true -Dhttp=true)\n", .{@errorName(err)});
+        return 1;
+    };
     if (o.test_only) {
         // also verify certificates like nginx -t does
         if (tls.enabled) {
-            for (cfg.listens) |*l| if (l.opts.ssl) {
-                _ = tls.buildSni(gpa, cfg, l, &diag) catch {
-                    eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
-                    return 1;
-                };
+            tls.validateConfig(gpa, cfg, &diag) catch {
+                eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
+                return 1;
             };
         } else for (cfg.listens) |l| if (l.opts.ssl) {
             eprint("zhttpd: [emerg] this zhttpd binary was built without TLS (-Dtls=true) but \"listen ... ssl\" is used\n", .{});
@@ -169,7 +180,7 @@ pub fn main(init: std.process.Init) u8 {
         if (o.dump) {
             var buf: [1024 * 1024]u8 = undefined;
             var w: std.Io.Writer = .fixed(&buf);
-            for (cfg.ast.files) |f| {
+            for (cfg.source_files) |f| {
                 w.print("# configuration file {s}:\n", .{f}) catch {};
                 var e: c_int = 0;
                 const text = os.readFileAlloc(gpa, f, &e) catch continue;
@@ -302,7 +313,7 @@ const Generation = struct {
     error_fd: c_int,
 };
 
-const Sock = struct { addr: z.conf.addr.Addr, fd: c_int, used: bool };
+const Sock = struct { addr: z.http.addr.Addr, fd: c_int, used: bool, quic: bool };
 
 fn openErrorLog(cfg: *config.Config) c_int {
     const p = cfg.error_log.path;
@@ -319,18 +330,19 @@ fn openErrorLog(cfg: *config.Config) c_int {
 }
 
 fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag) !Generation {
+    try multiplex.validate(cfg);
     const nw = @max(cfg.worker_processes, 1);
     const fds = try gpa.alloc([]c_int, cfg.listens.len);
     const sni = try gpa.alloc(?*tls.SniTable, cfg.listens.len);
     for (cfg.listens, 0..) |*l, li| {
-        const per_worker = builtin.os.tag == .linux and l.opts.reuseport;
+        const per_worker = builtin.os.tag == .linux and l.opts.reuseport and !l.opts.quic;
         const n: usize = if (per_worker) nw else 1;
         fds[li] = try gpa.alloc(c_int, n);
         for (0..n) |k| {
             // reuse a socket from the previous generation (reload) when possible
             var reused: ?c_int = null;
             if (!per_worker) for (old) |*s| {
-                if (!s.used and s.addr.eql(l.addr)) {
+                if (!s.used and s.quic == l.opts.quic and s.addr.eql(l.addr)) {
                     s.used = true;
                     reused = s.fd;
                     break;
@@ -341,7 +353,7 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
                 continue;
             }
             var e: c_int = 0;
-            fds[li][k] = net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e) catch |err| {
+            fds[li][k] = (if (l.opts.quic) net.listenUdp(l.addr, l.opts.ipv6only, &e) else net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e)) catch |err| {
                 var ab: [64]u8 = undefined;
                 const what = switch (err) {
                     error.Socket => "socket()",
@@ -376,6 +388,12 @@ fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize) c.pid_t {
         if (fds.len > 1) for (fds, 0..) |other, k| {
             if (k != idx % fds.len) net.close(other);
         };
+        // A single worker owns each QUIC socket: UDP packets of a connection
+        // must reach the same OpenSSL engine, including during worker restarts.
+        if (l.opts.quic and idx != 0) {
+            net.close(fd);
+            continue;
+        }
         listeners.append(gpa, .{ .fd = fd, .listen = l, .sni = gen.sni[li] }) catch c.exit(2);
     }
     var w = worker_mod.Worker.init(gpa, gen.cfg, listeners.items, gen.error_fd, @intCast(idx)) catch c.exit(2);
@@ -436,18 +454,46 @@ fn raiseNofile(want: ?u64) void {
 }
 
 fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts) u8 {
-    _ = o;
     // worker_rlimit_nofile, or as high as the hard limit allows (bounded) when unset
     raiseNofile(cfg0.worker_rlimit_nofile);
     installSignals(masterSignal);
     var diag: Diag = .{ .gpa = gpa, .echo = true };
+    for (cfg0.acme) |ac| if (!z.http.acme.ready(ac)) {
+        if (!tls.enabled) {
+            eprint("zhttpd: [emerg] automatic ACME requires a TLS-enabled build\n", .{});
+            return 1;
+        }
+        tls.validateConfig(gpa, cfg0, &diag) catch return 1;
+        eprint("zhttpd: issuing initial ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
+        const child = z.http.acme.start(gpa, ac, 2) catch return 1;
+        var status: c_int = 0;
+        const started = z.server.loop.nowMs();
+        while (c.waitpid(child, &status, c.W.NOHANG) == 0) {
+            if (m_terminate or m_quit or z.server.loop.nowMs() - started > @as(i64, ac.operation_timeout_seconds) * 1000) {
+                _ = kill(child, 9);
+                _ = c.waitpid(child, &status, 0);
+                return 1;
+            }
+            sleepMs(100);
+        }
+        if (status != 0 or !z.http.acme.ready(ac)) {
+            eprint("zhttpd: [emerg] initial ACME issuance failed; HTTPS was not started\n", .{});
+            return 1;
+        }
+    };
+    var acme_jobs = z.http.acme.renewals(gpa, cfg0.acme, &.{}) catch return 1;
+    defer gpa.free(acme_jobs);
     var gen = prepare(gpa, cfg0, &.{}, &diag) catch return 1;
     writePid(cfg0);
     var ab: [64]u8 = undefined;
-    for (cfg0.listens) |l| eprint("zhttpd: listening on {s}{s}{s}:{d}{s}\n", .{ if (l.addr.family == .v6) "[" else "", l.addr.formatIp(&ab), if (l.addr.family == .v6) "]" else "", l.addr.port, if (l.opts.ssl) " (ssl)" else "" });
+    for (cfg0.listens) |l| eprint("zhttpd: listening on {s}{s}{s}:{d}{s}\n", .{ if (l.addr.family == .v6) "[" else "", l.addr.formatIp(&ab), if (l.addr.family == .v6) "]" else "", l.addr.port, if (l.opts.quic) " (quic)" else if (l.opts.ssl) " (ssl)" else "" });
     for (gen.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &gen, k);
     eprint("zhttpd: master {d} started {d} worker(s), event method {s}\n", .{ c.getpid(), gen.pids.len, z.server.loop.name });
 
+    var acme_pid: c.pid_t = 0;
+    var acme_started: i64 = 0;
+    var acme_before: ?[32]u8 = null;
+    var acme_active: z.http.acme.Settings = undefined;
     var old: std.ArrayList(c.pid_t) = .empty; // workers of previous generations, shutting down
     while (true) {
         sleepMs(100);
@@ -456,6 +502,21 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             var status: c_int = 0;
             const pid = c.waitpid(-1, &status, c.W.NOHANG);
             if (pid <= 0) break;
+            if (pid == acme_pid) {
+                acme_pid = 0;
+                // Use the settings of the completed child, never an array index
+                // from a configuration that may have been reordered during reload.
+                const ac = acme_active;
+                for (acme_jobs) |*job| {
+                    if (!std.mem.eql(u8, job.settings.certificate, ac.certificate)) continue;
+                    if (status == 0) {
+                        const after = z.http.acme.fingerprint(ac.certificate);
+                        if (after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) m_reload = true;
+                    } else eprint("zhttpd: [error] ACME renewal {s} failed; current HTTPS configuration remains active\n", .{ac.name});
+                    job.next_check_ms = z.server.loop.nowMs() + @as(i64, if (status == 0) job.settings.check_interval_seconds else @min(job.settings.check_interval_seconds, 3600)) * 1000;
+                }
+                continue;
+            }
             var respawn: ?usize = null;
             for (gen.pids, 0..) |p, k| if (p == pid) {
                 respawn = k;
@@ -474,6 +535,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             }
         }
         if (m_terminate or m_quit) {
+            if (acme_pid > 0) _ = kill(acme_pid, 9);
             const sig: c_int = if (m_terminate) SIGTERM else SIGQUIT;
             signalAll(&gen, sig);
             for (old.items) |p| _ = kill(p, sig);
@@ -486,6 +548,23 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             removePid(cfg0);
             return 0;
         }
+        const now = z.server.loop.nowMs();
+        if (acme_pid > 0 and now - acme_started > @as(i64, acme_active.operation_timeout_seconds) * 1000) _ = kill(acme_pid, 9);
+        if (acme_pid == 0) {
+            var due: ?usize = null;
+            for (acme_jobs, 0..) |job, i| {
+                if (now >= job.next_check_ms and (due == null or job.next_check_ms < acme_jobs[due.?].next_check_ms)) due = i;
+            }
+            if (due) |i| {
+                const ac = acme_jobs[i].settings;
+                acme_active = ac;
+                acme_before = z.http.acme.fingerprint(ac.certificate);
+                acme_pid = z.http.acme.start(gpa, ac, gen.error_fd) catch 0;
+                acme_started = now;
+                acme_jobs[i].next_check_ms = now + @as(i64, @min(ac.check_interval_seconds, 3600)) * 1000;
+                if (acme_pid == 0) eprint("zhttpd: [error] cannot start ACME renewal {s}\n", .{ac.name});
+            }
+        }
         if (m_reopen) {
             m_reopen = false;
             signalAll(&gen, SIGUSR1);
@@ -493,18 +572,25 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         if (m_reload) {
             m_reload = false;
             eprint("zhttpd: [notice] reconfiguring\n", .{});
-            const ncfg = config.load(gpa, conf_path, copts, &diag) catch {
+            const ncfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility }, &diag) catch {
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
             var socks: std.ArrayList(Sock) = .empty;
             for (gen.cfg.listens, 0..) |l, li| if (gen.fds[li].len == 1) {
-                socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false }) catch {};
+                socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false, .quic = l.opts.quic }) catch {};
+            };
+            const next_jobs = z.http.acme.renewals(gpa, ncfg.acme, acme_jobs) catch {
+                eprint("zhttpd: [emerg] cannot allocate ACME renewal schedule\n", .{});
+                continue;
             };
             const ngen = prepare(gpa, ncfg, socks.items, &diag) catch {
+                gpa.free(next_jobs);
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            gpa.free(acme_jobs);
+            acme_jobs = next_jobs;
             var next = ngen;
             for (next.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &next, k);
             for (gen.pids) |p| if (p > 0) {

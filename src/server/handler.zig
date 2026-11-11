@@ -4,8 +4,8 @@
 //! (proxy_pass or static files) -> error_page / default error page.
 const std = @import("std");
 const c = std.c;
-const config = @import("../conf/config.zig");
-const expr = @import("../conf/expr.zig");
+const config = @import("../http/config.zig");
+const expr = @import("expression");
 const Regex = @import("../regex.zig").Regex;
 const request = @import("../http/request.zig");
 const response = @import("../http/response.zig");
@@ -243,14 +243,15 @@ fn content(conn: *Conn) void {
 
 fn contentHandler(conn: *Conn) void {
     const lc = conn.ctx.conf;
+    if (lc.websocket) |callbacks| return @import("websocket.zig").upgrade(conn, callbacks);
+    if (lc.unsupported_handler) |h| {
+        conn.w.errlog(.err, "\"{s}\" is not supported by zhttpd", .{h});
+        return finalize(conn, 502);
+    }
     if (lc.proxy != null) {
         conn.after_body = .proxy;
         conn.body_store = true;
         return;
-    }
-    if (lc.unsupported_handler) |h| {
-        conn.w.errlog(.err, "\"{s}\" is not supported by zhttpd", .{h});
-        return finalize(conn, 502);
     }
     staticFile(conn);
 }
@@ -348,7 +349,7 @@ fn staticFile(conn: *Conn) void {
     ctx.request_filename = path;
     const meta = switch (conn.w.files.open(lc.open_file_cache, path, @intCast(conn.w.now_ms))) {
         .err => |e| {
-            if (e == @intFromEnum(c.E.ACCES)) {
+            if (e == @backingInt(c.E.ACCES)) {
                 conn.w.errlog(.err, "open() \"{s}\" failed (13: Permission denied)", .{path});
                 return finalize(conn, 403);
             }

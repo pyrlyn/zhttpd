@@ -8,15 +8,15 @@
 //! Simple directives of a level are applied before its nested blocks are built, so their
 //! position in the file relative to `location` blocks does not matter (as in nginx).
 const std = @import("std");
-const os = @import("../os.zig");
-const Regex = @import("../regex.zig").Regex;
+const os = @import("http").os;
+const Regex = @import("http").regex.Regex;
 const parser = @import("parser.zig");
 const Directive = parser.Directive;
-const Diag = @import("diag.zig").Diag;
+const Diag = @import("http").diag.Diag;
 const dirs = @import("directives.zig");
 const expr = @import("expr.zig");
 const Expr = expr.Expr;
-const addr_mod = @import("addr.zig");
+const addr_mod = @import("http").addr;
 const Addr = addr_mod.Addr;
 const Cidr = addr_mod.Cidr;
 
@@ -33,57 +33,38 @@ pub const Options = struct {
     quiet_ignored: bool = false,
 };
 
-pub const Mime = std.StringHashMapUnmanaged([]const u8);
-
-pub const ErrorPage = struct { codes: []const u16, override: ?u16, use_page_status: bool, uri: Expr };
-pub const AddHeader = struct { name: []const u8, value: Expr, always: bool };
-pub const HeaderSet = struct { name: []const u8, value: Expr };
-pub const AccessRule = struct { allow: bool, all: bool, cidr: Cidr = undefined };
-pub const LogFormat = struct { name: []const u8, expr: Expr };
-pub const AccessLog = struct { path: []const u8, format: *const LogFormat };
-pub const Expires = union(enum) { epoch, max, offset: i64, modified: i64 };
-
-pub const Upstream = struct {
-    name: []const u8,
-    addrs: []Addr,
-    rr: usize = 0,
-};
-
-pub const Proxy = struct {
-    upstream: *Upstream,
-    /// URI part of proxy_pass (`http://b/api/` -> "/api/"), null if none was given.
-    uri: ?Expr,
-    /// $proxy_host: "host:port" (port omitted when 80) or upstream name.
-    host: []const u8,
-    port: u16,
-    /// `proxy_pass http://$var...`: host[:port] evaluated per request; it must name an
-    /// `upstream` block or be a literal IP[:port] (zhttpd has no runtime DNS resolver).
-    dyn_host: ?Expr = null,
-};
-
-pub const CondKind = enum { truthy, eq, ne, re, file_f, file_d, file_e, file_x };
-pub const Cond = struct {
-    kind: CondKind,
-    neg: bool = false,
-    a: Expr,
-    b: Expr = .{ .parts = &.{}, .raw = "" },
-    re: ?*Regex = null,
-};
-
-pub const RewriteFlag = enum { none, last, brk, redirect, permanent };
-
-pub const Stmt = union(enum) {
-    ret: struct { code: u16, text: ?Expr },
-    rewrite: struct { re: *Regex, repl: Expr, flag: RewriteFlag },
-    set: struct { name: []const u8, value: Expr },
-    brk,
-    if_: struct { cond: Cond, body: []Stmt, conf: ?*LocConf },
-};
-
-pub const IfModifiedSince = enum { off, exact, before };
-pub const ServerTokens = enum { on, off, build };
-
-pub const LimitExcept = struct { methods: []const []const u8, access: []AccessRule };
+const runtime = @import("http").config;
+pub const Mime = runtime.Mime;
+pub const ErrorPage = runtime.ErrorPage;
+pub const AddHeader = runtime.AddHeader;
+pub const HeaderSet = runtime.HeaderSet;
+pub const AccessRule = runtime.AccessRule;
+pub const LogFormat = runtime.LogFormat;
+pub const AccessLog = runtime.AccessLog;
+pub const Expires = runtime.Expires;
+pub const Upstream = runtime.Upstream;
+pub const Proxy = runtime.Proxy;
+pub const CondKind = runtime.CondKind;
+pub const Cond = runtime.Cond;
+pub const RewriteFlag = runtime.RewriteFlag;
+pub const Stmt = runtime.Stmt;
+pub const IfModifiedSince = runtime.IfModifiedSince;
+pub const ServerTokens = runtime.ServerTokens;
+pub const LimitExcept = runtime.LimitExcept;
+pub const LocConf = runtime.LocConf;
+pub const OpenFileCache = runtime.OpenFileCache;
+pub const LocKind = runtime.LocKind;
+pub const Location = runtime.Location;
+pub const ServerName = runtime.ServerName;
+pub const SessionCache = runtime.SessionCache;
+pub const Tls = runtime.Tls;
+pub const Server = runtime.Server;
+pub const ListenOpts = runtime.ListenOpts;
+pub const Listen = runtime.Listen;
+pub const MapRegex = runtime.MapRegex;
+pub const Map = runtime.Map;
+pub const ErrorLog = runtime.ErrorLog;
+pub const Config = runtime.Config;
 
 const SetFlags = packed struct {
     index: bool = false,
@@ -92,183 +73,8 @@ const SetFlags = packed struct {
     access: bool = false,
     access_log: bool = false,
     proxy_set_header: bool = false,
+    fastcgi_param: bool = false,
     proxy_hide: bool = false,
-};
-
-pub const LocConf = struct {
-    root: Expr,
-    alias: ?Expr = null,
-    index: []Expr,
-    try_files: ?[]Expr = null,
-    error_pages: []ErrorPage = &.{},
-    add_headers: []AddHeader = &.{},
-    access: []AccessRule = &.{},
-    access_logs: ?[]AccessLog, // null = off
-    client_max_body_size: u64 = 1024 * 1024,
-    proxy: ?Proxy = null,
-    proxy_set_headers: []HeaderSet = &.{},
-    proxy_hide_headers: []const []const u8 = &.{},
-    proxy_http_11: bool = true, // nginx >= 1.29 default
-    proxy_pass_request_headers: bool = true,
-    proxy_intercept_errors: bool = false,
-    proxy_connect_timeout_ms: u32 = 60_000,
-    proxy_read_timeout_ms: u32 = 60_000,
-    proxy_send_timeout_ms: u32 = 60_000,
-    unsupported_handler: ?[]const u8 = null, // fastcgi_pass etc: answer 502
-    default_type: []const u8 = "text/plain",
-    types: *const Mime,
-    charset: ?[]const u8 = null,
-    internal: bool = false,
-    absolute_redirect: bool = true,
-    server_name_in_redirect: bool = false,
-    port_in_redirect: bool = true,
-    keepalive_timeout_ms: u32 = 75_000,
-    keepalive_requests: u32 = 1000,
-    client_body_timeout_ms: u32 = 60_000,
-    send_timeout_ms: u32 = 60_000,
-    sendfile: bool = false,
-    tcp_nodelay: bool = true,
-    server_tokens: ServerTokens = .on,
-    autoindex: bool = false,
-    expires: ?Expires = null,
-    etag: bool = true,
-    if_modified_since: IfModifiedSince = .exact,
-    log_not_found: bool = true,
-    open_file_cache: OpenFileCache = .{},
-    chunked_transfer_encoding: bool = true,
-    limit_except: ?LimitExcept = null,
-    set_flags: SetFlags = .{},
-};
-
-/// open_file_cache* settings; max == 0 means off.
-pub const OpenFileCache = struct {
-    max: u32 = 0,
-    inactive_ms: u32 = 60_000,
-    valid_ms: u32 = 60_000,
-    min_uses: u32 = 1,
-    errors: bool = false,
-};
-
-pub const LocKind = enum { exact, prefix, prefix_noregex, regex, regex_icase, named };
-
-pub const Location = struct {
-    kind: LocKind,
-    name: []const u8, // pattern / prefix / @name
-    re: ?*Regex = null,
-    conf: *LocConf,
-    stmts: []Stmt = &.{},
-    children: []*Location = &.{},
-    file: []const u8,
-    line: u32,
-};
-
-pub const ServerName = union(enum) {
-    exact: []const u8, // lowercase; "" and "_" kept verbatim
-    lead: []const u8, // "*.example.com" -> ".example.com"
-    lead_dot: []const u8, // ".example.com" -> "example.com" (matches it and all subdomains)
-    trail: []const u8, // "www.example.*" -> "www.example."
-    re: *Regex,
-};
-
-pub const SessionCache = enum { none, off, builtin };
-
-pub const Tls = struct {
-    certificate: ?[]const u8 = null,
-    certificate_key: ?[]const u8 = null,
-    protocols: []const []const u8 = &.{ "TLSv1.2", "TLSv1.3" },
-    ciphers: ?[]const u8 = null,
-    conf_commands: []const [2][]const u8 = &.{},
-    prefer_server_ciphers: bool = false,
-    session_cache: SessionCache = .none,
-    session_cache_size: u32 = 0,
-    session_timeout_s: u32 = 300,
-    session_tickets: bool = true,
-    ecdh_curve: ?[]const u8 = null,
-    reject_handshake: bool = false,
-};
-
-pub const Server = struct {
-    index: usize,
-    names: []ServerName,
-    primary_name: []const u8,
-    conf: *LocConf,
-    stmts: []Stmt = &.{},
-    locations: []*Location = &.{},
-    named: []*Location = &.{},
-    tls: Tls = .{},
-    client_header_timeout_ms: u32 = 60_000,
-    merge_slashes: bool = true,
-    file: []const u8,
-    line: u32,
-};
-
-pub const ListenOpts = struct { default_server: bool = false, ssl: bool = false, reuseport: bool = false, backlog: i32 = 511, ipv6only: bool = true };
-
-/// One socket the workers listen on.
-pub const Listen = struct {
-    addr: Addr,
-    opts: ListenOpts,
-    /// Servers reachable through this socket with the address they asked for
-    /// (a wildcard socket also serves servers listening on a concrete IP of the same port).
-    entries: []Entry,
-    pub const Entry = struct { addr: Addr, server: *Server, default: bool };
-
-    pub fn defaultFor(l: *const Listen, local: Addr) *Server {
-        var first: ?*Server = null;
-        for (l.entries) |e| {
-            if (!(e.addr.isWildcard() or e.addr.sameHost(local))) continue;
-            if (e.default) return e.server;
-            if (first == null) first = e.server;
-        }
-        return first orelse l.entries[0].server;
-    }
-};
-
-pub const MapRegex = struct { re: *Regex, value: Expr };
-
-pub const Map = struct {
-    source: Expr,
-    target: []const u8, // variable name without '$'
-    default: Expr,
-    hostnames: bool = false,
-    exact: std.StringHashMapUnmanaged(Expr) = .empty,
-    regexes: []const MapRegex = &.{},
-};
-
-pub const ErrorLog = struct { path: []const u8, level: u8 = 3 }; // 0 emerg .. 7 debug
-
-pub const Config = struct {
-    arena: std.heap.ArenaAllocator,
-    ast: parser.Ast,
-    prefix: []const u8,
-    conf_file: []const u8,
-    worker_processes: u32 = 1,
-    worker_connections: u32 = 512,
-    worker_rlimit_nofile: ?u64 = null,
-    multi_accept: bool = false,
-    event_method: ?[]const u8 = null,
-    pid_path: ?[]const u8 = null,
-    error_log: ErrorLog = .{ .path = "logs/error.log" },
-    has_http: bool = false,
-    servers: []*Server = &.{},
-    listens: []Listen = &.{},
-    upstreams: []*Upstream = &.{},
-    maps: []Map = &.{},
-    log_formats: []*LogFormat = &.{},
-    /// largest open_file_cache max= anywhere in the config (per-worker cache size)
-    open_file_cache_max: u32 = 0,
-    ignored_count: usize = 0,
-    unknown_count: usize = 0,
-
-    pub fn deinit(c: *Config) void {
-        c.ast.deinit();
-        c.arena.deinit();
-    }
-
-    pub fn findMap(c: *const Config, name: []const u8) ?*const Map {
-        for (c.maps) |*m| if (std.mem.eql(u8, m.target, name)) return m;
-        return null;
-    }
 };
 
 // ------------------------------------------------------------------ builder
@@ -283,6 +89,8 @@ const Builder = struct {
     opts: Options,
     cfg: *Config,
     http_tls: Tls = .{},
+    http_http2: bool = false,
+    http_http3: bool = true,
     http_header_timeout_ms: u32 = 60_000,
     http_merge_slashes: bool = true,
     servers: std.ArrayList(*Server) = .empty,
@@ -293,6 +101,7 @@ const Builder = struct {
     pending_proxies: std.ArrayList(PendingProxy) = .empty,
     warned: std.StringHashMapUnmanaged(void) = .empty,
     failed: bool = false,
+    merge_flags: std.AutoHashMapUnmanaged(*LocConf, SetFlags) = .empty,
 
     fn emerg(b: *Builder, d: *const Directive, comptime fmt: []const u8, args: anytype) void {
         b.diag.add(.emerg, d.file, d.line, fmt, args);
@@ -414,14 +223,13 @@ const Builder = struct {
         var el: ErrorLog = .{ .path = "stderr" };
         const p = d.args[0];
         if (eq(p, "stderr") or eq(p, "/dev/stderr")) {} else if (std.mem.startsWith(u8, p, "syslog:") or std.mem.startsWith(u8, p, "memory:")) {
-            b.warn(d, "error_log target \"{s}\" is not supported, using stderr", .{p});
+            b.emerg(d, "error_log target \"{s}\" is not supported", .{p});
         } else el.path = try b.fullPath(p);
-        if (d.args.len > 1) {
-            const levels = [_][]const u8{ "emerg", "alert", "crit", "error", "warn", "notice", "info", "debug" };
-            for (levels, 0..) |l, i| {
-                if (eq(d.args[1], l)) el.level = @intCast(i);
-            }
-        }
+        if (d.args.len > 2) b.emerg(d, "unsupported error_log options", .{});
+        if (d.args.len > 1) el.level = @import("http").logging.level(d.args[1]) orelse blk: {
+            b.emerg(d, "unknown error_log level", .{});
+            break :blk 3;
+        };
         return el;
     }
 
@@ -478,7 +286,6 @@ const Builder = struct {
         lc.internal = false;
         lc.unsupported_handler = null;
         lc.limit_except = null;
-        lc.set_flags = .{};
         return lc;
     }
 
@@ -494,10 +301,17 @@ const Builder = struct {
             _ = b.check(d, ctx) orelse continue;
             var s: std.ArrayList(u8) = .empty;
             var start: usize = 1;
-            if (d.args.len > 2 and std.mem.startsWith(u8, d.args[1], "escape=")) start = 2;
+            var escape: @import("http").logging.Escape = .default;
+            if (d.args.len > 2 and std.mem.startsWith(u8, d.args[1], "escape=")) {
+                start = 2;
+                escape = std.meta.stringToEnum(@import("http").logging.Escape, d.args[1][7..]) orelse {
+                    b.emerg(d, "unknown log escape mode", .{});
+                    continue;
+                };
+            }
             for (d.args[start..]) |part| try s.appendSlice(b.a, part);
             const f = try b.a.create(LogFormat);
-            f.* = .{ .name = d.args[0], .expr = b.compileExpr(d, s.items) };
+            f.* = .{ .name = d.args[0], .expr = b.compileExpr(d, s.items), .escape = escape };
             try b.log_formats.append(b.a, f);
         }
         const logs = try b.a.alloc(AccessLog, 1);
@@ -619,7 +433,7 @@ const Builder = struct {
             _ = b.check(d, ctx) orelse {
                 // content handlers we do not implement: the location answers 502 instead
                 // of silently serving files from root (which could leak e.g. PHP sources)
-                if (isForeignHandler(n)) lc.unsupported_handler = n;
+                if (isForeignHandler(n) or eq(n, "fastcgi_split_path_info")) lc.unsupported_handler = n;
                 continue;
             };
             try b.applyOne(lc, d, srv);
@@ -637,6 +451,9 @@ const Builder = struct {
     }
 
     fn applyOne(b: *Builder, lc: *LocConf, d: *const Directive, srv: ?*Server) Error!void {
+        const entry = try b.merge_flags.getOrPut(b.a, lc);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        const flags = entry.value_ptr;
         const n = d.name;
         const a0 = if (d.args.len > 0) d.args[0] else "";
         if (eq(n, "root") or eq(n, "alias")) {
@@ -650,15 +467,15 @@ const Builder = struct {
             const list = try b.a.alloc(Expr, d.args.len);
             for (d.args, 0..) |x, i| list[i] = b.compileExpr(d, x);
             lc.index = list;
-            lc.set_flags.index = true;
+            flags.index = true;
         } else if (eq(n, "try_files")) {
             const list = try b.a.alloc(Expr, d.args.len);
             for (d.args, 0..) |x, i| list[i] = b.compileExpr(d, x);
             lc.try_files = list;
         } else if (eq(n, "error_page")) {
-            if (!lc.set_flags.error_page) {
+            if (!flags.error_page) {
                 lc.error_pages = &.{};
-                lc.set_flags.error_page = true;
+                flags.error_page = true;
             }
             var codes: std.ArrayList(u16) = .empty;
             var override: ?u16 = null;
@@ -678,29 +495,31 @@ const Builder = struct {
             }
             lc.error_pages = try append(b.a, ErrorPage, lc.error_pages, .{ .codes = try codes.toOwnedSlice(b.a), .override = override, .use_page_status = use_page, .uri = b.compileExpr(d, d.args[d.args.len - 1]) });
         } else if (eq(n, "add_header")) {
-            if (!lc.set_flags.add_header) {
+            if (!flags.add_header) {
                 lc.add_headers = &.{};
-                lc.set_flags.add_header = true;
+                flags.add_header = true;
             }
             const always = d.args.len == 3 and eq(d.args[2], "always");
             if (d.args.len == 3 and !always) return b.emerg(d, "invalid parameter \"{s}\"", .{d.args[2]});
             lc.add_headers = try append(b.a, AddHeader, lc.add_headers, .{ .name = d.args[0], .value = b.compileExpr(d, d.args[1]), .always = always });
         } else if (eq(n, "allow") or eq(n, "deny")) {
-            if (!lc.set_flags.access) {
+            if (!flags.access) {
                 lc.access = &.{};
-                lc.set_flags.access = true;
+                flags.access = true;
             }
             lc.access = try append(b.a, AccessRule, lc.access, b.accessRule(d));
         } else if (eq(n, "access_log")) {
             if (eq(a0, "off")) {
                 lc.access_logs = null;
-                lc.set_flags.access_log = true;
+                flags.access_log = true;
                 return;
             }
-            if (!lc.set_flags.access_log or lc.access_logs == null) {
+            if (!flags.access_log or lc.access_logs == null) {
                 lc.access_logs = &.{};
-                lc.set_flags.access_log = true;
+                flags.access_log = true;
             }
+            const allowed: usize = if (d.args.len > 1 and std.mem.indexOfScalar(u8, d.args[1], '=') == null) 2 else 1;
+            if (d.args.len > allowed) return b.emerg(d, "access_log buffering, compression and conditions are not supported", .{});
             var fmt: *const LogFormat = b.log_formats.items[0];
             if (d.args.len > 1 and std.mem.indexOfScalar(u8, d.args[1], '=') == null) {
                 var found = false;
@@ -713,24 +532,47 @@ const Builder = struct {
                 if (!found) return b.emerg(d, "unknown log format \"{s}\"", .{d.args[1]});
             }
             const path = if (eq(a0, "stderr") or eq(a0, "/dev/stderr") or eq(a0, "/dev/stdout")) a0 else if (std.mem.startsWith(u8, a0, "syslog:")) blk: {
-                b.warn(d, "access_log syslog target is not supported, using stderr", .{});
+                b.emerg(d, "access_log syslog target is not supported", .{});
                 break :blk "stderr";
             } else try b.fullPath(a0);
             lc.access_logs = try append(b.a, AccessLog, lc.access_logs.?, .{ .path = path, .format = fmt });
         } else if (eq(n, "client_max_body_size")) {
             lc.client_max_body_size = parseSize(a0) orelse return b.emerg(d, "\"client_max_body_size\" directive invalid value", .{});
+        } else if (eq(n, "fastcgi_pass")) {
+            if (std.mem.startsWith(u8, a0, "unix:")) {
+                b.warn(d, "FastCGI Unix sockets are not supported; location answers 502", .{});
+                lc.unsupported_handler = "fastcgi_pass";
+                return;
+            }
+            if (std.mem.indexOfAny(u8, a0, "/$") != null) return b.emerg(d, "fastcgi_pass requires host:port or upstream name", .{});
+            if (lc.proxy != null or lc.gateway != .http) return b.emerg(d, "duplicate content handler", .{});
+            lc.gateway = .fastcgi;
+            try b.pending_proxies.append(b.a, .{ .conf = lc, .target = try std.fmt.allocPrint(b.a, "http://{s}", .{a0}), .d = d });
+        } else if (eq(n, "fastcgi_param")) {
+            if (!flags.fastcgi_param) {
+                lc.fastcgi_params = &.{};
+                flags.fastcgi_param = true;
+            }
+            if (d.args.len == 3 and !eq(d.args[2], "if_not_empty")) return b.emerg(d, "unsupported fastcgi_param option", .{});
+            lc.fastcgi_params = try append(b.a, HeaderSet, lc.fastcgi_params, .{ .name = a0, .value = b.compileExpr(d, d.args[1]), .if_not_empty = d.args.len == 3 });
+        } else if (eq(n, "fastcgi_index")) {
+            lc.fastcgi_index = a0;
+        } else if (eq(n, "fastcgi_read_timeout")) {
+            lc.proxy_read_timeout_ms = b.timeArg(d) orelse return;
+        } else if (eq(n, "fastcgi_intercept_errors")) {
+            lc.proxy_intercept_errors = flag(d);
         } else if (eq(n, "proxy_pass")) {
             try b.pending_proxies.append(b.a, .{ .conf = lc, .target = a0, .d = d });
         } else if (eq(n, "proxy_set_header")) {
-            if (!lc.set_flags.proxy_set_header) {
+            if (!flags.proxy_set_header) {
                 lc.proxy_set_headers = &.{};
-                lc.set_flags.proxy_set_header = true;
+                flags.proxy_set_header = true;
             }
             lc.proxy_set_headers = try append(b.a, HeaderSet, lc.proxy_set_headers, .{ .name = d.args[0], .value = b.compileExpr(d, d.args[1]) });
         } else if (eq(n, "proxy_hide_header")) {
-            if (!lc.set_flags.proxy_hide) {
+            if (!flags.proxy_hide) {
                 lc.proxy_hide_headers = &.{};
-                lc.set_flags.proxy_hide = true;
+                flags.proxy_hide = true;
             }
             lc.proxy_hide_headers = try append(b.a, []const u8, lc.proxy_hide_headers, a0);
         } else if (eq(n, "proxy_http_version")) {
@@ -821,7 +663,7 @@ const Builder = struct {
         } else if (eq(n, "expires")) {
             lc.expires = b.parseExpires(d);
         } else if (eq(n, "error_log")) {
-            // server/location error logs are folded into the main error log
+            lc.error_log = try b.parseErrorLog(d);
         } else if (eq(n, "limit_except")) {
             var rules: std.ArrayList(AccessRule) = .empty;
             for (d.block.?) |*x| {
@@ -829,6 +671,10 @@ const Builder = struct {
                 if (eq(x.name, "allow") or eq(x.name, "deny")) try rules.append(b.a, b.accessRule(x));
             }
             lc.limit_except = .{ .methods = d.args, .access = try rules.toOwnedSlice(b.a) };
+        } else if (eq(n, "http2")) {
+            if (srv) |s| s.http2 = flag(d) else b.http_http2 = flag(d);
+        } else if (eq(n, "http3")) {
+            if (srv) |s| s.http3 = flag(d) else b.http_http3 = flag(d);
         } else if (std.mem.startsWith(u8, n, "ssl_")) {
             try b.applySsl(if (srv) |s| &s.tls else &b.http_tls, d);
         }
@@ -1041,6 +887,8 @@ const Builder = struct {
             .file = d.file,
             .line = d.line,
             .tls = b.http_tls,
+            .http2 = b.http_http2,
+            .http3 = b.http_http3,
             .client_header_timeout_ms = b.http_header_timeout_ms,
             .merge_slashes = b.http_merge_slashes,
         };
@@ -1106,19 +954,23 @@ const Builder = struct {
                 o.default_server = true;
             } else if (eq(p, "ssl")) {
                 o.ssl = true;
+            } else if (eq(p, "http2")) {
+                o.http2 = true;
+            } else if (eq(p, "quic")) {
+                o.quic = true;
+                o.ssl = true;
             } else if (eq(p, "reuseport")) {
                 o.reuseport = true;
             } else if (std.mem.startsWith(u8, p, "backlog=")) {
                 o.backlog = std.fmt.parseInt(i32, p[8..], 10) catch 511;
             } else if (std.mem.startsWith(u8, p, "ipv6only=")) {
                 o.ipv6only = eq(p[9..], "on");
-            } else if (eq(p, "http2") or eq(p, "quic") or eq(p, "proxy_protocol") or eq(p, "deferred") or eq(p, "bind") or
+            } else if (eq(p, "proxy_protocol") or eq(p, "deferred") or eq(p, "bind") or
                 std.mem.startsWith(u8, p, "so_keepalive") or std.mem.startsWith(u8, p, "rcvbuf=") or std.mem.startsWith(u8, p, "sndbuf=") or
                 std.mem.startsWith(u8, p, "fastopen=") or std.mem.startsWith(u8, p, "accept_filter=") or std.mem.startsWith(u8, p, "setfib="))
             {
                 const gop = try b.warned.getOrPut(b.a, p);
                 if (!gop.found_existing) b.warn(d, "listen parameter \"{s}\" is not supported, ignored", .{p});
-                if (eq(p, "quic")) return; // QUIC listeners are UDP; skip entirely
             } else {
                 return b.emerg(d, "invalid parameter \"{s}\"", .{p});
             }
@@ -1231,11 +1083,11 @@ const Builder = struct {
             // A wildcard socket for a port takes over concrete-address listens on that port.
             var key = p.addr;
             for (pend) |q| {
-                if (q.addr.family == p.addr.family and q.addr.port == p.addr.port and q.addr.isWildcard()) key.ip = @splat(0);
+                if (q.opts.quic == p.opts.quic and q.addr.family == p.addr.family and q.addr.port == p.addr.port and q.addr.isWildcard()) key.ip = @splat(0);
             }
             var idx: ?usize = null;
             for (socks.items, 0..) |s, i| {
-                if (s.addr.eql(key)) idx = i;
+                if (s.opts.quic == p.opts.quic and s.addr.eql(key)) idx = i;
             }
             if (idx == null) {
                 try socks.append(b.a, .{ .addr = key, .opts = p.opts, .entries = &.{} });
@@ -1244,6 +1096,7 @@ const Builder = struct {
             } else {
                 const s = &socks.items[idx.?];
                 s.opts.ssl = s.opts.ssl or p.opts.ssl;
+                s.opts.http2 = s.opts.http2 or p.opts.http2;
                 s.opts.reuseport = s.opts.reuseport or p.opts.reuseport;
             }
             const es = &entries.items[idx.?];
@@ -1332,7 +1185,7 @@ pub fn parseTimeMs64(s: []const u8) ?u64 {
 /// Build the semantic config from a parsed AST. Takes ownership of `ast`.
 pub fn build(gpa: std.mem.Allocator, ast: parser.Ast, opts: Options, diag: *Diag) Error!*Config {
     const cfg = try gpa.create(Config);
-    cfg.* = .{ .arena = .init(gpa), .ast = ast, .prefix = opts.prefix, .conf_file = "" };
+    cfg.* = .{ .arena = .init(gpa), .source_arena = ast.arena, .source_files = ast.files, .prefix = opts.prefix, .conf_file = "" };
     var b: Builder = .{ .a = cfg.arena.allocator(), .gpa = gpa, .diag = diag, .opts = opts, .cfg = cfg };
     cfg.error_log.path = b.fullPath("logs/error.log") catch return error.OutOfMemory;
     b.buildMain(ast.root) catch |e| {
@@ -1462,4 +1315,39 @@ test "config errors are nginx-like" {
     defer diag.deinit();
     try t.expectError(error.ConfigFailed, loadString(t.allocator, "foo bar;", .{ .prefix = "/p", .conf_prefix = "/p", .strict = true }, &diag));
     try t.expect(diag.has("unknown directive \"foo\" in test.conf:1"));
+}
+
+test "HTTP protocol inheritance and TCP/QUIC socket separation" {
+    const t = std.testing;
+    var diag: Diag = .{ .gpa = t.allocator };
+    defer diag.deinit();
+    const cfg = try loadString(t.allocator,
+        \\events {}
+        \\http {
+        \\  http2 on;
+        \\  server {
+        \\    listen 127.0.0.1:8443 ssl default_server;
+        \\    listen 127.0.0.1:8443 quic default_server;
+        \\    server_name first;
+        \\  }
+        \\  server {
+        \\    listen 127.0.0.1:8443 ssl;
+        \\    listen 127.0.0.1:8443 quic;
+        \\    http2 off;
+        \\    http3 off;
+        \\    server_name second;
+        \\  }
+        \\}
+    , .{ .prefix = "/tmp/", .conf_prefix = "/tmp/" }, &diag);
+    defer destroy(t.allocator, cfg);
+    try t.expectEqual(@as(usize, 2), cfg.listens.len);
+    try t.expect(!cfg.listens[0].opts.quic);
+    try t.expect(cfg.listens[1].opts.quic);
+    try t.expect(cfg.listens[1].opts.ssl);
+    for (cfg.listens) |l| try t.expectEqual(@as(usize, 2), l.entries.len);
+    try t.expect(cfg.servers[0].http2);
+    try t.expect(cfg.servers[0].http3);
+    try t.expect(!cfg.servers[1].http2);
+    try t.expect(!cfg.servers[1].http3);
+    try t.expectEqual(@as(usize, 0), cfg.ignored_count);
 }

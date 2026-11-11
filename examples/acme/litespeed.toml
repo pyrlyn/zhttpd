@@ -1,0 +1,10 @@
+[server]
+compatibility = "litespeed"
+config = "httpd_config.conf"
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-litespeed"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

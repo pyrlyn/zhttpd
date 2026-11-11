@@ -1,0 +1,12 @@
+[server]
+compatibility = "caddy"
+config = "Caddyfile"
+
+[acme]
+domains = ["example.com", "*.example.com", "other.net"]
+challenge = "dns-01"
+dns_provider = "cloudflare"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-dns-caddy"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

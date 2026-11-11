@@ -12,8 +12,8 @@
 //!
 //! The result is a generic AST: every directive is kept, whether or not zhttpd knows it.
 const std = @import("std");
-const os = @import("../os.zig");
-const Diag = @import("diag.zig").Diag;
+const os = @import("http").os;
+const Diag = @import("http").diag.Diag;
 
 pub const Directive = struct {
     name: []const u8,

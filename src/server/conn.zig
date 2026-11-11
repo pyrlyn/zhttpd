@@ -6,12 +6,13 @@
 //! body that must be kept for `proxy_pass` (bounded by `client_max_body_size`).
 const std = @import("std");
 const c = std.c;
-const config = @import("../conf/config.zig");
-const Addr = @import("../conf/addr.zig").Addr;
+const config = @import("../http/config.zig");
+const Addr = @import("../http/addr.zig").Addr;
 const request = @import("../http/request.zig");
 const Request = request.Request;
 const net = @import("net.zig");
 const tls = @import("tls.zig");
+const multiplex = @import("multiplex.zig");
 const vars = @import("vars.zig");
 const handler = @import("handler.zig");
 const proxy = @import("proxy.zig");
@@ -27,7 +28,7 @@ pub const path_size = 8 * 1024;
 pub const Kind = enum(u8) { listener, client, upstream };
 pub const Tag = struct { kind: Kind };
 
-pub const State = enum { handshake, read_head, read_body, sending, proxy, lingering, closed };
+pub const State = enum { handshake, multiplexed, websocket, read_head, read_body, sending, proxy, lingering, closed };
 pub const BodyMode = enum { none, length, chunked };
 pub const AfterBody = enum { respond, proxy };
 
@@ -39,6 +40,9 @@ pub const Conn = struct {
     w: *Worker = undefined,
     fd: c_int = -1,
     ssl: ?*tls.SSL = null,
+    multiplex: ?*anyopaque = null,
+    stream_protocol: u8 = 0,
+    websocket: ?*@import("websocket").Session = null,
     listen: *const config.Listen = undefined,
     local: Addr = .{},
     peer: Addr = .{},
@@ -106,6 +110,9 @@ pub const Conn = struct {
         conn.listen = listen;
         conn.local = if (listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
         conn.ssl = null;
+        conn.multiplex = null;
+        conn.stream_protocol = 0;
+        conn.websocket = null;
         conn.state = .read_head;
         conn.requests = 0;
         conn.rlen = 0;
@@ -226,6 +233,14 @@ pub const Conn = struct {
         while (true) {
             const progressed = switch (conn.state) {
                 .handshake => conn.doHandshake(),
+                .multiplexed => blk: {
+                    multiplex.driveH2(conn);
+                    break :blk false;
+                },
+                .websocket => blk: {
+                    @import("websocket.zig").drive(conn);
+                    break :blk false;
+                },
                 .read_head => conn.readHead(),
                 .read_body => conn.readBody(),
                 .sending => conn.doSend(),
@@ -241,7 +256,14 @@ pub const Conn = struct {
         if (!tls.enabled) unreachable;
         switch (tls.handshake(conn.ssl.?)) {
             .ok => {
-                conn.state = .read_head;
+                if (multiplex.enabled and tls.isH2(conn.ssl.?)) {
+                    if (!multiplex.startH2(conn)) {
+                        conn.close();
+                        return false;
+                    }
+                    conn.state = .multiplexed;
+                    conn.deadline = 0; // per-stream request deadlines remain active
+                } else conn.state = .read_head;
                 return true;
             },
             .want_read, .want_write => return false,
@@ -262,6 +284,13 @@ pub const Conn = struct {
                     return true;
                 };
                 if (st == .complete) {
+                    if (conn.stream_protocol != 0) {
+                        // Internal wire framing is HTTP/1.1 for request bodies,
+                        // HTTP/1.0 for close-delimited responses. User variables
+                        // retain the actual client protocol separately.
+                        conn.req.version = .http10;
+                        conn.req.keep_alive = false;
+                    }
                     conn.startRequest();
                     return true;
                 }
@@ -320,7 +349,8 @@ pub const Conn = struct {
             .req = &conn.req,
             .uri = conn.req.path,
             .args = conn.req.args,
-            .scheme_https = conn.ssl != null,
+            .scheme_https = conn.ssl != null or conn.stream_protocol != 0,
+            .stream_protocol = conn.stream_protocol,
             .local = conn.local,
             .peer = conn.peer,
             .conn_id = conn.id,
@@ -357,6 +387,7 @@ pub const Conn = struct {
 
     /// The handler queued a response or a proxy action; decide about the body.
     pub fn afterHandler(conn: *Conn) void {
+        if (conn.state == .websocket) return;
         if (conn.body_mode != .none and !conn.close_after and !conn.drop) {
             if (conn.req.expect_continue and conn.body_pos == conn.rlen) {
                 if (conn.body_store) {
@@ -575,6 +606,12 @@ pub const Conn = struct {
         if (conn.state == .closed) return;
         conn.closeFile();
         proxy.release(conn);
+        multiplex.freeH2(conn);
+        if (conn.websocket) |session| {
+            session.deinit();
+            conn.w.gpa.destroy(session);
+            conn.websocket = null;
+        }
         if (tls.enabled) if (conn.ssl) |ssl| {
             tls.free(ssl);
             conn.ssl = null;

@@ -1,0 +1,10 @@
+[server]
+compatibility = "nginx"
+config = "nginx.conf"
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-nginx"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

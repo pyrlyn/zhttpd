@@ -1,0 +1,26 @@
+[server]
+compatibility = "caddy"
+config = "Caddyfile"
+
+[[acme.certificates]]
+name = "main"
+domains = ["example.com", "*.example.com"]
+email = "admin@example.com"
+accept_terms = false
+challenge = "dns-01"
+dns_provider = "cloudflare"
+dns_env_file = "cloudflare.env"
+storage = ".acme-sni-caddy"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+[[acme.certificates]]
+name = "other"
+domains = ["other.net"]
+email = "admin@example.com"
+accept_terms = false
+challenge = "dns-01"
+dns_provider = "route53"
+dns_env_file = "route53.env"
+storage = ".acme-sni-caddy"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+

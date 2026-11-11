@@ -1,0 +1,463 @@
+# Конфигурация zhttpd
+
+По умолчанию сервер читает `config.toml`. Пути в нём разрешаются относительно
+каталога этого файла; `server.prefix` меняет корень путей для ресурсов и журналов.
+`server.config` всегда отсчитывается от каталога TOML. Проверка без запуска:
+
+```sh
+mise run build
+mise exec -- zig-out/bin/zhttpd -t -c config.toml
+mise exec -- zig-out/bin/zhttpd -c config.toml
+```
+
+## Выбор совместимости и модулей
+
+```toml
+[modules]
+http = true
+self = true
+nginx = true
+apache = true
+litespeed = true
+caddy = true
+websocket = true
+fastcgi = true
+wsgi = true
+logging = true
+acme = true
+
+[server]
+compatibility = "nginx"
+config = "nginx.conf"
+prefix = "."
+pid = "server.pid"
+```
+
+`server.compatibility` **обязателен**: `self`, `nginx`, `apache`, `litespeed`
+или `caddy`. Неизвестное значение, отсутствующий выбор и выключенный выбранный
+адаптер — ошибки. Для внешних форматов обязателен `server.config`; для `self`
+он запрещён. Таблицы `http` разрешены только при `self`.
+
+Все перечисленные модули по умолчанию включены. Переключатели управляют
+конфигурацией и выполнением, а не исключают код из бинарного файла. Выключение
+`http` запрещает запуск HTTP-сервера. WSGI требует также `fastcgi`. Ссылка на
+выключенный обработчик — ошибка, в том числе после импорта nginx. Выключение
+`logging` отключает журналы запросов и ошибок рабочих процессов; диагностика
+запуска и управляющего процесса остаётся на stderr. Явный `[logging]` при
+`modules.logging=false` считается ошибкой.
+
+Для старых сценариев `-c nginx.conf` продолжает выбирать nginx без TOML.
+`--compatibility apache|litespeed|caddy -c FILE` выбирает другой прямой формат;
+переключатели модулей доступны через TOML.
+
+## Собственный формат HTTP
+
+```toml
+[server]
+compatibility = "self"
+
+[http]
+listen = "127.0.0.1:8080"
+response = "zhttpd\n"
+http2 = false
+http3 = false
+max_body_size = 1_048_576
+keepalive_timeout_ms = 75_000
+
+[[http.routes]]
+path = "/health"
+match = "exact"
+response = "ok\n"
+status = 200
+
+[[http.routes]]
+path = "/assets/"
+root = "public"
+
+[[http.routes]]
+path = "/api/"
+proxy = "http://127.0.0.1:9001/"
+
+[[http.routes]]
+path = "/socket"
+match = "exact"
+websocket = true
+```
+
+| Поле | Значение и поведение |
+| --- | --- |
+| `http.listen` | Обязательный IP/localhost/wildcard и порт; IPv6 в `[::1]:8080` |
+| `http.root` | Корень статических файлов; URI `/assets/a.css` ищет `ROOT/assets/a.css` |
+| `http.response` | Текст резервного ответа 200; несовместим с `http.root` и prefix-маршрутом `/` |
+| `http.index` | Имя индексного файла; по умолчанию `index.html` |
+| `http.http2` | HTTP/2 через TLS и ALPN; по умолчанию false |
+| `http.http3` | Дополнительный QUIC/UDP listener на том же адресе и порту; по умолчанию false |
+| `http.max_body_size` | Максимальный размер тела запроса в байтах; по умолчанию 1048576; 0 снимает ограничение |
+| `http.keepalive_timeout_ms` | Таймаут keep-alive и бездействия WebSocket; по умолчанию 75000 |
+| `routes.path` | Обязательный путь, начинающийся `/` |
+| `routes.match` | `prefix` по умолчанию или `exact`; exact имеет приоритет, затем самый длинный prefix |
+| `routes.status` | 200–599, только с `response`; по умолчанию 200 |
+
+Каждый маршрут имеет **ровно одно** действие: `response`, `root`, `proxy`,
+`websocket=true`, `fastcgi` или `wsgi`. Неизвестные поля и повторные маршруты
+одного вида — ошибки. Без `root`/`response` и резервного prefix `/` ответ — 404.
+Текущая нативная схема описывает один виртуальный сервер и один TCP-адрес;
+виртуальные хосты доступны через адаптеры.
+
+### TLS, HTTP/2 и HTTP/3
+
+```toml
+[http]
+listen = "0.0.0.0:8443"
+response = "secure\n"
+http2 = true
+http3 = true
+
+[http.tls]
+certificate = "certs/fullchain.pem"
+key = "certs/key.pem"
+```
+
+Оба пути TLS обязательны вместе. HTTP/2 и HTTP/3 требуют TLS и сборку
+`mise run build`. HTTP/2 без TLS (h2c), WebSocket extended CONNECT, server push
+и передача request trailers обработчикам пока не реализованы. Нативный формат
+не добавляет Alt-Svc автоматически: HTTP/3-клиент должен знать адрес; nginx
+адаптер позволяет объявить `add_header Alt-Svc 'h3=":8443"' always`.
+
+### FastCGI и WSGI
+
+```toml
+[[http.routes]]
+path = "/php/"
+fastcgi = "127.0.0.1:9000"
+
+[[http.routes]]
+path = "/app/"
+wsgi = "127.0.0.1:9002"
+```
+
+FastCGI v1, роль Responder: TCP, отдельное соединение на запрос, тело запроса
+буферизуется в пределах `max_body_size`, ответ передаётся потоком. Поддержаны
+PARAMS, STDIN, STDOUT, STDERR (дренируется, не становится ответом), END_REQUEST,
+CGI `Status`, Content-Type и Content-Length. Ошибка соединения/протокола даёт 502,
+таймаут — 504; после начала ответа соединение закрывается. Unix-сокеты,
+мультиплексирование и повторное использование FastCGI-соединений не реализованы.
+
+`SCRIPT_FILENAME` строится из `http.root` и нормализованного URI. Заголовок Proxy
+не превращается в HTTP_PROXY. Для WSGI SCRIPT_NAME пуст, PATH_INFO содержит
+полный путь запроса, включая `/app/`: префикс не отрезается.
+
+Python-шлюз работает отдельным процессом и использует стандартный
+`wsgiref.handlers.BaseCGIHandler` для PEP 3333. Запуск примера:
+
+```sh
+mise run wsgi -- --port 9002 --app-dir examples/wsgi --app app:application
+```
+
+Процесс шлюза запускает оператор или менеджер процессов. Шлюз обслуживает до
+32 запросов одновременно, допускает до 16 MiB тела и 128 KiB параметров,
+поддерживает `start_response`, `write`, итераторы, `close`, обработку исключений.
+Он предназначен для доверенного локального FastCGI-соединения.
+
+## Журналы
+
+```toml
+[logging]
+access = "logs/access.log" # также stdout, stderr, off
+format = "json"            # combined, common, json
+error = "stderr"
+level = "warn"             # emerg, alert, crit, error/err, warn, notice, info, debug
+```
+
+Каталоги журналов должны существовать. Файлы открываются с O_APPEND; сигнал
+USR1 переоткрывает журналы рабочих процессов после внешней ротации. Настройка
+`logging.access` заменяет access-журналы во всех импортированных locations.
+`logging.error` и `logging.level` задают общий журнал и его порог; отдельные
+server/location error-журналы адаптера имеют приоритет. `server.error_log`
+поддерживается как более ранний вариант общего пути, `[logging].error` сильнее.
+
+JSON — стабильная схема zhttpd: `time`, `remote_addr`, `method`, `uri`, `protocol`,
+`status` (число), `bytes` (число), `duration` (секунды). Ошибки используют общий
+текстовый формат zhttpd. Подробности импорта журналов — в
+[совместимости](compatibility.md).
+
+## Автоматический Let's Encrypt
+
+```toml
+[server]
+compatibility = "self"
+
+[http]
+listen = "0.0.0.0:443"
+response = "secure\n"
+http2 = true
+http3 = true
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = true
+storage = ".acme"
+# Сначала можно проверить выпуск через staging:
+# directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# client = "lego"
+# http_port = 80
+# renew_before_days = 30
+# check_interval_seconds = 43200
+```
+
+Используется lego 5.6.0 из mise. Первый запуск без сертификата выпускает его
+до открытия HTTPS. Затем управляющий процесс проверяет обновление каждые
+12 часов; при изменении сертификата перезагружает рабочие процессы. При ошибке
+обновления текущая TLS-конфигурация продолжает работать, повторная попытка —
+не позднее чем через час. `operation_timeout_seconds` ограничивает задание ACME
+(по умолчанию 600 секунд). `-t` не
+выпускает сертификаты; если они уже есть, проверяет их загрузку. До первого
+выпуска проверка пропускает только загрузку управляемого сертификата; TLS-опции
+и ручные сертификаты других виртуальных хостов проверяются всегда.
+
+HTTP-01 и DNS-01 работают во всех режимах: `self`, `nginx`, `apache`,
+`litespeed`, `caddy`. `domain = "example.com"` — сохранённая сокращённая запись
+для одного имени. Для нескольких имён задайте однострочный массив
+`domains = ["example.com", "www.example.com", "other.net"]`; одновременно
+`domain` и `domains` указывать нельзя. Все имена `[acme]` входят в **один SAN-сертификат**. Для отдельных
+сертификатов используйте `[[acme.certificates]]`, описанный ниже.
+Пустой список, повторы без учёта регистра и некорректные DNS-имена отклоняются.
+IDN задаются в ASCII/Punycode; завершающая точка не допускается.
+
+По умолчанию `challenge = "http-01"`. Каждое имя должно разрешаться на сервер,
+входящий TCP 80 должен быть доступен lego. Этот порт зарезервирован: zhttpd
+не может слушать его одновременно. `http_port` меняет локальный порт lego;
+при нестандартном порте оператор перенаправляет на него публичный TCP 80.
+Привилегии на привязку к портам настраивает оператор. HTTPS directory обязателен.
+
+`[acme]` несовместим с ручными `[http.tls]` путями. Сертификат и ключ сохраняются
+в `STORAGE/certificates/NAME.crt` и `.key`; учётная запись — в том же storage.
+Для одного имени NAME равен домену (`*` заменяется на `_`), для нескольких —
+`san-` плюс SHA-256 отсортированных нормализованных имён, каждое с завершающим `\n`.
+Перестановка имён сохраняет кеш; изменение набора создаёт отдельный сертификат,
+чтобы при запуске не использовать старые SAN. Старые файлы автоматически не удаляются.
+После изменения набора имён перезапустите zhttpd для первоначального выпуска
+нового сертификата; SIGHUP без готового сертификата сохраняет прежнюю конфигурацию.
+Продление существующего набора подхватывается без перезапуска master-процесса.
+Запускайте сервер через `mise exec -- …` или укажите полный путь `acme.client`.
+Реальный выпуск требует явного `accept_terms=true`.
+
+### Wildcard и DNS-01
+
+```toml
+[acme]
+domains = ["example.com", "*.example.com", "api.other.net"]
+email = "admin@example.com"
+accept_terms = true
+challenge = "dns-01"
+dns_provider = "cloudflare"
+storage = ".acme"
+# directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# dns_resolvers = ["1.1.1.1:53", "8.8.8.8:53"]
+# operation_timeout_seconds = 600
+```
+
+Wildcard требует DNS-01. `*.example.com` покрывает `www.example.com`, но не
+`example.com` и не `a.b.example.com`; добавьте apex отдельным элементом, если он
+тоже нужен. DNS-01 не открывает и не резервирует HTTP-порт: `http_port` в этом
+режиме не используется. lego создаёт TXT-записи `_acme-challenge`, ожидает
+распространения DNS, затем удаляет записи. Поведение challenge описано в
+[документации Let's Encrypt](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge).
+
+`dns_provider` — код автоматического провайдера из установленного lego;
+интерактивный `manual` запрещён. Один провайдер обслуживает весь SAN-набор:
+его учётные данные должны разрешать изменение всех нужных DNS-зон.
+Список провайдеров и обязательные переменные:
+
+```sh
+mise exec -- lego dnshelp
+mise exec -- lego dnshelp --code cloudflare
+```
+
+Секреты передаются в окружении процесса zhttpd, наследуемом lego, либо через
+`dns_env_file` конкретного сертификата. В TOML записывается только путь к файлу,
+а не сами секреты; в аргументах команды также передаётся только путь. Например, для Cloudflare задайте
+`CF_DNS_API_TOKEN_FILE=/absolute/private/cloudflare-token`; содержимое файла —
+токен с Zone:Read и DNS:Edit для нужных зон. Поддерживается и `CF_DNS_API_TOKEN`.
+См. [Cloudflare в lego](https://go-acme.github.io/lego/dns/cloudflare/) и
+[другие провайдеры](https://go-acme.github.io/lego/dns/).
+
+`dns_resolvers` — необязательный однострочный массив адресов рекурсивных DNS
+(например, `host:port` или `[IPv6]:port`); по умолчанию lego использует системные.
+Таймаут распространения и интервалы опроса задаются переменными выбранного
+провайдера. `operation_timeout_seconds` должен учитывать все имена и ожидание DNS.
+Дополнительная настройка `dns_propagation_wait_seconds` по умолчанию равна 0:
+lego проверяет распространение. Положительное значение **заменяет проверки lego
+фиксированным ожиданием**; CA всё равно проверяет TXT. Используйте это только
+при намеренном отключении предварительных DNS-проверок, например в локальном
+тестовом стенде. Значение должно быть меньше `operation_timeout_seconds`.
+DNS-настройки при `http-01` отклоняются. `-t` проверяет синтаксис, но не обращается
+к API провайдера и не проверяет его учётные данные; ошибки провайдера видны при выпуске.
+
+### Отдельные сертификаты и SNI
+
+`[[acme.certificates]]` работает в `self`, nginx, Apache, OpenLiteSpeed и Caddy.
+Каждая запись описывает независимый сертификат: свой SAN-набор, DNS-провайдер,
+учётные данные, ACME directory, storage и расписание продления. Например:
+
+```toml
+[server]
+compatibility = "nginx"
+config = "nginx.conf"
+
+[[acme.certificates]]
+name = "main"
+domains = ["example.com", "*.example.com"]
+email = "admin@example.com"
+accept_terms = true
+challenge = "dns-01"
+dns_provider = "cloudflare"
+dns_env_file = "secrets/cloudflare.env"
+storage = ".acme"
+
+[[acme.certificates]]
+name = "other"
+domains = ["other.net"]
+email = "admin@example.com"
+accept_terms = true
+challenge = "dns-01"
+dns_provider = "route53"
+dns_env_file = "secrets/route53.env"
+storage = ".acme"
+```
+
+У каждой записи обязательны уникальный `name` (буквы ASCII, цифры, `_`, `-`),
+`domain` или `domains`, контактный email и `accept_terms=true`. Остальные поля
+имеют те же значения по умолчанию, что и в `[acme]`. Настройки между записями
+не наследуются. Старый `[acme]` поддерживается; его настройки нельзя смешивать
+с `[[acme.certificates]]`. Модуль по-прежнему отключается через `modules.acme=false`.
+
+SNI выбирает сертификат среди назначенных виртуальному хосту: точное SAN-имя
+имеет приоритет перед wildcard независимо от порядка записей. Поэтому можно
+добавить отдельный сертификат для `api.example.com`, оставив `*.example.com`
+для остальных поддоменов. Одинаковое SAN-имя в двух сертификатах запрещено;
+`*.example.com` и `api.example.com` считаются разными именами и допускаются.
+Правило одного уровня wildcard сохраняется.
+
+Имена одного виртуального хоста могут обслуживаться разными сертификатами:
+например, nginx `server_name example.com *.example.com other.net;`.
+HTTP-маршруты остаются общими, сертификат выбирается во время TLS handshake.
+Отдельные виртуальные хосты на одном сокете также поддерживаются. Все aliases
+управляемого хоста должны покрываться объединением его сертификатов.
+Ручные сертификаты посторонних виртуальных хостов сохраняются.
+В `self` все записи назначаются общему HTTPS listener.
+Без SNI или при неизвестном имени используется первый назначенный сертификат
+виртуального хоста по умолчанию; изменение порядка может изменить этот fallback.
+Выбор SNI применяется к TLS для HTTP/1.1, HTTP/2 и HTTP/3.
+
+`dns_env_file` — необязательный путь к dotenv-файлу, относительно корня
+конфигурации, как `storage`. Он поддерживается и в старом `[acme]` при DNS-01.
+Файл должен быть доступным, непустым и не больше 1 MiB. `-t` проверяет доступность
+файла без обращения к DNS API; lego разбирает его при запуске задания.
+Отсутствующий файл — ошибка, подмена общим окружением не выполняется.
+В lego 5.6.0 значения dotenv переопределяют одноимённые переменные окружения
+только в дочернем процессе; остальные переменные наследуются. Это позволяет
+использовать как разные провайдеры, так и разные аккаунты одного провайдера.
+Каждое задание читает свой файл заново. Формат описан в
+[документации lego](https://go-acme.github.io/lego/dns/#dotenv-file).
+
+Пример `cloudflare.env`:
+
+```dotenv
+CF_DNS_API_TOKEN=YOUR_CLOUDFLARE_TOKEN
+```
+
+Пример `route53.env`:
+
+```dotenv
+AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY
+AWS_REGION=us-east-1
+```
+
+Права и альтернативные способы авторизации описаны у
+[Cloudflare](https://go-acme.github.io/lego/dns/cloudflare/) и
+[Route 53](https://go-acme.github.io/lego/dns/route53/).
+Храните реальные env-файлы вне git, с доступом только пользователю сервера.
+Для каждого SAN-набора нужен доступ ко всем его DNS-зонам через выбранный провайдер.
+Можно сочетать HTTP-01 и DNS-01 в разных записях; DNS-поля разрешены только у DNS-01.
+
+При первом запуске недостающие сертификаты выпускаются последовательно до
+открытия HTTPS. Ошибка первоначального выпуска прерывает запуск.
+Затем каждый сертификат имеет собственный срок проверки, повторной попытки
+и `operation_timeout_seconds`. Одновременно запускается одно задание lego:
+это позволяет использовать общий HTTP-01 порт и storage без конфликтов.
+После завершения или таймаута неудачного задания очередь продолжает работу;
+действующие TLS-сертификаты сохраняются, другие сертификаты продлеваются.
+Обновление сертификата перезагружает рабочие процессы, сохраняя сроки остальных
+заданий. Перестановка записей при SIGHUP не меняет принадлежность выполняющегося
+задания. Для добавления SAN/нового сертификата без готовых файлов нужен перезапуск,
+как для одиночного `[acme]`.
+
+`name` используется в диагностике, а пути сертификатов по-прежнему определяются
+SAN-набором и `storage`; переименование записи не вызывает перевыпуск.
+Полные конфиги пяти режимов: [examples/acme/sni](../examples/acme/sni/README.md).
+
+### ACME с конфигурацией другого сервера
+
+Один и тот же раздел `[acme]` работает со всеми адаптерами:
+
+```toml
+[server]
+compatibility = "nginx" # apache, litespeed или caddy
+config = "nginx.conf"  # путь к исходному конфигу выбранного формата
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = true
+storage = ".acme"
+```
+
+В исходном конфиге укажите **HTTPS** и имена из `acme.domains` (или `acme.domain`):
+
+| Режим | Выбор виртуального хоста |
+| --- | --- |
+| nginx | `listen 443 ssl;` и `server_name example.com;` |
+| Apache | `Listen 443`, `<VirtualHost *:443>`, `SSLEngine on`, `ServerName example.com` |
+| OpenLiteSpeed | `listener` с `secure 1` и `map site example.com` |
+| Caddy | site `https://example.com` (или `example.com`) |
+
+Пути ручных сертификатов можно не задавать. После импорта ACME назначает
+свои certificate/key совпавшим HTTPS-хостам; если там уже указаны
+ручные пути, `[acme]` имеет приоритет. Конфиги на диске не переписываются.
+Другие хосты сохраняют свои TLS-настройки и сертификаты, включая хосты на том
+же сокете. Совпадение не зависит от регистра. Точный хост также может быть
+покрыт wildcard-сертификатом. Wildcard-хост `*.example.com` требует такого же
+wildcard в SAN. Для nginx используйте `server_name example.com *.example.com;`,
+для Apache — `ServerName example.com` и `ServerAlias *.example.com`, для
+OpenLiteSpeed — `map site example.com,*.example.com`, для Caddy —
+`https://example.com, https://*.example.com { … }`.
+
+Все имена выбранного виртуального хоста должны покрываться SAN назначенных сертификатов: частично
+покрытые aliases вызывают ошибку. Regex, завершающий wildcard (`www.*`) и
+сокращение nginx `.example.com` не используются для назначения ACME-сертификата;
+укажите точные имена и `*.example.com` явно. Имена из исходных конфигов
+автоматически в SAN не добавляются. В `self` весь набор назначается общему
+HTTPS listener. `[acme]` задаёт один сертификат для нескольких виртуальных
+хостов; `[[acme.certificates]]` задаёт отдельные сертификаты с выбором через SNI.
+
+Отсутствие совпадающего HTTPS-хоста, `ssl_reject_handshake on` у выбранного
+хоста или конфликт с портом HTTP-01 — ошибки конфигурации. Plain HTTP listeners
+не превращаются в HTTPS автоматически. В Caddy `[acme]` действует и на
+импортированные Caddyfile-файлы. Без `[acme]` HTTPS по-прежнему требует ручных
+сертификатов. Прямой запуск `-c nginx.conf` не включает ACME: для автоматического
+выпуска используйте TOML-обёртку.
+
+Полные примеры: [examples/acme](../examples/acme/README.md).
+
+## Синтаксис
+
+Поддерживается строгая прикладная часть TOML: перечисленные таблицы,
+`[[http.routes]]`, `[[acme.certificates]]`, однострочные строки в одинарных/двойных кавычках, escape и
+Unicode в basic strings, boolean, неотрицательные десятичные целые с `_`,
+однострочные массивы строк для `domains` и `dns_resolvers` в настройках ACME, комментарии.
+Не поддерживаются произвольные/многострочные массивы, inline tables, даты,
+float, многострочные строки и quoted keys. Неизвестные/повторные таблицы и
+ключи отклоняются. Размер TOML ограничен 1 MiB.

@@ -2,9 +2,9 @@
 //! the default nginx.conf + mime.types from the nginx 1.30.6 tarball and a
 //! Debian-style layout (conf.d/, sites-enabled/ symlinks, snippets, certbot options).
 const std = @import("std");
-const config = @import("conf/config.zig");
-const Diag = @import("conf/diag.zig").Diag;
-const router = @import("server/router.zig");
+const config = @import("nginx").config;
+const Diag = @import("http").diag.Diag;
+const router = @import("http").server.router;
 const tst = std.testing;
 
 fn load(path: []const u8, diag: *Diag) !*config.Config {
@@ -15,7 +15,9 @@ fn load(path: []const u8, diag: *Diag) !*config.Config {
     const dir = std.fs.path.dirname(abs).?;
     const conf_prefix = try std.fmt.allocPrint(tst.allocator, "{s}/", .{dir});
     defer tst.allocator.free(conf_prefix);
-    const cfg = try config.load(tst.allocator, try tst.allocator.dupe(u8, abs), .{ .prefix = "/tmp/zhttpd-test/", .conf_prefix = conf_prefix, .quiet_ignored = true }, diag);
+    const owned_path = try tst.allocator.dupe(u8, abs);
+    errdefer tst.allocator.free(owned_path);
+    const cfg = try config.load(tst.allocator, owned_path, .{ .prefix = "/tmp/zhttpd-test/", .conf_prefix = conf_prefix, .quiet_ignored = true }, diag);
     return cfg;
 }
 

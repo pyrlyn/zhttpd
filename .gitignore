@@ -39,3 +39,11 @@ __pycache__/
 *.pyc
 .DS_Store
 ._*
+
+deps/nghttp2-*/
+deps/nghttp3-*/
+deps/http-install/
+
+# ACME account keys and certificates (default and example stores)
+.acme/
+.acme-*/

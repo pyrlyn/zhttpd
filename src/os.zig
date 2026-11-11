@@ -12,7 +12,7 @@ pub const Kind = enum { file, dir, other };
 pub const Meta = struct { kind: Kind, size: u64, mtime: i64, ino: u64 = 0 };
 
 pub fn errnoNow() c.E {
-    return @enumFromInt(@as(u16, @intCast(c._errno().*)));
+    return @fromBackingInt(@intCast(@as(u16, @intCast(c._errno().*))));
 }
 
 pub fn errnoInt() c_int {
@@ -229,12 +229,12 @@ test "fnmatch" {
 
 /// Resolve a hostname with getaddrinfo (startup only). Appends unique addresses; false if none.
 pub fn resolve(alloc: std.mem.Allocator, host: []const u8, port: u16, out: anytype) bool {
-    const Addr = @import("conf/addr.zig").Addr;
+    const Addr = @import("http/addr.zig").Addr;
     const hz = alloc.dupeSentinel(u8, host, 0) catch return false;
     var res: ?*c.addrinfo = null;
     var hints = std.mem.zeroes(c.addrinfo);
     hints.socktype = c.SOCK.STREAM;
-    if (@intFromEnum(c.getaddrinfo(hz, null, &hints, &res)) != 0 or res == null) return false;
+    if (@backingInt(c.getaddrinfo(hz, null, &hints, &res)) != 0 or res == null) return false;
     defer c.freeaddrinfo(res.?);
     var found = false;
     var it: ?*c.addrinfo = res;
