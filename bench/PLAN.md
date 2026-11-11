@@ -59,6 +59,9 @@ Build zhttpd with `-Dtls=true -Dhttp=true` and nginx with both
 Use the same OpenSSL release for both. The modern suite measures 612-byte static
 responses at 4 and 16 connections, and 1 MiB responses at 4 connections;
 `STREAMS=16` concurrent request streams per connection is the default.
+The modern suites set `keepalive_requests 1000000000` on both servers so a
+fast, low-connection run does not benchmark the one-million-request reconnect
+boundary. Inspect the saved configuration when comparing older evidence.
 
 oha needs its optional `http3` feature. Version 1.16.0 can wait indefinitely for
 peer shutdown **after** its request tasks have drained. The supplied

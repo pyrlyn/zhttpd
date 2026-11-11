@@ -189,3 +189,5 @@ and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
 [bench/lima/README.md](bench/lima/README.md).
 The measured HTTPS optimization and its unmet 1.5x-nginx target are documented
 in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).
+HTTP/2 and HTTP/3 measurements, raw evidence and the remaining target failures
+are in [bench/H2-H3-OPTIMIZATION.md](bench/H2-H3-OPTIMIZATION.md).

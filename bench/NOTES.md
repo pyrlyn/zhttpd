@@ -22,7 +22,7 @@ setup, not `nginx.conf`.
 | Static files | `root bench/www` + `try_files` | `STATIC_DIR` mounted at `/static` (our patch); also advertises precompressed `.br`/`.gzip` variants |
 | TLS certs | `ssl_certificate` / `ssl_certificate_key` | `TLS_CERT` / `TLS_KEY` (already in upstream) |
 | TLS settings | `ssl_protocols TLSv1.3`, session cache + tickets from the same directives | dusty’s own TLS stack, ALPN `http/1.1` only; no nginx `ssl_session_cache` |
-| HTTP/2 | `http2 off` (zhttpd ignores the directive: not implemented) | ALPN does not offer `h2` |
+| HTTP/2 and HTTP/3 | default HTTP/1.1 suite: `http2 off`; dedicated suites enable HTTP/2 or QUIC on both servers | HTTP/1.1 only; excluded from the HTTP/2 and HTTP/3 suites |
 | Processes | `worker_processes auto` (16 on this Mac), `reuseport` | one process, zio executors `.auto` |
 | Timeouts | `keepalive_timeout 65` | none (the “tuned” variant) |
 | Dynamic `/baseline11` | nginx `return 200 "3"` (zhttpd implements `return`) | dusty handler (same body) |

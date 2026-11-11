@@ -1,0 +1,10 @@
+{
+  "source": "ps -Ao pid,ppid,%cpu,comm -r, top 15 processes",
+  "virtual_machine_process_cpu_percent": [
+    469.0,
+    262.6,
+    64.1,
+    12.4
+  ],
+  "note": "Multiple active VMs share the macOS host. Process names and IDs omitted."
+}

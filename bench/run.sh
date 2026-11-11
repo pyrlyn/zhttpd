@@ -87,10 +87,13 @@ for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024)):
 PY
 EVENTS=kqueue; [ "$(uname)" = Linux ] && EVENTS=epoll
 HTTP_DIRECTIVES='http2 off;'
+KEEPALIVE_REQUESTS=1000000
 [ "$HTTP_VERSION" = 1.1 ] || HTTP_DIRECTIVES='http2 on;'
+[ "$HTTP_VERSION" = 1.1 ] || KEEPALIVE_REQUESTS=1000000000
 [ "$HTTP_VERSION" != 3 ] || HTTP_DIRECTIVES="http2 on; listen $TLSPORT quic reuseport;"
 sed -e "s#@ROOT@#$ROOT#g" -e "s#@PORT@#$PORT#g" -e "s#@TLSPORT@#$TLSPORT#g" -e "s#use kqueue;#use $EVENTS;#" -e "s#worker_processes auto;#worker_processes $WORKERS;#" \
     -e "s#http2 off;#$HTTP_DIRECTIVES#" \
+    -e "s#keepalive_requests 1000000;#keepalive_requests $KEEPALIVE_REQUESTS;#" \
     "$CONF_TEMPLATE" > "$BENCH/nginx.conf"
 cp "$BENCH/nginx.conf" "$OUT/nginx.conf"
 
