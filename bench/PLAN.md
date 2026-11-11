@@ -41,7 +41,8 @@ Fair nginx tuning in the template:
 zhttpd applies the same directives it implements (including TLS settings from
 `ssl_*`, `reuseport`, and `http2 off`). Compatibility is not identical: for
 example, its TLS session cache is per worker rather than nginx's shared cache.
-The selected scenarios exercise HTTP/1.1; HTTP/2 and HTTP/3 are tested separately.
+The default scenarios exercise HTTP/1.1. Set `HTTP_VERSION=2` or `HTTP_VERSION=3`
+for separate modern-protocol measurements with the same rendered configuration.
 
 ## Load tool, files, certs
 
@@ -49,8 +50,46 @@ The selected scenarios exercise HTTP/1.1; HTTP/2 and HTTP/3 are tested separatel
 - Static files generated deterministically in `bench/www/static/`: 612 B HTML,
   64 KiB and 1 MiB random binaries (seed 42).
 - Self-signed ECDSA P-256 cert in `bench/certs/` (gitignored). HTTPS uses
-  `--insecure`. HTTP/2 is disabled on both servers (nginx `http2 off`, dusty
-  ALPN `http/1.1` only).
+  `--insecure`. The default HTTP/1.1 suite disables HTTP/2 on both servers.
+
+## HTTP/2 and HTTP/3
+
+Build zhttpd with `-Dtls=true -Dhttp=true` and nginx with both
+`--with-http_v2_module` and `--with-http_v3_module` (`scripts/build-nginx.sh`).
+Use the same OpenSSL release for both. The modern suite measures 612-byte static
+responses at 4 and 16 connections, and 1 MiB responses at 4 connections;
+`STREAMS=16` concurrent request streams per connection is the default.
+
+oha needs its optional `http3` feature. Version 1.16.0 can wait indefinitely for
+peer shutdown **after** its request tasks have drained. The supplied
+`oha-http3-drain.patch` ends that driver after reporting the completed request
+tasks, so peer idle time is not counted as load-test time. It changes neither
+request generation nor request latency accounting. Use the same patched binary
+for nginx, the saved baseline and the candidate:
+
+```bash
+git clone https://github.com/hatoo/oha.git .run/oha-http3
+git -C .run/oha-http3 checkout c156bf3d442f5150fb1ad73e8c5144bd882ac4cd
+git -C .run/oha-http3 apply ../../bench/oha-http3-drain.patch
+cargo build --manifest-path .run/oha-http3/Cargo.toml --release --locked --features http3
+
+OHA="$PWD/.run/oha-http3/target/release/oha" \
+ZHTTPD="$PWD/zig-out/bin/zhttpd" ZHTTPD_BASELINE=/path/to/saved/zhttpd \
+NGINX="$PWD/tools/nginx/sbin/nginx" SERVERS="zhttpd-baseline nginx zhttpd" \
+HTTP_VERSION=2 WORKERS=1 SERVER_CPUS=0 LOAD_CPUS=1-7 \
+DURATION=10 WARMUP=2 REPS=4 bash bench/run.sh
+# Repeat with HTTP_VERSION=3. Check each result directory:
+python3 bench/check-target.py bench/results/TIMESTAMP 1.5
+```
+
+The single-core layout checks server capacity while leaving load-generator CPU
+headroom; also measure a multi-worker layout for scaling. Each JSON's `.err`
+sidecar records client CPU cores used and, on Linux, server-process CPU cores.
+The harness requires a successful warmup and applies an outer process deadline
+in addition to oha's request timeout. A timeout or any HTTP/load error invalidates
+the sample. The target gate requires every scenario to reach 1.5× nginx with
+median p99 no worse than nginx and the supplied baseline; an isolated passing
+scenario is not a suite-wide success.
 
 ## Scenarios
 

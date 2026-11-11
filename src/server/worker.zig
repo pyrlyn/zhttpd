@@ -20,6 +20,7 @@ pub const Listener = struct {
     listen: *const config.Listen,
     sni: ?*tls.SniTable = null,
     quic: ?*anyopaque = null,
+    pending: bool = false,
     worker: ?*Worker = null,
 };
 
@@ -157,10 +158,14 @@ pub const Worker = struct {
             if (sig_quit and !w.stopping) w.beginStop();
             if (w.stopping and w.nconns == 0) break;
             var modern = false;
-            for (w.listeners) |l| modern = modern or l.quic != null;
+            var pending = w.posted_head != null;
+            for (w.listeners) |l| {
+                modern = modern or l.quic != null;
+                pending = pending or l.pending;
+            }
             var cn_it = w.active;
             while (cn_it) |cn| : (cn_it = cn.next) modern = modern or cn.multiplex != null;
-            const evs = w.loop.wait(&events, if (w.posted_head != null) 0 else if (modern) 5 else 1000);
+            const evs = w.loop.wait(&events, if (pending) 0 else if (modern) 5 else 1000);
             w.updateTime();
             w.balancer.update(w.nconns);
             for (evs) |ev| w.dispatch(ev);
@@ -168,7 +173,7 @@ pub const Worker = struct {
             cn_it = w.active;
             while (cn_it) |cn| {
                 cn_it = cn.next;
-                if (cn.state == .multiplexed) multiplex.driveH2(cn);
+                if (cn.state == .multiplexed and !cn.posted) multiplex.driveH2(cn);
             }
             w.runPosted();
             w.bury();
@@ -335,13 +340,16 @@ pub const Worker = struct {
         w.nconns -= 1;
         w.balancer.update(w.nconns);
         cn.prev = null;
-        cn.next = w.graveyard;
+        // Closing a codec also closes its request Conns. Preserve the active
+        // traversal's next pointers until the entire event batch is finished.
+        cn.grave_next = w.graveyard;
         w.graveyard = cn;
     }
 
     fn bury(w: *Worker) void {
         while (w.graveyard) |cn| {
-            w.graveyard = cn.next;
+            w.graveyard = cn.grave_next;
+            cn.grave_next = null;
             cn.next = w.pool;
             w.pool = cn;
         }
@@ -485,4 +493,35 @@ pub fn localOffset(now: i64) i64 {
     const t: c.time_t = @intCast(now);
     if (localtime_r(&t, &tm) == null) return 0;
     return tm.gmtoff;
+}
+
+test "nested codec teardown preserves active traversal until batch recycling" {
+    var w: Worker = undefined;
+    w.active = null;
+    w.pool = null;
+    w.graveyard = null;
+    w.nconns = 0;
+    w.balancer = .{};
+    var conns: [4]Conn = @splat(.{});
+    for (&conns) |*cn| {
+        cn.next = w.pool;
+        w.pool = cn;
+    }
+    const tail = w.acquire().?;
+    const child = w.acquire().?;
+    const parent = w.acquire().?;
+    const head = w.acquire().?;
+    const saved_next = parent.next;
+    w.release(child);
+    w.release(parent);
+    try std.testing.expect(w.active == head);
+    try std.testing.expect(head.next == tail);
+    try std.testing.expect(saved_next == child and child.next == tail);
+    try std.testing.expect(w.pool == null and w.nconns == 2);
+    w.bury();
+    try std.testing.expect(w.graveyard == null);
+    const reused = w.acquire().?;
+    try std.testing.expect(reused == child);
+    try std.testing.expect(reused.grave_next == null);
+    try std.testing.expect(reused.next == head and head.prev == reused);
 }

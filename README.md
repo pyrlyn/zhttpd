@@ -111,14 +111,20 @@ mise exec -- zig build -Dtls=true -Dhttp=true \
   -Dopenssl="$PWD/deps/openssl-install" -Dhttp-deps="$PWD/deps/http-install"
 ```
 
-The transport shares existing handlers through nonblocking socketpairs, one
-per request stream, with bounded buffering and flow control. There are up to
-32 concurrent request streams per connection. Stream handlers count toward
-`worker_connections`; each also needs a codec-side file descriptor. The worker
-services codec buffers and QUIC timers at intervals of at most 5 ms.
+The transport feeds existing handlers through bounded memory buffers (64 KiB
+request input and 32 KiB response output per stream), without internal sockets.
+There are up to 32 concurrent request streams per connection. Stream handlers
+count toward `worker_connections`. Ready codec work continues without a polling
+delay; idle QUIC timers are serviced at intervals of at most 5 ms. HTTP/2 frames
+are batched into TLS records, and QUIC stream I/O shares explicit event ticks.
+Each event-loop thread caches at most 32 reusable stream buffers (under 4 MiB
+total), and releases that cache when its last modern-protocol session closes.
 
-Each QUIC listen socket is owned by the first worker (including when
-`reuseport` is present). Current HTTP/2 and HTTP/3 connections are closed on
+On Linux, `listen ... quic reuseport` creates one UDP socket per worker; the
+kernel distributes connections by their UDP address/port tuple. Without this
+option, or on other platforms, each QUIC listener belongs to the first worker.
+Cross-worker QUIC connection migration is not implemented. Current HTTP/2 and
+HTTP/3 connections are closed on
 reload/graceful shutdown; clients reconnect to the new generation. Request
 trailers are validated by the codecs but are not exposed to handlers. Server
 push and extended CONNECT are not implemented. QUIC address validation uses

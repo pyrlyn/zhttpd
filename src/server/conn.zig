@@ -41,6 +41,7 @@ pub const Conn = struct {
     fd: c_int align(8) = -1,
     ssl: ?*tls.SSL = null,
     multiplex: ?*anyopaque = null,
+    transport_stream: ?*anyopaque = null,
     stream_protocol: u8 = 0,
     websocket: ?*@import("websocket").Session = null,
     tls_read: tls.ReadState align(8) = .{},
@@ -53,6 +54,7 @@ pub const Conn = struct {
     state: State align(8) = .read_head,
     prev: ?*Conn = null,
     next: ?*Conn = null,
+    grave_next: ?*Conn = null,
     posted: bool align(8) = false,
     posted_prev: ?*Conn = null,
     posted_next: ?*Conn = null,
@@ -114,9 +116,10 @@ pub const Conn = struct {
         conn.fd = fd;
         conn.peer = peer;
         conn.listen = listen;
-        conn.local = if (listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
+        conn.local = if (fd >= 0 and listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
         conn.ssl = null;
         conn.multiplex = null;
+        conn.transport_stream = null;
         conn.stream_protocol = 0;
         conn.websocket = null;
         conn.tls_read = .{};
@@ -128,7 +131,12 @@ pub const Conn = struct {
         conn.seg_i = 0;
         conn.file_fd = -1;
         conn.in_request = false;
-        conn.up = .{};
+        // Proxy start initializes its full state when needed. Idle teardown
+        // only reads these fields; avoid copying the unused 8 KiB FastCGI buffer
+        // for every HTTP/2 or HTTP/3 request that acquires a pooled Conn.
+        conn.up.fd = -1;
+        conn.up.phase = .idle;
+        conn.up.request_owned = null;
         conn.body.clearRetainingCapacity();
         conn.start_ms = 0;
         conn.deadline = w.now_ms + defaultServer(conn).client_header_timeout_ms;
@@ -141,6 +149,7 @@ pub const Conn = struct {
     // ------------------------------------------------------------- raw I/O (TLS aware)
 
     pub fn recv(conn: *Conn, buf: []u8) net.Io {
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.readStream(stream, buf);
         if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
             if (!conn.tls_read.ready and !conn.tls_read.eof and !conn.tls_read.want_write and !tls.hasPending(ssl)) return .again;
         };
@@ -160,6 +169,7 @@ pub const Conn = struct {
     }
 
     pub fn sendRaw(conn: *Conn, buf: []const u8) net.Io {
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.writeStream(stream, buf);
         if (tls.enabled) if (conn.ssl) |ssl| return switch (tls.write(ssl, buf)) {
             .ok => |n| .{ .ok = n },
             .want_read, .want_write => .again,
@@ -190,7 +200,7 @@ pub const Conn = struct {
         while (true) {
             while (conn.seg_i < conn.nsegs) {
                 const r = blk: {
-                    if (conn.ssl == null and conn.nsegs - conn.seg_i > 1) {
+                    if (conn.ssl == null and conn.transport_stream == null and conn.nsegs - conn.seg_i > 1) {
                         var iov: [4]c.iovec_const = undefined;
                         var n: usize = 0;
                         for (conn.segs[conn.seg_i..conn.nsegs]) |s| {
@@ -222,7 +232,21 @@ pub const Conn = struct {
                 }
             }
             if (conn.file_off >= conn.file_end) return .done;
-            if (conn.file_sendfile and conn.ssl == null) {
+            if (multiplex.enabled) if (conn.transport_stream) |stream| {
+                // Read into the codec's bounded output buffer directly, avoiding
+                // a second userspace copy through the HTTP/1 write buffer.
+                switch (multiplex.sendFile(stream, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
+                    .ok => |n| {
+                        conn.file_off += n;
+                        conn.ctx.bytes_sent += n;
+                        conn.deadline = conn.w.now_ms + conn.ctx.conf.send_timeout_ms;
+                    },
+                    .again => return .again,
+                    .eof, .err => return .err,
+                }
+                continue;
+            };
+            if (conn.file_sendfile and conn.ssl == null and conn.transport_stream == null) {
                 const r = net.sendFile(conn.fd, conn.file_fd, conn.file_off, conn.file_end - conn.file_off);
                 switch (r) {
                     .ok => |n| {
@@ -596,6 +620,10 @@ pub const Conn = struct {
     /// Half-close and drain the client's unread body for a while, so it sees our response
     /// instead of a reset (nginx `lingering_close`).
     fn startLinger(conn: *Conn) void {
+        if (conn.transport_stream != null) {
+            conn.close();
+            return;
+        }
         _ = c.shutdown(conn.fd, 1);
         conn.state = .lingering;
         conn.deadline = conn.w.now_ms + 5000;
@@ -648,7 +676,11 @@ pub const Conn = struct {
             tls.free(ssl);
             conn.ssl = null;
         };
-        net.close(conn.fd);
+        if (multiplex.enabled) if (conn.transport_stream) |stream| {
+            multiplex.finishStream(stream);
+            conn.transport_stream = null;
+        };
+        if (conn.fd >= 0) net.close(conn.fd);
         conn.fd = -1;
         conn.state = .closed;
         conn.w.release(conn);

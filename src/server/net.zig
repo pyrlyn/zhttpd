@@ -178,7 +178,7 @@ pub fn listenSocket(a: Addr, backlog: i32, reuseport: bool, ipv6only: bool, err_
     return fd;
 }
 
-pub fn listenUdp(a: Addr, ipv6only: bool, err_out: *c_int) error{ Socket, Bind, Listen }!c_int {
+pub fn listenUdp(a: Addr, reuseport: bool, ipv6only: bool, err_out: *c_int) error{ Socket, Bind, Listen }!c_int {
     const fam: c_uint = if (a.family == .v4) c.AF.INET else c.AF.INET6;
     const fd = c.socket(fam, c.SOCK.DGRAM, 0);
     if (fd < 0) {
@@ -187,6 +187,10 @@ pub fn listenUdp(a: Addr, ipv6only: bool, err_out: *c_int) error{ Socket, Bind, 
     }
     errdefer close(fd);
     setCloexec(fd);
+    if (reuseport and !setInt(fd, c.SOL.SOCKET, c.SO.REUSEPORT, 1)) {
+        err_out.* = errno();
+        return error.Socket;
+    }
     if (a.family == .v6) _ = setInt(fd, c.IPPROTO.IPV6, IPV6_V6ONLY, if (ipv6only) 1 else 0);
     var sa: SockAddr = undefined;
     const len = toSockAddr(a, &sa);

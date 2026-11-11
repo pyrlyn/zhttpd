@@ -8,6 +8,7 @@
 #   DURATION=15 REPS=3 bench/run.sh
 #   SCENARIO_FILTER='^https-' SERVERS="zhttpd nginx" bench/run.sh
 #   WORKERS=1 SERVER_CPUS=0 LOAD_CPUS=1-3 bench/run.sh # Linux CPU isolation
+#   HTTP_VERSION=3 STREAMS=16 SERVERS="zhttpd nginx" bench/run.sh # oha needs http3
 #
 # Output: bench/results/<timestamp>/ with one oha JSON per run, runs.csv, load.log,
 # the exact nginx.conf used, and RESULTS.md (also copied to bench/RESULTS.md).
@@ -31,6 +32,10 @@ fi
 PORT="${PORT:-48080}"; TLSPORT="${TLSPORT:-48443}"
 WORKERS="${WORKERS:-auto}"
 [[ "$WORKERS" =~ ^(auto|[1-9][0-9]*)$ ]] || { echo "invalid WORKERS" >&2; exit 1; }
+HTTP_VERSION="${HTTP_VERSION:-1.1}"
+STREAMS="${STREAMS:-16}"
+[[ "$HTTP_VERSION" =~ ^(1\.1|2|3)$ ]] || { echo "invalid HTTP_VERSION" >&2; exit 1; }
+[[ "$STREAMS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid STREAMS" >&2; exit 1; }
 # Optional Linux CPU isolation: pin both servers identically and keep the load
 # generator on separate CPUs so its own TLS work cannot hide server throughput.
 SERVER_RUN=(env); LOAD_RUN=(env)
@@ -81,7 +86,11 @@ for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024)):
         open(p, "wb").write(random.randbytes(size))
 PY
 EVENTS=kqueue; [ "$(uname)" = Linux ] && EVENTS=epoll
+HTTP_DIRECTIVES='http2 off;'
+[ "$HTTP_VERSION" = 1.1 ] || HTTP_DIRECTIVES='http2 on;'
+[ "$HTTP_VERSION" != 3 ] || HTTP_DIRECTIVES="http2 on; listen $TLSPORT quic reuseport;"
 sed -e "s#@ROOT@#$ROOT#g" -e "s#@PORT@#$PORT#g" -e "s#@TLSPORT@#$TLSPORT#g" -e "s#use kqueue;#use $EVENTS;#" -e "s#worker_processes auto;#worker_processes $WORKERS;#" \
+    -e "s#http2 off;#$HTTP_DIRECTIVES#" \
     "$CONF_TEMPLATE" > "$BENCH/nginx.conf"
 cp "$BENCH/nginx.conf" "$OUT/nginx.conf"
 
@@ -109,6 +118,11 @@ https-small-noka-c64|https|0|64|/static/small.html"
 fi
 
 # ---------------------------------------------------------------- helpers
+if [ "$HTTP_VERSION" != 1.1 ]; then
+  SCENARIOS="h$HTTP_VERSION-small-ka-c4-p$STREAMS|https|1|4|/static/small.html
+h$HTTP_VERSION-small-ka-c16-p$STREAMS|https|1|16|/static/small.html
+h$HTTP_VERSION-large-ka-c4-p$STREAMS|https|1|4|/static/large.bin"
+fi
 if [ -n "${SCENARIO_FILTER:-}" ]; then
   SCENARIOS=$(printf '%s\n' "$SCENARIOS" | grep -E "$SCENARIO_FILTER")
   [ -n "$SCENARIOS" ] || { echo "SCENARIO_FILTER matched no scenarios" >&2; exit 1; }
@@ -126,10 +140,22 @@ port_listening() {
   fi
 }
 
+udp_port_listening() {
+  if [ "$(uname)" = Darwin ]; then
+    lsof -nP -iUDP:"$1" >/dev/null 2>&1
+  else
+    ss -lnu "( sport = :$1 )" 2>/dev/null | grep -q ":$1"
+  fi
+}
+
 # Fail if something else is already bound — a leftover server would otherwise
 # make start_server succeed (curl hits the old process) and poison the results.
 require_ports_free() {
   local p
+  if [ "$HTTP_VERSION" = 3 ] && udp_port_listening "$TLSPORT"; then
+    echo "!! UDP port $TLSPORT is already bound; refusing HTTP/3 benchmark" >&2
+    return 1
+  fi
   for p in "$PORT" "$TLSPORT"; do
     if port_listening "$p"; then
       echo "!! port $p is already listening; refuse to start (leftover server?)" >&2
@@ -144,7 +170,7 @@ start_server() {
   case "$1" in
     zhttpd) "${SERVER_RUN[@]}" "$ZHTTPD" -p "$BENCH/run/zhttpd/" -c "$BENCH/nginx.conf" -q > "$OUT/zhttpd.stdout" 2>&1 & ;;
     zhttpd-baseline) "${SERVER_RUN[@]}" "${ZHTTPD_BASELINE:?set ZHTTPD_BASELINE}" -p "$BENCH/run/zhttpd-baseline/" -c "$BENCH/nginx.conf" -q > "$OUT/zhttpd-baseline.stdout" 2>&1 & ;;
-    nginx)  "${SERVER_RUN[@]}" "$NGINX" -p "$BENCH/run/nginx/" -c "$BENCH/nginx.conf" -g 'daemon off;' > "$OUT/nginx.stdout" 2>&1 & ;;
+    nginx)  env -u NGINX "${SERVER_RUN[@]}" "$NGINX" -p "$BENCH/run/nginx/" -c "$BENCH/nginx.conf" -g 'daemon off;' > "$OUT/nginx.stdout" 2>&1 & ;;
     dusty-tuned)
       ( cd "$BENCH/www" && PORT=$PORT TLS_PORT=$TLSPORT STATIC_DIR="$BENCH/www/static" \
         TLS_CERT="$BENCH/certs/cert.pem" TLS_KEY="$BENCH/certs/key.pem" exec "${SERVER_RUN[@]}" "$LEADER_BIN" ) > "$OUT/dusty.stdout" 2>&1 & ;;
@@ -221,10 +247,47 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   [ "$1" = https ] && port="$TLSPORT"
   local url="$1://127.0.0.1:$port$4"
   local args=(-c "$3" --no-tui --output-format json -w -t 10s)
+  if [ "$HTTP_VERSION" != 1.1 ]; then
+    args+=(--http-version "$HTTP_VERSION" -p "$STREAMS")
+  fi
   case "$5" in n*) args+=(-n "${5#n}") ;; *) args+=(-z "${5}s") ;; esac
   [ "$1" = https ] && args+=(--insecure)
   [ "$2" = 0 ] && args+=(--disable-keepalive)
-  "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$6.err"
+  local deadline error_file="$6.err"
+  [ "$6" != /dev/null ] || error_file=/dev/null
+  case "$5" in n*) deadline=120 ;; *) deadline=$(( ${5%.*} + 30 )) ;; esac
+  # Bound the process as well as each request: a stalled HTTP/3 driver must
+  # invalidate a sample instead of hanging forever while oha drains requests.
+  python3 - "${LOAD_TIMEOUT:-$deadline}" "$SERVER_PID" "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$error_file" <<'PY'
+import json, os, resource, subprocess, sys, time
+from pathlib import Path
+
+def server_cpu(pid):
+    if not Path('/proc').is_dir():
+        return None
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        own = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+        children = Path(f'/proc/{pid}/task/{pid}/children').read_text().split()
+        return own + sum(server_cpu(child) or 0 for child in children)
+    except FileNotFoundError:
+        return 0
+
+before = server_cpu(sys.argv[2])
+started = time.monotonic()
+try:
+    result = subprocess.run(sys.argv[3:], timeout=float(sys.argv[1]))
+    elapsed = time.monotonic() - started
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    after = server_cpu(sys.argv[2])
+    print(json.dumps({'elapsed': elapsed,
+                      'client_cpu_cores': (usage.ru_utime + usage.ru_stime) / elapsed,
+                      'server_cpu_cores': (after - before) / elapsed if before is not None else None}), file=sys.stderr)
+    sys.exit(result.returncode)
+except subprocess.TimeoutExpired:
+    print('load process exceeded its deadline', file=sys.stderr)
+    sys.exit(124)
+PY
 }
 
 # ---------------------------------------------------------------- run
@@ -238,9 +301,9 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   echo "zhttpd_binary: $ZHTTPD"
   [ -z "${ZHTTPD_BASELINE:-}" ] || echo "zhttpd-baseline: $ZHTTPD_BASELINE"
   echo "nginx: $("$NGINX" -V 2>&1 | tr '\n' ' ')"
-  python3 - "$ZHTTPD" "$NGINX" "${ZHTTPD_BASELINE:-}" <<'PY'
+  python3 - "$ZHTTPD" "$NGINX" "${ZHTTPD_BASELINE:-}" "$OHA" <<'PY'
 import hashlib, sys
-for label, path in zip(('zhttpd', 'nginx', 'zhttpd-baseline'), sys.argv[1:]):
+for label, path in zip(('zhttpd', 'nginx', 'zhttpd-baseline', 'oha'), sys.argv[1:]):
     if path:
         with open(path, 'rb') as binary:
             print(f'{label}_sha256: {hashlib.file_digest(binary, "sha256").hexdigest()}')
@@ -250,6 +313,7 @@ PY
 echo "leader: $LEADER_NAME ($(git -C "$LEADER_SRC" log -1 --format=%H 2>/dev/null))"
   echo "duration=${DURATION}s warmup=${WARMUP}s keepalive-off=${NOKA_N} requests reps=$REPS servers=[$SERVERS]"
   echo "workers=$WORKERS server_cpus=${SERVER_CPUS:-unbound} load_cpus=${LOAD_CPUS:-unbound} scenario_filter=${SCENARIO_FILTER:-all}"
+  echo "http_version=$HTTP_VERSION streams_per_connection=$STREAMS"
 } > "$OUT/env.txt"
 echo "rep,order,server,scenario,load_before,load_after,file" > "$OUT/runs.csv"
 cat "$OUT/env.txt"
@@ -271,7 +335,7 @@ for rep in $(seq 1 "$REPS"); do
       [ -z "$name" ] && continue
       wait_time_wait
       if [ "$ka" = 1 ]; then w="$WARMUP"; d="$DURATION"; else w="n500"; d="n$NOKA_N"; fi
-      oha_run "$scheme" "$ka" "$conns" "$path" "$w" /dev/null >/dev/null 2>&1
+      oha_run "$scheme" "$ka" "$conns" "$path" "$w" /dev/null >/dev/null 2>&1 || exit 1
       [ "$ka" = 0 ] && wait_time_wait
       lb=$(loadavg)
       f="$OUT/$name.$srv.r$rep.json"

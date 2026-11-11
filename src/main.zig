@@ -366,7 +366,7 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
         }
     }
     for (cfg.listens, 0..) |*l, li| {
-        const per_worker = builtin.os.tag == .linux and l.opts.reuseport and !l.opts.quic;
+        const per_worker = builtin.os.tag == .linux and l.opts.reuseport;
         const n: usize = if (per_worker) nw else 1;
         fds[li] = try gpa.alloc(c_int, n);
         @memset(fds[li], -1);
@@ -385,7 +385,7 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
                 continue;
             }
             var e: c_int = 0;
-            fds[li][k] = (if (l.opts.quic) net.listenUdp(l.addr, l.opts.ipv6only, &e) else net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e)) catch |err| {
+            fds[li][k] = (if (l.opts.quic) net.listenUdp(l.addr, per_worker, l.opts.ipv6only, &e) else net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e)) catch |err| {
                 var ab: [64]u8 = undefined;
                 const what = switch (err) {
                     error.Socket => "socket()",
@@ -420,9 +420,9 @@ fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize) c.pid_t {
         if (fds.len > 1) for (fds, 0..) |other, k| {
             if (k != idx % fds.len) net.close(other);
         };
-        // A single worker owns each QUIC socket: UDP packets of a connection
-        // must reach the same OpenSSL engine, including during worker restarts.
-        if (l.opts.quic and idx != 0) {
+        // Each QUIC socket has exactly one engine. Linux reuseport hashes a
+        // client's UDP tuple to its worker; a shared socket stays on worker 0.
+        if (l.opts.quic and fds.len == 1 and idx != 0) {
             net.close(fd);
             continue;
         }
@@ -732,14 +732,17 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             gpa.free(acme_jobs);
             acme_jobs = next_jobs;
             var next = ngen;
+            // Close obsolete master descriptors before fork. Otherwise new
+            // workers retain the old reuseport sockets without servicing them,
+            // leaving UDP packets assigned to an abandoned receive queue.
+            // Old workers retain their own descriptors until they shut down.
+            for (socks.items) |s| if (!s.used) net.close(s.fd);
+            for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
             for (next.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &next, k);
             for (gen.pids) |p| if (p > 0) {
                 _ = kill(p, SIGQUIT);
                 old.append(gpa, p) catch {};
             };
-            // close sockets the new generation does not use
-            for (socks.items) |s| if (!s.used) net.close(s.fd);
-            for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
             gen = next;
             if (owns_candidate) watcher.accept();
             eprint("zhttpd: [notice] reload complete\n", .{});

@@ -51,19 +51,22 @@ desc = {
 def describe(sc):
     parts = sc.split("-")
     proto, kind, ka, conns = parts[0].upper(), parts[1], parts[2], parts[3][1:]
-    return f"{desc.get(kind, kind)}, {'keep-alive' if ka == 'ka' else 'new connection per request'}, {conns} connections"
+    streams = f", {parts[4][1:]} streams per connection" if len(parts) > 4 and parts[4].startswith('p') else ""
+    return f"{desc.get(kind, kind)}, {'keep-alive' if ka == 'ka' else 'new connection per request'}, {conns} connections{streams}"
 
 lines = ["# zhttpd benchmark results", "",
          f"Raw data: `bench/results/{os.path.basename(out)}/` (oha JSON per run, runs.csv, load.log, nginx.conf).", "",
          "```", env.strip(), "```", "",
          "RPS = median over repetitions of successful (2xx) requests per second; [min-max] across repetitions.",
          "Latency = median of per-run percentiles (ms). `load` = median 1-min load average around the runs",
-         "(the Mac is shared; high load means noisy numbers). `vs nginx` compares median RPS.", ""]
-for proto in ("http", "https"):
+         "(load average is contextual, not CPU utilization). Per-run `.err` sidecars record CPU usage.",
+         "`vs nginx` compares median RPS; use `check-target.py` to enforce throughput, p99 and errors.", ""]
+for proto in ("http", "https", "h2", "h3"):
     scs = [s for s in scenarios if s.startswith(proto + "-")]
     if not scs:
         continue
-    lines += [f"## {'HTTPS (TLS 1.3)' if proto == 'https' else 'HTTP (plain)'}", ""]
+    title = {'http': 'HTTP (plain)', 'https': 'HTTPS (TLS 1.3)', 'h2': 'HTTP/2 (TLS 1.3)', 'h3': 'HTTP/3 (QUIC / TLS 1.3)'}[proto]
+    lines += [f"## {title}", ""]
     for sc in scs:
         lines += [f"### {sc}: {describe(sc)}", "",
                   "| server | RPS (median) | [min-max] | p50 ms | p90 ms | p99 ms | vs nginx | non-2xx/errors | load |",

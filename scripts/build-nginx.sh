@@ -8,7 +8,7 @@ bash "$ROOT/scripts/build-openssl.sh"
 cd "$D/nginx-1.30.6"
 ./configure --prefix="$ROOT/tools/nginx" --with-cc="$(mise which clang)" \
   --with-cc-opt="-O2 -I$D/openssl-install/include" --with-ld-opt="-L$D/openssl-install/lib" \
-  --with-http_ssl_module --with-http_v2_module --with-threads \
+  --with-http_ssl_module --with-http_v2_module --with-http_v3_module --with-threads \
   --with-pcre="$D/pcre2-10.49" --with-zlib="$D/zlib-1.3.1" >/dev/null
 mise exec -- make -j"$J" >/dev/null && mise exec -- make install >/dev/null
 "$ROOT/tools/nginx/sbin/nginx" -V
