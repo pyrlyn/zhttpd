@@ -3,16 +3,22 @@
 
 Usage: python3 bench/check-target.py bench/results/STAMP [ratio, default 1.5]
 Requires complete repetitions, zero errors, and median p99 no worse than nginx.
+CSV sample names must refer to regular files directly in the results directory.
 """
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import re
 import statistics
 import sys
 
-root = Path(sys.argv[1])
+# The operator selects the working directory; CSV data may only select files
+# already present there, never supply paths for filesystem reads.
+os.chdir(sys.argv[1])
+root = Path('.')
+sample_paths = {p.name: p for p in root.iterdir() if not p.is_symlink() and p.is_file()}
 target = float(sys.argv[2]) if len(sys.argv) > 2 else 1.5
 if not target > 0:
     raise SystemExit("ratio must be positive")
@@ -42,7 +48,10 @@ for scenario in scenarios:
             rates = []
             tails = []
             for row in samples:
-                data = json.loads((root / row["file"]).read_text())
+                sample = sample_paths.get(row["file"])
+                if sample is None:
+                    raise ValueError(f"{server}: sample must be a regular file in the results directory: {row['file']!r}")
+                data = json.loads(sample.read_text())
                 codes = data["statusCodeDistribution"]
                 if any(v for k, v in codes.items() if not k.startswith("2")) or any(data["errorDistribution"].values()):
                     raise ValueError(f"{server}: HTTP or load-generator errors")
