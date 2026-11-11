@@ -63,11 +63,14 @@ FastCGI forwards to TCP responders; WSGI uses an isolated Python gateway.
 ACME uses mise-pinned lego, with multi-domain HTTP-01 / DNS-01 issuance, wildcard certificates, periodic renewal and
 certificate reload in all five compatibility modes. Separate SNI certificates
 use `[[acme.certificates]]`, each with its own DNS provider and credential file.
-Domains, SANs and certificate records can be added or removed with `-s reload`.
-Configuration files and their include/import dependencies are watched by default
+Domains, SANs and certificate records can be added or removed through reload.
+Configuration files, include/import dependencies, TLS certificates/private keys
+and per-certificate DNS env files are watched by default
 (`server.auto_reload = false` disables this). Saves trigger the same reload;
 missing certificates are issued before switching workers, while the master and
-existing HTTPS service stay running. Failed issuance keeps the active configuration.
+existing HTTPS service stay running. Invalid or mismatched TLS files keep the
+active contexts. DNS env rotation immediately queues the corresponding ACME check;
+lego writes do not trigger reload loops. Failed issuance keeps the active configuration.
 Production CA issuance is opt-in through `[acme]`.
 
 ## HTTP/2 and HTTP/3
@@ -140,7 +143,10 @@ failure, superseded issuance, timeouts, and removal of the final managed certifi
 in all five modes with both HTTP-01 and DNS-01, both manually and through file watching.
 Watcher tests cover debounced saves, same-size/mtime edits, symlink swaps,
 missing/invalid dependency recovery, glob membership changes, direct native configs
-and accepted connections awaiting their first request during reload.
+and accepted connections awaiting their first request during reload. TLS material
+tests rotate certs and keys separately, retain working contexts on invalid files,
+and exercise atomic/symlink replacement. Real-lego DNS env tests cover per-certificate
+retry isolation, missing files, credentials changed during issuance and loop prevention.
 No public certificate is requested. Fixtures use temporary files/ports and
 terminate their own process groups on failure.
 

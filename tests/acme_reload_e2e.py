@@ -15,7 +15,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from aioquic.asyncio import connect
 from aioquic.quic.configuration import QuicConfiguration
-from acme_common import configure, local_ca, peer_cert
+from acme_common import configure, configure_manual, local_ca, peer_cert
 from e2e_common import running
 
 binary = Path(sys.argv[1]).resolve()
@@ -220,29 +220,7 @@ dns_propagation_wait_seconds=1
                     reload([expanded, extra])
                     wait(lambda: matches('base.test', expanded), 'reload after timeout did not recover')
                 # Remove the final managed record and switch to manual TLS.
-                path = configure(case, mode, f.port, f.challenge, f.ca.url,
-                                 f.root/'server.pem', f.root/'key.pem')
-                server = path.read_text().split('[acme]')[0]
-                server = server.replace('[server]\n', f'[server]\npid="master.pid"\nauto_reload={str(automatic).lower()}\n')
-                cert, key = f.root/'server.pem', f.root/'key.pem'
-                if mode == 'self':
-                    server += f'[http.tls]\ncertificate="{cert}"\nkey="{key}"\n'
-                elif mode == 'nginx':
-                    source = case/'server.conf'
-                    source.write_text(source.read_text().replace('server_name localhost;',
-                        f'server_name localhost; ssl_certificate "{cert}"; ssl_certificate_key "{key}";'))
-                elif mode == 'apache':
-                    source = case/'server.conf'
-                    source.write_text(source.read_text().replace('ServerName localhost',
-                        f'ServerName localhost\nSSLCertificateFile "{cert}"\nSSLCertificateKeyFile "{key}"'))
-                elif mode == 'litespeed':
-                    source = case/'managed.conf'
-                    source.write_text(source.read_text()+f'vhssl {{\ncertFile "{cert}"\nkeyFile "{key}"\n}}\n')
-                else:
-                    source = case/'sites.caddy'
-                    source.write_text(source.read_text().replace(f'https://localhost:{f.port} {{',
-                        f'https://localhost:{f.port} {{\ntls "{cert}" "{key}"'))
-                config.write_text(server)
+                configure_manual(case, mode, f.port, f.root/'server.pem', f.root/'key.pem', auto_reload=automatic)
                 if not automatic: os.kill(master, signal.SIGHUP)
                 wait(lambda: peer_cert(f.port, 'localhost') == f.tls_cert.public_bytes(serialization.Encoding.DER),
                      'removing all managed certificates did not switch to manual TLS')

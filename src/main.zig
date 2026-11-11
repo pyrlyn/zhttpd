@@ -536,6 +536,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             return 1;
         }
     };
+    for (cfg0.acme) |ac| watcher.acknowledgeTls(.{ .certificate = ac.certificate, .key = ac.key });
     var acme_jobs = z.http.acme.renewals(gpa, cfg0.acme, &.{}) catch return 1;
     defer gpa.free(acme_jobs);
     var gen = prepare(gpa, cfg0, &.{}, &diag) catch return 1;
@@ -548,10 +549,14 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
     var acme_pid: c.pid_t = 0;
     var acme_started: i64 = 0;
     var acme_before: ?[32]u8 = null;
+    var acme_before_key: ?[32]u8 = null;
+    var acme_revision: u64 = 0;
+    var acme_active_revision: u64 = 0;
     var acme_active: z.http.acme.Settings = undefined;
     // A candidate owns its settings until activated or discarded. An obsolete
     // issuer may finish cleanup, but cannot activate its superseded candidate.
     var pending: ?*config.Config = null;
+    var pending_validated = false;
     var retired: ?*config.Config = null;
     var acme_pending = false;
     var acme_cancelled = false;
@@ -566,6 +571,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             if (pid <= 0) break;
             if (pid == acme_pid) {
                 acme_pid = 0;
+                watcher.acknowledgeTls(.{ .certificate = acme_active.certificate, .key = acme_active.key });
                 if (acme_cancelled) {
                     acme_cancelled = false;
                     if (retired) |cfg| destroyConfig(gpa, cfg);
@@ -588,8 +594,12 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                     if (!std.mem.eql(u8, job.settings.certificate, ac.certificate)) continue;
                     if (status == 0) {
                         const after = z.http.acme.fingerprint(ac.certificate);
-                        if (after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) refresh_tls = true;
+                        const after_key = z.http.acme.fingerprint(ac.key);
+                        if ((after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) or
+                            (after_key != null and (acme_before_key == null or !std.mem.eql(u8, &after_key.?, &acme_before_key.?)))) refresh_tls = true;
                     } else eprint("zhttpd: [error] ACME renewal {s} failed; current HTTPS configuration remains active\n", .{ac.name});
+                    // A child using old credentials must not postpone the new check.
+                    if (job.revision != acme_active_revision) continue;
                     job.next_check_ms = z.server.loop.nowMs() + @as(i64, if (status == 0) job.settings.check_interval_seconds else @min(job.settings.check_interval_seconds, 3600)) * 1000;
                 }
                 continue;
@@ -631,13 +641,14 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             m_reopen = false;
             signalAll(&gen, SIGUSR1);
         }
-        if (gen.cfg.auto_reload and watcher.poll(now)) {
-            eprint("zhttpd: [notice] configuration files changed, scheduling reload\n", .{});
+        const writer: ?z.http.config_watch.Writer = if (acme_pid > 0) .{ .certificate = acme_active.certificate, .key = acme_active.key } else null;
+        if (gen.cfg.auto_reload and watcher.poll(now, writer)) {
+            eprint("zhttpd: [notice] watched files changed, scheduling reload\n", .{});
             m_reload = true;
         }
         if (m_reload) {
             m_reload = false;
-            watcher.beginAttempt();
+            watcher.beginAttempt(writer);
             eprint("zhttpd: [notice] reconfiguring\n", .{});
             if (pending) |cfg| {
                 if (acme_pending) {
@@ -651,12 +662,20 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
-            validateReload(gpa, ncfg, gen.cfg, o.globals, &diag) catch {
-                destroyConfig(gpa, ncfg);
-                eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
-                continue;
-            };
             pending = ncfg;
+            pending_validated = false;
+        }
+        const writing_candidate = if (writer) |w| pending != null and watcher.attempt.usesWriter(w) else false;
+        if (pending) |cfg| {
+            if (!pending_validated and !writing_candidate and !watcher.unsettled()) {
+                validateReload(gpa, cfg, gen.cfg, o.globals, &diag) catch {
+                    destroyConfig(gpa, cfg);
+                    pending = null;
+                    eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
+                    continue;
+                };
+                pending_validated = true;
+            }
         }
         var missing: ?z.http.acme.Settings = null;
         if (pending) |cfg| {
@@ -669,7 +688,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         }
         // Keep serving the active generation throughout issuance. Activation is
         // one transaction after every certificate has passed TLS validation.
-        if ((pending != null and missing == null and !acme_pending and !watcher.unsettled()) or (pending == null and refresh_tls)) {
+        if (!watcher.unsettled() and ((pending != null and pending_validated and !writing_candidate and missing == null and !acme_pending) or (pending == null and refresh_tls))) {
             const ncfg = pending orelse gen.cfg;
             const owns_candidate = pending != null;
             pending = null;
@@ -690,6 +709,19 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            acme_revision += 1;
+            for (next_jobs) |*job| {
+                var previous: ?z.http.acme.Renewal = null;
+                for (acme_jobs) |prior| if (std.mem.eql(u8, prior.settings.certificate, job.settings.certificate)) {
+                    previous = prior;
+                    break;
+                };
+                const credentials_changed = if (job.settings.dns_env_file) |path| watcher.credentialsChanged(path) else false;
+                if (previous == null or !z.http.acme.sameCredentials(previous.?.settings, job.settings) or (owns_candidate and credentials_changed)) {
+                    job.next_check_ms = 0;
+                    job.revision = acme_revision;
+                }
+            }
             gpa.free(acme_jobs);
             acme_jobs = next_jobs;
             var next = ngen;
@@ -705,7 +737,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             if (owns_candidate) watcher.accept();
             eprint("zhttpd: [notice] reload complete\n", .{});
         }
-        if (acme_pid == 0 and missing != null and !watcher.unsettled()) {
+        if (acme_pid == 0 and missing != null and pending_validated and !watcher.unsettled()) {
             const ac = missing.?;
             eprint("zhttpd: issuing reload ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
             acme_active = ac;
@@ -718,7 +750,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                 pending = null;
             }
         }
-        if (acme_pid == 0 and pending == null) {
+        if (acme_pid == 0 and pending == null and !watcher.unsettled()) {
             var due: ?usize = null;
             for (acme_jobs, 0..) |job, i| {
                 if (now >= job.next_check_ms and (due == null or job.next_check_ms < acme_jobs[due.?].next_check_ms)) due = i;
@@ -727,6 +759,8 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                 const ac = acme_jobs[i].settings;
                 acme_active = ac;
                 acme_before = z.http.acme.fingerprint(ac.certificate);
+                acme_before_key = z.http.acme.fingerprint(ac.key);
+                acme_active_revision = acme_jobs[i].revision;
                 acme_pid = z.http.acme.start(gpa, ac, gen.error_fd) catch 0;
                 acme_started = now;
                 acme_jobs[i].next_check_ms = now + @as(i64, @min(ac.check_interval_seconds, 3600)) * 1000;

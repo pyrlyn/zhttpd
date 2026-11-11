@@ -370,6 +370,22 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
 }
 
 pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
+    const cfg = try loadConfig(gpa, file, opts, diag);
+    errdefer support.destroy(gpa, cfg);
+    if (opts.sources) |sources| {
+        for (cfg.servers) |srv| {
+            if (srv.tls.certificate) |path| try sources.observe(path, .tls);
+            if (srv.tls.certificate_key) |path| try sources.observe(path, .tls);
+        }
+        for (cfg.acme) |ac| {
+            try sources.observe(ac.certificate, .tls);
+            try sources.observe(ac.key, .tls);
+        }
+    }
+    return cfg;
+}
+
+fn loadConfig(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
     if (opts.sources) |sources| try sources.observe(file, .file);
     if (!std.mem.endsWith(u8, file, ".toml")) return adapter(gpa, file, opts.prefix, opts, opts.compatibility, diag);
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -390,6 +406,7 @@ pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http
         ac.storage = try std.fs.path.resolve(a, &.{ root, ac.storage });
         if (ac.dns_env_file) |path| {
             ac.dns_env_file = try std.fs.path.resolve(a, &.{ root, path });
+            if (opts.sources) |sources| try sources.observe(ac.dns_env_file.?, .credentials);
             if (http.acme.fingerprint(ac.dns_env_file.?) == null) return parser.fail("cannot read nonempty dns_env_file for ACME certificate {s}", .{ac.name});
         }
         if (std.mem.indexOfScalar(u8, ac.client, '/')) |_| ac.client = try std.fs.path.resolve(a, &.{ root, ac.client });

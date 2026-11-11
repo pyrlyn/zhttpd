@@ -17,6 +17,7 @@ extern "c" fn OSSL_QUIC_server_method() *const SSL_METHOD;
 extern "c" fn TLS_server_method() *const SSL_METHOD;
 extern "c" fn SSL_CTX_new(m: *const SSL_METHOD) ?*SSL_CTX;
 extern "c" fn SSL_CTX_free(ctx: *SSL_CTX) void;
+extern "c" fn SSL_CTX_set_default_passwd_cb(ctx: *SSL_CTX, cb: *const fn ([*]u8, c_int, c_int, ?*anyopaque) callconv(.c) c_int) void;
 extern "c" fn SSL_CTX_use_certificate_chain_file(ctx: *SSL_CTX, file: [*:0]const u8) c_int;
 extern "c" fn SSL_CTX_use_PrivateKey_file(ctx: *SSL_CTX, file: [*:0]const u8, typ: c_int) c_int;
 extern "c" fn SSL_CTX_check_private_key(ctx: *const SSL_CTX) c_int;
@@ -165,11 +166,18 @@ fn managedSettings(base: config.Tls, certificate: acme.Settings) config.Tls {
     return settings;
 }
 
+// Configuration loading is unattended, including automatic reload. Never let
+// OpenSSL's default PEM callback block the master on an interactive prompt.
+fn noPassword(_: [*]u8, _: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+    return 0;
+}
+
 /// Create an SSL_CTX for a server from its ssl_* directives.
 pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const config.Server, diag: *Diag, quic: bool) !*SSL_CTX {
     var ebuf: [256]u8 = undefined;
     const ctx = SSL_CTX_new(if (@import("multiplex.zig").enabled and quic) OSSL_QUIC_server_method() else TLS_server_method()) orelse return error.TlsInit;
     errdefer SSL_CTX_free(ctx);
+    SSL_CTX_set_default_passwd_cb(ctx, noPassword);
     if (!t.reject_handshake) {
         const cert = t.certificate orelse {
             diag.add(.emerg, srv.file, srv.line, "no \"ssl_certificate\" is defined for the \"listen ... ssl\" directive", .{});

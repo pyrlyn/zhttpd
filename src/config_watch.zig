@@ -5,8 +5,17 @@ const std = @import("std");
 const os = @import("os.zig");
 const c = std.c;
 const Hash = std.crypto.hash.sha2.Sha256;
-pub const Kind = enum { file, glob };
-const Entry = struct { path: []const u8, kind: Kind, digest: ?[32]u8 };
+pub const Kind = enum { file, glob, tls, credentials };
+const Entry = struct { path: []const u8, kind: Kind, digest: ?[32]u8, changed: bool = false };
+/// The single ACME child may be writing this pair. Observe its final state only
+/// after it exits; intermediate writes must not supersede its own reload.
+pub const Writer = struct {
+    certificate: []const u8,
+    key: []const u8,
+    fn matches(w: Writer, path: []const u8) bool {
+        return std.mem.eql(u8, w.certificate, path) or std.mem.eql(u8, w.key, path);
+    }
+};
 
 fn fingerprint(gpa: std.mem.Allocator, path: []const u8, kind: Kind) ?[32]u8 {
     var hash = Hash.init(.{});
@@ -64,15 +73,40 @@ pub const Sources = struct {
         try s.entries.append(s.gpa, .{ .path = owned, .kind = kind, .digest = fingerprint(s.gpa, path, kind) });
     }
 
-    fn scan(s: *Sources) bool {
+    pub fn credentialsChanged(s: *const Sources, path: []const u8) bool {
+        for (s.entries.items) |entry| {
+            if (entry.kind == .credentials and entry.changed and std.mem.eql(u8, entry.path, path)) return true;
+        }
+        return false;
+    }
+
+    pub fn usesWriter(s: *const Sources, writer: Writer) bool {
+        for (s.entries.items) |entry| if (entry.kind == .tls and writer.matches(entry.path)) return true;
+        return false;
+    }
+
+    fn acknowledge(s: *Sources, writer: Writer) void {
+        for (s.entries.items) |*entry| {
+            if (entry.kind == .tls and writer.matches(entry.path)) {
+                entry.digest = fingerprint(s.gpa, entry.path, .tls);
+                entry.changed = false;
+            }
+        }
+    }
+
+    fn scan(s: *Sources, writer: ?Writer) bool {
         var changed = false;
         for (s.entries.items) |*entry| {
+            if (writer) |w| {
+                if (entry.kind == .tls and w.matches(entry.path)) continue;
+            }
             const next = fingerprint(s.gpa, entry.path, entry.kind);
             const equal = if (next) |digest|
                 if (entry.digest) |previous| std.mem.eql(u8, &digest, &previous) else false
             else
                 entry.digest == null;
             changed = changed or !equal;
+            entry.changed = entry.changed or !equal;
             entry.digest = next;
         }
         return changed;
@@ -92,11 +126,11 @@ pub const Watcher = struct {
         w.attempt.deinit();
     }
 
-    pub fn poll(w: *Watcher, now: i64) bool {
+    pub fn poll(w: *Watcher, now: i64, writer: ?Writer) bool {
         if (now < w.next_poll_ms) return false;
         w.next_poll_ms = now + poll_interval_ms;
-        const active_changed = w.active.scan();
-        const attempt_changed = w.attempt.scan();
+        const active_changed = w.active.scan(writer);
+        const attempt_changed = w.attempt.scan(writer);
         if (active_changed or attempt_changed) w.changed_ms = now;
         if (w.changed_ms) |changed| {
             if (now - changed >= settle_ms) {
@@ -111,11 +145,20 @@ pub const Watcher = struct {
         return w.changed_ms != null;
     }
 
-    pub fn beginAttempt(w: *Watcher) void {
+    pub fn beginAttempt(w: *Watcher, writer: ?Writer) void {
         // A manual reload also acknowledges changes already present on disk.
-        _ = w.active.scan();
+        _ = w.active.scan(writer);
         w.attempt.deinit();
         w.changed_ms = null;
+    }
+
+    pub fn acknowledgeTls(w: *Watcher, writer: Writer) void {
+        w.active.acknowledge(writer);
+        w.attempt.acknowledge(writer);
+    }
+
+    pub fn credentialsChanged(w: *const Watcher, path: []const u8) bool {
+        return w.active.credentialsChanged(path) or w.attempt.credentialsChanged(path);
     }
 
     pub fn accept(w: *Watcher) void {

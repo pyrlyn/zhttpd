@@ -134,13 +134,19 @@ test "certificate names and wildcard coverage" {
 
 /// Per-certificate deadlines survive TLS reloads. Only one issuer runs at once,
 /// avoiding HTTP-01 port and shared account-store conflicts.
-pub const Renewal = struct { settings: Settings, next_check_ms: i64 = 0 };
+pub const Renewal = struct { settings: Settings, next_check_ms: i64 = 0, revision: u64 = 0 };
+
+pub fn sameCredentials(a: Settings, b: Settings) bool {
+    return std.mem.eql(u8, a.dns_provider, b.dns_provider) and
+        std.mem.eql(u8, a.dns_env_file orelse "", b.dns_env_file orelse "");
+}
 pub fn renewals(a: std.mem.Allocator, certificates: []const Settings, previous: []const Renewal) ![]Renewal {
     const result = try a.alloc(Renewal, certificates.len);
     for (certificates, result) |certificate, *job| {
         job.* = .{ .settings = certificate };
         for (previous) |old| if (std.mem.eql(u8, old.settings.certificate, certificate.certificate)) {
             job.next_check_ms = old.next_check_ms;
+            job.revision = old.revision;
             break;
         };
     }
@@ -152,13 +158,14 @@ test "renewal deadlines follow certificate paths across reordering and removal" 
     const a: Settings = .{ .name = "a", .certificate = "/a.crt" };
     const b: Settings = .{ .name = "b", .certificate = "/b.crt" };
     const next = try renewals(t.allocator, &.{ b, a, .{ .certificate = "/c.crt" } }, &.{
-        .{ .settings = a, .next_check_ms = 123 },
+        .{ .settings = a, .next_check_ms = 123, .revision = 7 },
         .{ .settings = b, .next_check_ms = 456 },
         .{ .settings = .{ .certificate = "/removed.crt" }, .next_check_ms = 789 },
     });
     defer t.allocator.free(next);
     try t.expectEqual(@as(i64, 456), next[0].next_check_ms);
     try t.expectEqual(@as(i64, 123), next[1].next_check_ms);
+    try t.expectEqual(@as(u64, 7), next[1].revision);
     try t.expectEqual(@as(i64, 0), next[2].next_check_ms);
     try t.expectEqual(@as(u8, 2), matchRank(&.{ "*.example.com", "api.example.com" }, "api.example.com"));
     try t.expectEqual(@as(u8, 1), matchRank(&.{"*.example.com"}, "api.example.com"));

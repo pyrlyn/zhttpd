@@ -82,6 +82,17 @@ mise exec -- .run/venv/bin/python tests/auto_reload_e2e.py zig-out/bin/zhttpd
 They cover all five adapters, native includes/imports, glob membership, invalid
 and missing files, atomic saves, debounce, and disabling/re-enabling the watcher.
 
+With TLS and HTTP/2+HTTP/3 enabled, check certificate/key and DNS env rotation:
+
+```bash
+mise exec -- .run/venv/bin/python tests/tls_files_e2e.py zig-out/bin/zhttpd
+mise exec -- .run/venv/bin/python tests/dns_env_reload_e2e.py zig-out/bin/zhttpd
+```
+
+Both accept optional trailing adapter names. These checks cover mismatched,
+missing and encrypted keys, atomic and symlink replacement, independent DNS
+credential retries, changes during issuance, and prevention of reload loops.
+
 ## HTTP error regression checks
 
 ```bash

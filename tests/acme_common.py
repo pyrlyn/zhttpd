@@ -37,7 +37,9 @@ class DNSProvider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         credentials=getattr(self.server, 'credentials', 'e2e:secret').encode()
-        assert self.headers.get('Authorization') == 'Basic ' + base64.b64encode(credentials).decode()
+        if self.headers.get('Authorization') != 'Basic ' + base64.b64encode(credentials).decode():
+            self.server.auth_failures = getattr(self.server, 'auth_failures', 0) + 1
+            self.send_response(401); self.send_header('Content-Length', '0'); self.end_headers(); return
         allowed=getattr(self.server, 'allowed', None)
         if allowed is not None: assert data['fqdn'] in allowed, data
         if not hasattr(self.server, 'seen'): self.server.seen=set()
@@ -281,3 +283,29 @@ def local_ca():
                 ca.shutdown();thread.join()
                 provider.shutdown();provider_thread.join()
                 dns.shutdown();dns_thread.join()
+
+
+def configure_manual(root, mode, port, cert, key, other_cert=None, other_key=None, auto_reload=True):
+    """One manual TLS site plus an unrelated SNI site in external adapters."""
+    config = configure(root, mode, port, 0, '', other_cert or cert, other_key or key)
+    server = config.read_text().split('[acme]')[0]
+    server = server.replace('[server]\n', f'[server]\npid="master.pid"\nauto_reload={str(auto_reload).lower()}\n')
+    if mode == 'self':
+        server += f'http2=true\nhttp3=true\n[http.tls]\ncertificate="{cert}"\nkey="{key}"\n'
+    elif mode == 'nginx':
+        source = root/'server.conf'
+        source.write_text(source.read_text().replace('server_name localhost;',
+            f'server_name localhost; ssl_certificate "{cert}"; ssl_certificate_key "{key}";'))
+    elif mode == 'apache':
+        source = root/'server.conf'
+        source.write_text(source.read_text().replace('ServerName localhost',
+            f'ServerName localhost\nSSLCertificateFile "{cert}"\nSSLCertificateKeyFile "{key}"'))
+    elif mode == 'litespeed':
+        source = root/'managed.conf'
+        source.write_text(source.read_text()+f'vhssl {{\ncertFile "{cert}"\nkeyFile "{key}"\n}}\n')
+    else:
+        source = root/'sites.caddy'
+        source.write_text(source.read_text().replace(f'https://localhost:{port} {{',
+            f'https://localhost:{port} {{\ntls "{cert}" "{key}"'))
+    config.write_text(server)
+    return config
