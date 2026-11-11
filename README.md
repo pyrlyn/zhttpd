@@ -1,3 +1,5 @@
+<img src="src/http/assets/icon.svg" width="64" height="64" alt="zhttpd icon">
+
 # zhttpd
 
 A Zig HTTP/1.0, HTTP/1.1, HTTP/2 and HTTP/3 server with native TOML settings and nginx, Apache, OpenLiteSpeed and Caddy adapters.
@@ -20,6 +22,22 @@ mise exec -- zig-out/bin/zhttpd -c config.toml
 
 `mise run build:minimal` builds HTTP/1.x without TLS libraries. `mise run deps`
 prepares all dependencies. Reference nginx is optional: `mise run deps:nginx`.
+
+## Quick start
+
+Run from the repository root with Zig 0.17.1 installed:
+
+```bash
+zig build -Doptimize=ReleaseFast
+mkdir -p .run/local/html .run/local/logs
+printf '<h1>Hello from zhttpd</h1>\n' > .run/local/html/index.html
+zig-out/bin/zhttpd -t -p "$PWD/.run/local/" -c "$PWD/docs/examples/nginx.conf"
+zig-out/bin/zhttpd -p "$PWD/.run/local/" -c "$PWD/docs/examples/nginx.conf"
+```
+
+Open [localhost:8080](http://localhost:8080/). Request `/missing` to see the
+branded 404 page or `/health` for a plain-text health check. The process stays
+in the foreground; press Ctrl+C to stop it. This build uses plain HTTP.
 
 ## Configuration and modules
 
@@ -113,6 +131,19 @@ check exact/wildcard SNI priority, HTTP/2 and HTTP/3 handshakes, independent
 renewal after provider failure, and configuration reordering during renewal.
 No public certificate is requested. Fixtures use temporary files/ports and
 terminate their own process groups on failure.
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Builds, CLI, reload and shutdown |
+| [Native configuration](docs/configuration.md) | TOML, modules, routing, logging and ACME |
+| [nginx configuration](docs/nginx-configuration.md) | Legacy paths, static files, proxying and TLS |
+| [Adapter compatibility](docs/compatibility.md) | nginx, Apache, OpenLiteSpeed and Caddy coverage |
+| [HTTP error pages](docs/error-pages.md) | Branded defaults and custom responses |
+| [Deployment](docs/deployment.md) | Docker and image publishing |
+| [Development](docs/development.md) | Source map, unit and wire tests |
+| [WebSocket SDK](docs/websocket-sdk.md) | Zig, C and C++ applications |
 
 ## Benchmarks
 

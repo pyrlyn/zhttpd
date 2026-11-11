@@ -147,22 +147,24 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run zhttpd (pass args after --)").dependOn(&run.step);
 
     const e2e_python = b.option([]const u8, "e2e-python", "Python with tests/requirements-e2e.txt installed") orelse "python3";
-    const e2e = b.addSystemCommand(&.{e2e_python});
+    const e2e_command = if (std.mem.indexOfScalar(u8, e2e_python, '/') != null) (b.root.joinString(b.allocator, e2e_python) catch @panic("OOM")) else e2e_python;
+    const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);
     e2e.setCwd(b.path("."));
+    b.step("test-protocols", "Run HTTP/1.1, HTTP/2 and HTTP/3 wire tests").dependOn(&e2e.step);
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
     e2e_step.dependOn(&e2e.step);
     var previous: *std.Build.Step = &e2e.step;
-    for ([_][]const u8{ "config_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_sni_e2e.py" }) |script| {
-        const check = b.addSystemCommand(&.{e2e_python});
+    for ([_][]const u8{ "error-pages.py", "config_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
+        const check = b.addSystemCommand(&.{e2e_command});
         check.addFileArg(b.path(b.fmt("tests/{s}", .{script})));
         check.addArtifactArg(exe);
         check.setCwd(b.path("."));
         check.step.dependOn(previous);
         previous = &check.step;
     }
-    const ws_check = b.addSystemCommand(&.{e2e_python});
+    const ws_check = b.addSystemCommand(&.{e2e_command});
     ws_check.addFileArg(b.path("tests/websocket_e2e.py"));
     ws_check.addArtifactArg(exe);
     for (examples) |example| ws_check.addArtifactArg(example);

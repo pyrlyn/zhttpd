@@ -62,12 +62,17 @@ def check(results, protocol):
     expected = [(200, f'{protocol} https 127.0.0.1'.encode()), (200, LARGE),
                 (200, UPLOAD), (200, b'chunk-onechunk-two'), (200, b''),
                 (404, None), (403, None), (413, None), (200, b'virtual-host'),
-                (200, UPLOAD)]
+                (200, UPLOAD), (404, b'')]
     assert len(results) == len(expected)
     for i, ((status, body), (want_status, want_body)) in enumerate(zip(results, expected)):
         assert status == want_status, (i, status, want_status)
         if want_body is not None:
             assert body == want_body, (i, len(body), len(want_body), body[:100])
+        elif status >= 400:
+            assert body.startswith(b'<!doctype html>'), (protocol, status, body[:100])
+            assert body.endswith(b'</body></html>\n'), (protocol, status, len(body))
+            assert f'<title>{status} '.encode() in body
+            assert b'data:image/svg+xml;base64,' in body
 
 
 def requests():
@@ -75,7 +80,8 @@ def requests():
             ('/proxy', 'POST', UPLOAD, True, 'localhost'), ('/proxy', 'GET', b'', True, 'localhost'),
             ('/large', 'HEAD', b'', True, 'localhost'), ('/missing', 'GET', b'', True, 'localhost'),
             ('/denied', 'GET', b'', True, 'localhost'), ('/limited', 'POST', UPLOAD, True, 'localhost'),
-            ('/', 'GET', b'', True, 'other.local'), ('/proxy', 'POST', UPLOAD, False, 'localhost')]
+            ('/', 'GET', b'', True, 'other.local'), ('/proxy', 'POST', UPLOAD, False, 'localhost'),
+            ('/missing', 'HEAD', b'', True, 'localhost')]
 
 
 def h2_exchange(port):
