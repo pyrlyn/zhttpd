@@ -9,6 +9,7 @@ pub const settings = @import("settings");
 pub const logging = http.logging;
 pub const websocket = http.websocket;
 pub const fastcgi = http.fastcgi;
+pub const load_balancer = http.load_balancer;
 pub const acme = http.acme;
 pub const app_config = @import("app_config.zig");
 // Existing consumers can keep these names while adopting http/nginx imports.
