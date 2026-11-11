@@ -90,6 +90,8 @@ listen 8443 ssl;
 server_name example.test;
 ssl_certificate /absolute/path/to/fullchain.pem;
 ssl_certificate_key /absolute/path/to/privkey.pem;
+# For an encrypted PEM key (optional):
+# ssl_password_file /absolute/path/to/tls-passwords.txt;
 ssl_protocols TLSv1.2 TLSv1.3;
 ```
 

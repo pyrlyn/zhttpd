@@ -31,6 +31,7 @@ pub const Options = struct {
     strict: bool = false,
     /// Do not report "accepted but ignored" directives (they are still counted).
     quiet_ignored: bool = false,
+    sources: ?*@import("http").config_watch.Sources = null,
 };
 
 const runtime = @import("http").config;
@@ -687,6 +688,8 @@ const Builder = struct {
             t.certificate = try b.fullConfPath(a0);
         } else if (eq(n, "ssl_certificate_key")) {
             t.certificate_key = try b.fullConfPath(a0);
+        } else if (eq(n, "ssl_password_file")) {
+            t.password_file = try b.fullConfPath(a0);
         } else if (eq(n, "ssl_protocols")) {
             t.protocols = d.args;
         } else if (eq(n, "ssl_ciphers")) {
@@ -1208,7 +1211,7 @@ pub fn destroy(gpa: std.mem.Allocator, cfg: *Config) void {
 
 /// Parse and build from a file, the way `zhttpd -c FILE` does.
 pub fn load(gpa: std.mem.Allocator, conf_file: []const u8, opts: Options, diag: *Diag) Error!*Config {
-    var ast = parser.parseFile(gpa, conf_file, .{ .conf_prefix = opts.conf_prefix }, diag) catch |e| switch (e) {
+    var ast = parser.parseFile(gpa, conf_file, .{ .conf_prefix = opts.conf_prefix, .sources = opts.sources }, diag) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseFailed => return error.ConfigFailed,
     };
@@ -1222,7 +1225,7 @@ pub fn load(gpa: std.mem.Allocator, conf_file: []const u8, opts: Options, diag: 
 
 /// Same as `load` but from text (tests).
 pub fn loadString(gpa: std.mem.Allocator, src: []const u8, opts: Options, diag: *Diag) Error!*Config {
-    const ast = parser.parseString(gpa, src, "test.conf", .{ .conf_prefix = opts.conf_prefix }, diag) catch |e| switch (e) {
+    const ast = parser.parseString(gpa, src, "test.conf", .{ .conf_prefix = opts.conf_prefix, .sources = opts.sources }, diag) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseFailed => return error.ConfigFailed,
     };

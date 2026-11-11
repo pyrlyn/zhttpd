@@ -6,6 +6,8 @@ pub const Challenge = enum { @"http-01", @"dns-01" };
 pub const Settings = struct {
     name: []const u8 = "",
     dns_env_file: ?[]const u8 = null,
+    password_file: ?[]const u8 = null, // Never passed to lego.
+    encrypt_key: bool = false,
     domain: []const u8 = "", // Legacy alias; normalized to domains[0].
     domains: []const []const u8 = &.{},
     cert_name: []const u8 = "",
@@ -25,6 +27,23 @@ pub const Settings = struct {
     certificate: []const u8 = "",
     key: []const u8 = "",
 };
+// Only the selected certificate's current cache files are migration-owned.
+pub const cache_suffixes = [_][]const u8{ ".crt", ".key", ".json", ".issuer.crt", ".pem", ".pfx" };
+pub fn legacyPath(a: std.mem.Allocator, settings: Settings, suffix: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "{s}/certificates/{s}{s}", .{ settings.storage, settings.cert_name, suffix });
+}
+pub fn migrationPath(a: std.mem.Allocator, settings: Settings) ![]u8 {
+    return std.fmt.allocPrint(a, "{s}/{s}.migration.json", .{ std.fs.path.dirname(settings.certificate) orelse return error.InvalidPath, settings.cert_name });
+}
+pub fn migrationPending(a: std.mem.Allocator, settings: Settings) bool {
+    if (!settings.encrypt_key) return false;
+    const path = migrationPath(a, settings) catch return false;
+    defer a.free(path);
+    const z = a.dupeSentinel(u8, path, 0) catch return false;
+    defer a.free(z);
+    return c.access(z, c.F_OK) == 0;
+}
+
 pub fn validDomain(domain: []const u8) bool {
     if (domain.len == 0 or domain.len > 253) return false;
     var labels = std.mem.splitScalar(u8, domain, '.');
@@ -37,6 +56,9 @@ pub fn validDomain(domain: []const u8) bool {
 extern "c" fn execvp([*:0]const u8, [*:null]const ?[*:0]const u8) c_int;
 extern "c" fn signal(c_int, ?*const anyopaque) ?*const anyopaque;
 pub fn start(a: std.mem.Allocator, settings: Settings, error_fd: c_int) !c.pid_t {
+    return startGrouped(a, settings, error_fd, false);
+}
+pub fn startGrouped(a: std.mem.Allocator, settings: Settings, error_fd: c_int, own_group: bool) !c.pid_t {
     if (settings.dns_env_file) |path| if (fingerprint(path) == null) return error.InvalidEnvironmentFile;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -63,6 +85,7 @@ pub fn start(a: std.mem.Allocator, settings: Settings, error_fd: c_int) !c.pid_t
     const pid = c.fork();
     if (pid < 0) return error.Fork;
     if (pid == 0) {
+        if (own_group and c.setpgid(0, 0) != 0) c.exit(127);
         // Do not inherit the master's signal handler during certificate issuance.
         _ = signal(15, null);
         _ = signal(2, null);
@@ -74,6 +97,7 @@ pub fn start(a: std.mem.Allocator, settings: Settings, error_fd: c_int) !c.pid_t
         _ = execvp(argv[0].?, argv.ptr);
         c.exit(127);
     }
+    if (own_group) _ = c.setpgid(pid, pid);
     return pid;
 }
 pub fn fingerprint(path: []const u8) ?[32]u8 {
@@ -134,13 +158,19 @@ test "certificate names and wildcard coverage" {
 
 /// Per-certificate deadlines survive TLS reloads. Only one issuer runs at once,
 /// avoiding HTTP-01 port and shared account-store conflicts.
-pub const Renewal = struct { settings: Settings, next_check_ms: i64 = 0 };
+pub const Renewal = struct { settings: Settings, next_check_ms: i64 = 0, revision: u64 = 0 };
+
+pub fn sameCredentials(a: Settings, b: Settings) bool {
+    return std.mem.eql(u8, a.dns_provider, b.dns_provider) and
+        std.mem.eql(u8, a.dns_env_file orelse "", b.dns_env_file orelse "");
+}
 pub fn renewals(a: std.mem.Allocator, certificates: []const Settings, previous: []const Renewal) ![]Renewal {
     const result = try a.alloc(Renewal, certificates.len);
     for (certificates, result) |certificate, *job| {
         job.* = .{ .settings = certificate };
         for (previous) |old| if (std.mem.eql(u8, old.settings.certificate, certificate.certificate)) {
             job.next_check_ms = old.next_check_ms;
+            job.revision = old.revision;
             break;
         };
     }
@@ -152,13 +182,14 @@ test "renewal deadlines follow certificate paths across reordering and removal" 
     const a: Settings = .{ .name = "a", .certificate = "/a.crt" };
     const b: Settings = .{ .name = "b", .certificate = "/b.crt" };
     const next = try renewals(t.allocator, &.{ b, a, .{ .certificate = "/c.crt" } }, &.{
-        .{ .settings = a, .next_check_ms = 123 },
+        .{ .settings = a, .next_check_ms = 123, .revision = 7 },
         .{ .settings = b, .next_check_ms = 456 },
         .{ .settings = .{ .certificate = "/removed.crt" }, .next_check_ms = 789 },
     });
     defer t.allocator.free(next);
     try t.expectEqual(@as(i64, 456), next[0].next_check_ms);
     try t.expectEqual(@as(i64, 123), next[1].next_check_ms);
+    try t.expectEqual(@as(u64, 7), next[1].revision);
     try t.expectEqual(@as(i64, 0), next[2].next_check_ms);
     try t.expectEqual(@as(u8, 2), matchRank(&.{ "*.example.com", "api.example.com" }, "api.example.com"));
     try t.expectEqual(@as(u8, 1), matchRank(&.{"*.example.com"}, "api.example.com"));

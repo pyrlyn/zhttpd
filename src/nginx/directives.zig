@@ -280,6 +280,7 @@ pub const table = [_]Spec{
     // ---- ssl ----
     .{ .name = "ssl_certificate", .ctx = HS, .args = .one, .status = .supported, .note = "PEM (OpenSSL); multiple certs: first used" },
     .{ .name = "ssl_certificate_key", .ctx = HS, .args = .one, .status = .supported },
+    .{ .name = "ssl_password_file", .ctx = HS, .args = .one, .status = .supported, .note = "regular file; one PEM passphrase per line; watched on reload" },
     .{ .name = "ssl_protocols", .ctx = HS, .args = .more1, .status = .supported, .note = "TLSv1.2 / TLSv1.3 (older rejected by OpenSSL 3 defaults)" },
     .{ .name = "ssl_ciphers", .ctx = HS, .args = .one, .status = .supported, .note = "TLS 1.2 cipher list" },
     .{ .name = "ssl_conf_command", .ctx = HS, .args = .two, .status = .supported, .note = "`Ciphersuites`, etc. via SSL_CONF" },

@@ -182,6 +182,7 @@ pub const Options = struct {
     /// Directory relative `include` paths are resolved against (nginx "conf prefix").
     conf_prefix: []const u8,
     max_include_depth: u32 = 32,
+    sources: ?*@import("http").config_watch.Sources = null,
 };
 
 pub const Parser = struct {
@@ -195,6 +196,7 @@ pub const Parser = struct {
     /// Parse a file. `inside_block` controls whether `}` / EOF are expected at the end.
     fn parseFile(p: *Parser, path: []const u8, out: *std.ArrayList(Directive), from_file: ?[]const u8, from_line: u32) Error!void {
         var e: c_int = 0;
+        if (p.opts.sources) |sources| try sources.observe(path, .file);
         const src = os.readFileAlloc(p.alloc, path, &e) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
@@ -269,6 +271,7 @@ pub const Parser = struct {
         p.depth += 1;
         defer p.depth -= 1;
         if (os.hasGlob(full)) {
+            if (p.opts.sources) |sources| try sources.observe(full, .glob);
             const matches = os.glob(p.gpa, full) catch return error.OutOfMemory;
             defer os.freeList(p.gpa, matches);
             for (matches) |m| {

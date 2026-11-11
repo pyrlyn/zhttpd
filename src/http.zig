@@ -1,6 +1,7 @@
 //! Standalone HTTP runtime: request/response codecs, transports and server.
 //! Accepts config.Config from any adapter; does not import the nginx module.
 const std = @import("std");
+pub const config_watch = @import("config_watch.zig");
 pub const os = @import("os.zig");
 pub const regex = @import("regex.zig");
 pub const diag = @import("http/diag.zig");
@@ -20,6 +21,7 @@ pub const server = struct {
     pub const net = @import("server/net.zig");
     pub const multiplex = @import("server/multiplex.zig");
     pub const tls = @import("server/tls.zig");
+    pub const acme_encrypted = @import("server/acme_encrypted.zig");
     pub const vars = @import("server/vars.zig");
     pub const conn = @import("server/conn.zig");
     pub const handler = @import("server/handler.zig");

@@ -12,7 +12,11 @@ pub fn load(gpa: std.mem.Allocator, file: []const u8, root: []const u8, diag: *h
     return loadWithAcme(gpa, file, root, &.{}, diag);
 }
 pub fn loadWithAcme(gpa: std.mem.Allocator, file: []const u8, root: []const u8, acme_domains: []const []const u8, diag: *http.diag.Diag) Error!*C.Config {
+    return loadObserved(gpa, file, root, acme_domains, null, diag);
+}
+pub fn loadObserved(gpa: std.mem.Allocator, file: []const u8, root: []const u8, acme_domains: []const []const u8, sources: ?*http.config_watch.Sources, diag: *http.diag.Diag) Error!*C.Config {
     var b = try B.init(gpa, file, root, diag);
+    b.sources = sources;
     errdefer destroy(gpa, b.cfg);
     try sites(&b, try b.read(file, .braces), 0, acme_domains);
     if (b.cfg.listens.len == 0) return error.ConfigFailed;
@@ -24,6 +28,7 @@ fn sites(b: *B, nodes: []Node, depth: u8, acme_domains: []const []const u8) Erro
         if (std.mem.eql(u8, n.name, "import")) {
             try b.arity(n, 1, 1);
             const path = try b.fullPath(std.fs.path.dirname(n.file) orelse b.cfg.prefix, n.args[0]);
+            if (b.sources) |sources| try sources.observe(path, if (http.os.hasGlob(path)) .glob else .file);
             const paths: []const []const u8 = if (http.os.hasGlob(path)) try http.os.glob(b.a, path) else try b.a.dupe([]const u8, &.{path});
             for (paths) |p| try sites(b, try b.read(p, .braces), depth + 1, acme_domains);
             continue;

@@ -6,6 +6,7 @@ const build_options = @import("build_options");
 const config = @import("../http/config.zig");
 const acme = @import("acme");
 const Diag = @import("../http/diag.zig").Diag;
+const PasswordFile = @import("password_file.zig").PasswordFile;
 
 pub const enabled = build_options.tls;
 
@@ -17,6 +18,8 @@ extern "c" fn OSSL_QUIC_server_method() *const SSL_METHOD;
 extern "c" fn TLS_server_method() *const SSL_METHOD;
 extern "c" fn SSL_CTX_new(m: *const SSL_METHOD) ?*SSL_CTX;
 extern "c" fn SSL_CTX_free(ctx: *SSL_CTX) void;
+extern "c" fn SSL_CTX_set_default_passwd_cb(ctx: *SSL_CTX, cb: *const fn ([*]u8, c_int, c_int, ?*anyopaque) callconv(.c) c_int) void;
+extern "c" fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *SSL_CTX, userdata: ?*anyopaque) void;
 extern "c" fn SSL_CTX_use_certificate_chain_file(ctx: *SSL_CTX, file: [*:0]const u8) c_int;
 extern "c" fn SSL_CTX_use_PrivateKey_file(ctx: *SSL_CTX, file: [*:0]const u8, typ: c_int) c_int;
 extern "c" fn SSL_CTX_check_private_key(ctx: *const SSL_CTX) c_int;
@@ -140,6 +143,15 @@ fn lastError(buf: []u8) []const u8 {
 /// Only managed certificate loading is deferred; all other TLS options and
 /// unrelated certificate/key pairs are checked normally.
 pub fn validateConfig(gpa: std.mem.Allocator, cfg: *const config.Config, diag: *Diag) !void {
+    // Encryption must be ready before any ACME request, even without a cert yet.
+    for (cfg.acme) |ac| if (ac.encrypt_key) {
+        var passwords: PasswordFile = .{};
+        defer passwords.deinit();
+        passwords.read(gpa, ac.password_file orelse return error.TlsConfig) catch |err| {
+            diag.add(.emerg, null, 0, "cannot read encryption password for ACME certificate {s}: {s}", .{ ac.name, @errorName(err) });
+            return error.TlsConfig;
+        };
+    };
     for (cfg.listens) |listener| {
         if (!listener.opts.ssl) continue;
         for (listener.entries) |entry| {
@@ -162,7 +174,22 @@ fn managedSettings(base: config.Tls, certificate: acme.Settings) config.Tls {
     var settings = base;
     settings.certificate = certificate.certificate;
     settings.certificate_key = certificate.key;
+    settings.password_file = certificate.password_file orelse base.password_file;
     return settings;
+}
+
+// Configuration loading is unattended, including automatic reload. Never let
+// OpenSSL's default PEM callback block the master on an interactive prompt.
+pub fn noPassword(_: [*]u8, _: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+    return 0;
+}
+
+pub fn filePassword(buf: [*]u8, size: c_int, writing: c_int, userdata: ?*anyopaque) callconv(.c) c_int {
+    if (writing != 0 or size <= 0) return 0;
+    const password: *const []const u8 = @ptrCast(@alignCast(userdata orelse return 0));
+    if (password.len > @as(usize, @intCast(size))) return 0;
+    @memcpy(buf[0..password.len], password.*);
+    return @intCast(password.len);
 }
 
 /// Create an SSL_CTX for a server from its ssl_* directives.
@@ -170,6 +197,7 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
     var ebuf: [256]u8 = undefined;
     const ctx = SSL_CTX_new(if (@import("multiplex.zig").enabled and quic) OSSL_QUIC_server_method() else TLS_server_method()) orelse return error.TlsInit;
     errdefer SSL_CTX_free(ctx);
+    SSL_CTX_set_default_passwd_cb(ctx, noPassword);
     if (!t.reject_handshake) {
         const cert = t.certificate orelse {
             diag.add(.emerg, srv.file, srv.line, "no \"ssl_certificate\" is defined for the \"listen ... ssl\" directive", .{});
@@ -187,7 +215,34 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
             diag.add(.emerg, srv.file, srv.line, "cannot load certificate \"{s}\": {s}", .{ cert, lastError(&ebuf) });
             return error.TlsConfig;
         }
-        if (SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) != 1 or SSL_CTX_check_private_key(ctx) != 1) {
+        var loaded = false;
+        if (t.password_file) |path| {
+            var passwords: PasswordFile = .{};
+            defer passwords.deinit();
+            passwords.read(gpa, path) catch |err| {
+                diag.add(.emerg, srv.file, srv.line, "cannot read TLS password file \"{s}\": {s}", .{ path, @errorName(err) });
+                return error.TlsConfig;
+            };
+            var password: []const u8 = &.{};
+            SSL_CTX_set_default_passwd_cb(ctx, filePassword);
+            SSL_CTX_set_default_passwd_cb_userdata(ctx, @ptrCast(&password));
+            defer {
+                // SSL_CTX outlives this stack frame: retain neither callback data
+                // nor passphrases once OpenSSL owns the decrypted private key.
+                SSL_CTX_set_default_passwd_cb_userdata(ctx, null);
+                SSL_CTX_set_default_passwd_cb(ctx, noPassword);
+            }
+            for (passwords.lines[0..passwords.count]) |value| {
+                password = value;
+                ERR_clear_error();
+                if (SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) == 1) {
+                    loaded = true;
+                    ERR_clear_error();
+                    break;
+                }
+            }
+        } else loaded = SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) == 1;
+        if (!loaded or SSL_CTX_check_private_key(ctx) != 1) {
             diag.add(.emerg, srv.file, srv.line, "cannot load certificate key \"{s}\": {s}", .{ key, lastError(&ebuf) });
             return error.TlsConfig;
         }
@@ -315,7 +370,9 @@ pub fn buildSni(gpa: std.mem.Allocator, cfg: *const config.Config, listen: *cons
     }
     for (listen.entries) |e| {
         if (ctxs[e.server.index] != null) continue;
-        const ctx = try makeContext(gpa, &e.server.tls, e.server, diag, listen.opts.quic);
+        const indices = e.server.tls.acme_certificates;
+        const first = if (indices.len > 0) managedSettings(e.server.tls, cfg.acme[indices[0]]) else e.server.tls;
+        const ctx = try makeContext(gpa, &first, e.server, diag, listen.opts.quic);
         ctxs[e.server.index] = ctx;
         for (e.server.tls.acme_certificates, 0..) |index, i| {
             const settings = managedSettings(e.server.tls, cfg.acme[index]);
@@ -341,6 +398,15 @@ pub fn buildSni(gpa: std.mem.Allocator, cfg: *const config.Config, listen: *cons
         _ = SSL_CTX_ctrl(item.ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_ARG, 0, tbl);
     }
     return tbl;
+}
+
+/// Release a table that was never handed to a worker (failed reload).
+pub fn freeSni(gpa: std.mem.Allocator, tbl: *SniTable) void {
+    for (tbl.managed) |item| if (tbl.ctxs[item.server.index] != item.ctx) SSL_CTX_free(item.ctx);
+    for (tbl.ctxs) |ctx| if (ctx) |value| SSL_CTX_free(value);
+    gpa.free(tbl.managed);
+    gpa.free(tbl.ctxs);
+    gpa.destroy(tbl);
 }
 
 pub fn newConn(tbl: *SniTable, fd: c_int) ?*SSL {
@@ -391,4 +457,8 @@ pub fn free(ssl: *SSL) void {
 
 pub fn protocol(ssl: *SSL) []const u8 {
     return std.mem.span(SSL_get_version(ssl));
+}
+
+test {
+    _ = @import("password_file.zig");
 }

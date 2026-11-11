@@ -174,7 +174,7 @@ pub const Worker = struct {
         var it = w.active;
         while (it) |cn| {
             it = cn.next;
-            if ((cn.state == .read_head and cn.rlen == 0) or cn.state == .multiplexed) cn.close();
+            if ((cn.state == .read_head and cn.rlen == 0 and cn.requests > 0) or cn.state == .multiplexed) cn.close();
         }
         w.bury();
     }
