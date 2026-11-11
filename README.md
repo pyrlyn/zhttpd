@@ -2,71 +2,55 @@
 
 # zhttpd
 
-A Zig HTTP/1.0+1.1 server that reads `nginx.conf`. TLS 1.3 via OpenSSL. Event
-backends: kqueue (macOS) and epoll (Linux).
+An HTTP/1.0 and HTTP/1.1 server written in Zig, with nginx-style configuration,
+optional TLS through OpenSSL, and native event loops: kqueue on macOS and epoll
+on Linux.
 
-## Build
+It serves static files, proxies HTTP upstreams, routes virtual hosts, and renders
+self-contained branded error pages. nginx configuration compatibility is partial:
+read the [compatibility notes](docs/configuration.md#compatibility) before using
+an existing configuration. HTTP/2 and HTTP/3 are not implemented in this version.
 
-Requires Zig 0.17.1 (see `mise.toml`).
+## Quick start
 
-```bash
-scripts/fetch-deps.sh          # once: OpenSSL, nginx, pcre2, zlib
-scripts/build-nginx.sh         # comparison nginx into tools/nginx
-scripts/build-zhttpd.sh        # zig-out/bin/zhttpd (ReleaseFast + TLS)
-scripts/gen-certs.sh           # self-signed certs in bench/certs (gitignored)
-```
-
-The private key for the bench certificate is generated locally and is not in
-the repository. Regenerate it with `scripts/gen-certs.sh` before a TLS run.
-
-## Run
+Run from the repository root with Zig 0.17.1 installed:
 
 ```bash
-scripts/smoke.sh               # short smoke vs nginx
-zig-out/bin/zhttpd -c path/to/nginx.conf
+zig build -Doptimize=ReleaseFast
+mkdir -p .run/local/html .run/local/logs
+printf '<h1>Hello from zhttpd</h1>\n' > .run/local/html/index.html
+zig-out/bin/zhttpd -t -p "$PWD/.run/local/" -c "$PWD/docs/examples/nginx.conf"
+zig-out/bin/zhttpd -p "$PWD/.run/local/" -c "$PWD/docs/examples/nginx.conf"
 ```
 
-## Default error pages
+Open [localhost:8080](http://localhost:8080/). Request `/missing` to see the
+branded 404 page or `/health` for a plain-text health check. The process stays
+in the foreground; press Ctrl+C to stop it. This build uses plain HTTP.
 
-Built-in 4xx and 5xx pages use the zhttpd identity: a pair of chevrons around a
-packet, warm paper, graphite, and lime. The reusable SVG icon lives in
-[`src/http/assets/icon.svg`](src/http/assets/icon.svg). CSS, SVG, and favicon
-are embedded in the binary; error pages need no JavaScript, fonts, or asset
-requests. Layout adapts to mobile screens and supports keyboard navigation.
+## Documentation
 
-Configured `error_page` responses still take precedence. `server_tokens off`
-hides the version in both the header and page footer. Redirect bodies retain
-their nginx-compatible layout. Default error bodies and their Content-Length
-intentionally differ from nginx in `scripts/smoke.sh` comparisons.
-
-Verify with `zig build test`, `zig build`, and `python3 tests/error-pages.py`.
-
-## Benchmarks
-
-```bash
-bench/run.sh --quick           # short comparison vs nginx and dusty-tuned
-bench/run.sh                   # full plan: see bench/PLAN.md
-```
-
-Official results are in [bench/RESULTS.md](bench/RESULTS.md). The exact nginx
-config is generated from `bench/nginx.conf.in`. Linux epoll runs can use the
-dedicated Lima VM described in [bench/lima/README.md](bench/lima/README.md).
-
-
-## Container image
-
-Images are published to `ghcr.io/pyrlyn/zhttpd` by a **manual** Coolify deploy
-(git pull of the branch, `docker build` of this repository's Dockerfile, push,
-then deploy). There is no GitHub Actions image-build workflow and no auto-deploy
-on git push.
-
-Tag mapping (also in the Coolify workflow comments / pyrlyn/infra `paas/config/apps.yml`):
-
-| Git event | Tags |
+| Guide | Contents |
 | --- | --- |
-| push to `dev` | `:dev` and `:dev-<short-sha>` |
-| push to `main` | `:prod` and `:latest` |
-| release tag `vX.Y.Z` (on main) | `:prod-X.Y.Z`, plus refresh `:prod` and `:latest` |
+| [Getting started](docs/getting-started.md) | Requirements, HTTP/TLS builds, CLI, reload and shutdown |
+| [Configuration](docs/configuration.md) | Paths, static files, proxying, TLS, nginx compatibility |
+| [HTTP error pages](docs/error-pages.md) | Default pages, custom responses, branding and verification |
+| [Deployment](docs/deployment.md) | Docker, custom config, TLS termination and image tags |
+| [Development](docs/development.md) | Source map, tests, smoke checks and benchmarks |
 
-The dev stand pulls `:dev` (or a pinned `:dev-<sha>`). Production pins `:prod-<version>`.
-The image is labelled with `org.opencontainers.image.source=https://github.com/pyrlyn/zhttpd`.
+The complete directive table is available from the binary:
+
+```bash
+zig-out/bin/zhttpd --directives
+```
+
+## Verification
+
+```bash
+zig build test
+zig build
+python3 tests/error-pages.py
+```
+
+Benchmark results and methodology are in [bench/RESULTS.md](bench/RESULTS.md)
+and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
+[bench/lima/README.md](bench/lima/README.md).
