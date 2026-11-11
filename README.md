@@ -44,7 +44,7 @@ in the foreground; press Ctrl+C to stop it. This build uses plain HTTP.
 The default configuration is `config.toml`, with mandatory
 `[server] compatibility = "self" | "nginx" | "apache" | "litespeed" | "caddy"`.
 `[modules]` enables or disables HTTP, adapters, WebSocket, FastCGI, WSGI,
-logging and automatic ACME. Unknown settings and invalid module combinations fail.
+logging, load balancing and automatic ACME. Unknown settings and invalid module combinations fail.
 Legacy `-c nginx.conf` remains supported; other direct formats use `--compatibility`.
 
 - [Native TOML schema, routing, logging and Let's Encrypt](docs/configuration.md)
@@ -52,7 +52,11 @@ Legacy `-c nginx.conf` remains supported; other direct formats use `--compatibil
 - [WebSocket SDK/API for Zig, C and C++](docs/websocket-sdk.md)
 - [Runnable configuration examples](examples/configs/config.toml)
 
-Independent build modules: `http`, `nginx`, `apache`, `litespeed`, `caddy`,
+Load-aware 307 redirects are available through the optional standalone
+[`load_balancer` module](docs/load-balancing.md). It exchanges worker metrics
+through a shared directory and limits each request to one balancing redirect.
+
+Independent build modules: `load_balancer`, `http`, `nginx`, `apache`, `litespeed`, `caddy`,
 `settings`, `expression`, `logging`, `websocket`, `websocket_sdk`, `fastcgi`,
 `wsgi`, `acme`. Adapters depend on HTTP; HTTP does not import their parsers.
 The `zhttpd` facade preserves the earlier `conf` and `server` names. Adapters
@@ -149,6 +153,7 @@ terminate their own process groups on failure.
 | Guide | Contents |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Builds, CLI, reload and shutdown |
+| [Load-aware balancing](docs/load-balancing.md) | Shared metrics, thresholds, 307 redirects and loop prevention |
 | [Native configuration](docs/configuration.md) | TOML, modules, routing, logging and ACME |
 | [nginx configuration](docs/nginx-configuration.md) | Legacy paths, static files, proxying and TLS |
 | [Adapter compatibility](docs/compatibility.md) | nginx, Apache, OpenLiteSpeed and Caddy coverage |

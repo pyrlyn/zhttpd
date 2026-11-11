@@ -19,6 +19,7 @@
 | `src/server/proxy.zig` | HTTP upstream handling |
 | `src/server/tls.zig` | Nonblocking TLS, ALPN and SNI |
 | `src/server/multiplex.zig`, `multiplex.c` | HTTP/2 and HTTP/3 stream transport |
+| `src/load_balancer.zig`, `src/load_balancer/backend.c` | Independent load policy, one-hop redirect URLs and background shared metrics |
 | `src/server/filecache.zig` | Open-file cache |
 | `src/os.zig`, `src/server/net.zig` | Platform and socket operations |
 | `tests/fixtures/` | nginx and Debian configuration fixtures |

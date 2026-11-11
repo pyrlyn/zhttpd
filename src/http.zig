@@ -7,6 +7,7 @@ pub const regex = @import("regex.zig");
 pub const diag = @import("http/diag.zig");
 pub const addr = @import("http/addr.zig");
 pub const expr = @import("expression");
+pub const load_balancer = @import("load_balancer");
 pub const acme = @import("acme");
 pub const fastcgi = @import("fastcgi");
 pub const logging = @import("logging");
