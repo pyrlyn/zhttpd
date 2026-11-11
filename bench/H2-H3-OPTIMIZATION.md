@@ -164,3 +164,13 @@ automatic reload, certificate/key and DNS env-file rotation, load balancing,
 logging, gateway handling, real ACME issuance/reload/SNI isolation, and all
 WebSocket SDK examples. Functional success is separate from the performance
 acceptance gate, which still fails overall.
+
+After measurement, main's encrypted-ACME lifecycle and benchmark-path validation
+changes (`bcd752b`) were integrated in `b240708`. The reload conflict was resolved
+by preserving both pre-fork socket closure and ACME-lock release in child workers.
+The integrated source passed Linux/macOS unit and protocol tests, macOS tests
+without TLS, Linux TLS/key rotation tests in all five configuration modes, and
+the native-mode HTTP-01 encrypted-ACME E2E including superseded issuance during
+reload. The tables above measure `342d4ac`; they were not rerun after this
+startup/reload integration and must not be presented as measurements of a different
+binary hash.
