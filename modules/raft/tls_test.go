@@ -53,6 +53,68 @@ func freeAddress(t *testing.T) string {
 	_ = l.Close()
 	return address
 }
+
+func TestMutualTLSReplication(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := tlsMaterial(t, dir)
+	peers := make([]Peer, 3)
+	for i, id := range []string{"a", "b", "c"} {
+		peers[i] = Peer{id, freeAddress(t), freeAddress(t)}
+	}
+	var nodes []*Node
+	defer func() {
+		for _, n := range nodes {
+			n.close()
+		}
+	}()
+	for _, p := range peers {
+		local := filepath.Join(dir, p.ID)
+		c := Config{ID: p.ID, ClusterID: "tls-replication", RaftAddress: p.RaftAddress,
+			APIAddress: p.APIAddress, DataDir: filepath.Join(local, "data"),
+			MetricsInbox: filepath.Join(local, "in"), MetricsView: filepath.Join(local, "out"),
+			Peers: peers, Bootstrap: true, IntervalMS: 100, MetricsTTLMS: 5000,
+			token: "test-token-with-at-least-32-characters"}
+		c.TLS.CA, c.TLS.Certificate, c.TLS.Key = cert, cert, key
+		n, err := startNode(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes = append(nodes, n)
+	}
+	deadline := time.Now().Add(12 * time.Second)
+	var leader *Node
+	for time.Now().Before(deadline) && leader == nil {
+		for _, n := range nodes {
+			if n.raft.State() == raft.Leader && n.raft.VerifyLeader().Error() == nil {
+				leader = n
+				break
+			}
+		}
+		if leader == nil {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if leader == nil {
+		t.Fatal("mTLS cluster did not elect a leader")
+	}
+	if err := leader.apply(Command{Kind: "config", Node: "a", TOML: "committed over mTLS"}); err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(deadline) {
+		applied := 0
+		for _, n := range nodes {
+			if n.fsm.copy().Documents["a"].TOML == "committed over mTLS" {
+				applied++
+			}
+		}
+		if applied == len(nodes) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("committed document did not replicate to all mTLS peers")
+}
+
 func TestMutualTLSAPIAndClusterIsolation(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := tlsMaterial(t, dir)
