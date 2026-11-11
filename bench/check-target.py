@@ -16,7 +16,7 @@ import sys
 
 # The operator selects the working directory; CSV data may only select files
 # already present there, never supply paths for filesystem reads.
-os.chdir(sys.argv[1])
+os.chdir(sys.argv[1])  # NOSONAR(S8707) - the local CLI operator explicitly selects this directory.
 root = Path('.')
 sample_paths = {p.name: p for p in root.iterdir() if not p.is_symlink() and p.is_file()}
 target = float(sys.argv[2]) if len(sys.argv) > 2 else 1.5
