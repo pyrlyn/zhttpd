@@ -224,6 +224,7 @@ pub const Config = struct {
     error_log: ErrorLog = .{ .path = "logs/error.log" },
     has_http: bool = false,
     logging_enabled: bool = true,
+    auto_reload: bool = true,
     acme: []const @import("acme").Settings = &.{},
     servers: []*Server = &.{},
     listens: []Listen = &.{},

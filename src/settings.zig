@@ -22,6 +22,7 @@ pub const Builder = struct {
     a: std.mem.Allocator,
     diag: *Diag,
     bytes: usize = 0,
+    sources: ?*http.config_watch.Sources = null,
 
     pub fn init(gpa: std.mem.Allocator, file: []const u8, prefix: []const u8, diag: *Diag) Error!Builder {
         const cfg = try gpa.create(config.Config);
@@ -40,6 +41,7 @@ pub const Builder = struct {
         return std.fs.path.resolve(b.a, &.{ root, path });
     }
     pub fn read(b: *Builder, file: []const u8, syntax: Syntax) Error![]Node {
+        if (b.sources) |sources| try sources.observe(file, .file);
         var e: c_int = 0;
         const data = http.os.readFileAlloc(b.a, file, &e) catch return b.fail(.{ .name = "", .args = &.{}, .file = file, .line = 0 }, "cannot read configuration ({d})", .{e});
         b.bytes += data.len;

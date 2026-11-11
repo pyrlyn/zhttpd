@@ -19,6 +19,8 @@ from acme_common import configure, local_ca, peer_cert
 from e2e_common import running
 
 binary = Path(sys.argv[1]).resolve()
+automatic = "--auto" in sys.argv[2:]
+modes = [arg for arg in sys.argv[2:] if arg != "--auto"]
 
 
 def names(cert):
@@ -33,7 +35,7 @@ async def quic_names(port, host):
         return names(protocol._quic.tls._peer_certificate.public_bytes(serialization.Encoding.DER))
 
 
-for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
+for mode in (modes or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
     for challenge in ('dns-01', 'http-01'):
         with local_ca() as f:
             f.ca.challenge_type = challenge
@@ -68,7 +70,7 @@ os.execv({shutil.which('lego')!r}, ['lego', *sys.argv[1:]])
                 server = path.read_text().split('[acme]')[0]
                 if mode == 'self': server += 'http2=true\nhttp3=true\n'
                 # Keep a stable PID file for the public -s reload interface.
-                server = server.replace('[server]\n', '[server]\npid="master.pid"\n')
+                server = server.replace('[server]\n', f'[server]\npid="master.pid"\nauto_reload={str(automatic).lower()}\n')
                 for i, group in enumerate(records):
                     server += f'''[[acme.certificates]]
 name="cert{i}"
@@ -112,6 +114,9 @@ dns_propagation_wait_seconds=1
 
                 def reload(records, timeout=15, cli=False):
                     write(records, timeout)
+                    if automatic:
+                        with config.open("a") as output: output.write(f"\n# requested revision {time.monotonic_ns()}\n")
+                        return
                     if cli:
                         subprocess.run([binary, '-c', config, '-s', 'reload'], env=f.env, check=True)
                     else:
@@ -218,7 +223,7 @@ dns_propagation_wait_seconds=1
                 path = configure(case, mode, f.port, f.challenge, f.ca.url,
                                  f.root/'server.pem', f.root/'key.pem')
                 server = path.read_text().split('[acme]')[0]
-                server = server.replace('[server]\n', '[server]\npid="master.pid"\n')
+                server = server.replace('[server]\n', f'[server]\npid="master.pid"\nauto_reload={str(automatic).lower()}\n')
                 cert, key = f.root/'server.pem', f.root/'key.pem'
                 if mode == 'self':
                     server += f'[http.tls]\ncertificate="{cert}"\nkey="{key}"\n'
@@ -238,9 +243,9 @@ dns_propagation_wait_seconds=1
                     source.write_text(source.read_text().replace(f'https://localhost:{f.port} {{',
                         f'https://localhost:{f.port} {{\ntls "{cert}" "{key}"'))
                 config.write_text(server)
-                os.kill(master, signal.SIGHUP)
+                if not automatic: os.kill(master, signal.SIGHUP)
                 wait(lambda: peer_cert(f.port, 'localhost') == f.tls_cert.public_bytes(serialization.Encoding.DER),
                      'removing all managed certificates did not switch to manual TLS')
                 healthy()
                 wait(lambda: not f.dns.records, 'DNS challenge records were not cleaned')
-                print(f'{mode} {challenge}: reload add/remove/SAN/failure/supersession OK', flush=True)
+                print(f'{mode} {challenge}: {"auto" if automatic else "manual"} reload add/remove/SAN/failure/supersession OK', flush=True)

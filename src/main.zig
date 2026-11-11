@@ -144,7 +144,9 @@ pub fn main(init: std.process.Init) u8 {
 
     var diag: Diag = .{ .gpa = gpa, .echo = true };
     defer diag.deinit();
-    const cfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility }, &diag) catch {
+    var sources: z.http.config_watch.Sources = .{ .gpa = gpa };
+    defer sources.deinit();
+    const cfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility, .sources = &sources }, &diag) catch {
         if (o.test_only) eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
         return 1;
     };
@@ -193,7 +195,7 @@ pub fn main(init: std.process.Init) u8 {
         }
         return 0;
     }
-    return master(gpa, cfg, copts, conf_path, o);
+    return master(gpa, cfg, copts, conf_path, o, &sources);
 }
 
 fn absPath(a: std.mem.Allocator, p: []const u8) ![]const u8 {
@@ -503,7 +505,10 @@ fn validateReload(gpa: std.mem.Allocator, cfg: *config.Config, active: *const co
     }
 }
 
-fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts) u8 {
+fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts, sources: *z.http.config_watch.Sources) u8 {
+    var watcher: z.http.config_watch.Watcher = .{ .active = sources.*, .attempt = .{ .gpa = gpa } };
+    sources.* = .{ .gpa = gpa };
+    defer watcher.deinit();
     // worker_rlimit_nofile, or as high as the hard limit allows (bounded) when unset
     raiseNofile(cfg0.worker_rlimit_nofile);
     installSignals(masterSignal);
@@ -626,8 +631,13 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             m_reopen = false;
             signalAll(&gen, SIGUSR1);
         }
+        if (gen.cfg.auto_reload and watcher.poll(now)) {
+            eprint("zhttpd: [notice] configuration files changed, scheduling reload\n", .{});
+            m_reload = true;
+        }
         if (m_reload) {
             m_reload = false;
+            watcher.beginAttempt();
             eprint("zhttpd: [notice] reconfiguring\n", .{});
             if (pending) |cfg| {
                 if (acme_pending) {
@@ -637,7 +647,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                 } else destroyConfig(gpa, cfg);
                 pending = null;
             }
-            const ncfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility }, &diag) catch {
+            const ncfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility, .sources = &watcher.attempt }, &diag) catch {
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
@@ -659,7 +669,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         }
         // Keep serving the active generation throughout issuance. Activation is
         // one transaction after every certificate has passed TLS validation.
-        if ((pending != null and missing == null and !acme_pending) or (pending == null and refresh_tls)) {
+        if ((pending != null and missing == null and !acme_pending and !watcher.unsettled()) or (pending == null and refresh_tls)) {
             const ncfg = pending orelse gen.cfg;
             const owns_candidate = pending != null;
             pending = null;
@@ -692,9 +702,10 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             for (socks.items) |s| if (!s.used) net.close(s.fd);
             for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
             gen = next;
+            if (owns_candidate) watcher.accept();
             eprint("zhttpd: [notice] reload complete\n", .{});
         }
-        if (acme_pid == 0 and missing != null) {
+        if (acme_pid == 0 and missing != null and !watcher.unsettled()) {
             const ac = missing.?;
             eprint("zhttpd: issuing reload ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
             acme_active = ac;

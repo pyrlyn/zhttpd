@@ -9,7 +9,7 @@ const support = @import("settings");
 const Error = support.Error || error{BadVariable};
 const C = http.config;
 pub const Compatibility = enum { self, nginx, apache, litespeed, caddy };
-pub const Options = struct { prefix: []const u8, conf_prefix: []const u8, strict: bool = false, quiet_ignored: bool = false, compatibility: Compatibility = .nginx, acme_domains: []const []const u8 = &.{} };
+pub const Options = struct { prefix: []const u8, conf_prefix: []const u8, strict: bool = false, quiet_ignored: bool = false, compatibility: Compatibility = .nginx, acme_domains: []const []const u8 = &.{}, sources: ?*http.config_watch.Sources = null };
 const Modules = struct { http: bool = true, self: bool = true, nginx: bool = true, apache: bool = true, litespeed: bool = true, caddy: bool = true, websocket: bool = true, logging: bool = true, fastcgi: bool = true, wsgi: bool = true, acme: bool = true };
 const Route = struct { path: ?[]const u8 = null, match: enum { prefix, exact } = .prefix, response: ?[]const u8 = null, root: ?[]const u8 = null, proxy: ?[]const u8 = null, websocket: bool = false, fastcgi: ?[]const u8 = null, wsgi: ?[]const u8 = null, status: u16 = 200 };
 const Native = struct {
@@ -37,6 +37,7 @@ const Settings = struct {
     config: ?[]const u8 = null,
     prefix: ?[]const u8 = null,
     pid: ?[]const u8 = null,
+    auto_reload: bool = true,
     error_log: ?[]const u8 = null,
     native: Native = .{},
     has_http: bool = false,
@@ -204,7 +205,7 @@ const Toml = struct {
                     result.logging.format = f;
                 } else if (std.mem.eql(u8, key, "error")) result.logging.error_path = try p.string(v) else if (std.mem.eql(u8, key, "level")) result.logging.level = http.logging.level(try p.string(v)) orelse return p.fail("unknown logging level", .{}) else return p.fail("unknown logging setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "server")) {
-                if (std.mem.eql(u8, key, "compatibility")) result.compatibility = std.meta.stringToEnum(Compatibility, try p.string(v)) orelse return p.fail("compatibility must be self, nginx, apache, litespeed or caddy", .{}) else if (std.mem.eql(u8, key, "config")) result.config = try p.string(v) else if (std.mem.eql(u8, key, "prefix")) result.prefix = try p.string(v) else if (std.mem.eql(u8, key, "pid")) result.pid = try p.string(v) else if (std.mem.eql(u8, key, "error_log")) result.error_log = try p.string(v) else return p.fail("unknown server setting {s}", .{key});
+                if (std.mem.eql(u8, key, "auto_reload")) result.auto_reload = try p.boolean(v) else if (std.mem.eql(u8, key, "compatibility")) result.compatibility = std.meta.stringToEnum(Compatibility, try p.string(v)) orelse return p.fail("compatibility must be self, nginx, apache, litespeed or caddy", .{}) else if (std.mem.eql(u8, key, "config")) result.config = try p.string(v) else if (std.mem.eql(u8, key, "prefix")) result.prefix = try p.string(v) else if (std.mem.eql(u8, key, "pid")) result.pid = try p.string(v) else if (std.mem.eql(u8, key, "error_log")) result.error_log = try p.string(v) else return p.fail("unknown server setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "http")) {
                 result.has_http = true;
                 if (std.mem.eql(u8, key, "listen")) result.native.listen = try p.string(v) else if (std.mem.eql(u8, key, "root")) result.native.root = try p.string(v) else if (std.mem.eql(u8, key, "response")) result.native.response = try p.string(v) else if (std.mem.eql(u8, key, "index")) result.native.index = try p.string(v) else if (std.mem.eql(u8, key, "http2")) result.native.http2 = try p.boolean(v) else if (std.mem.eql(u8, key, "http3")) result.native.http3 = try p.boolean(v) else if (std.mem.eql(u8, key, "max_body_size")) result.native.max_body_size = try p.number(v) else if (std.mem.eql(u8, key, "keepalive_timeout_ms")) result.native.keepalive_timeout_ms = try p.number(v) else return p.fail("unknown HTTP setting {s}", .{key});
@@ -369,6 +370,7 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
 }
 
 pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
+    if (opts.sources) |sources| try sources.observe(file, .file);
     if (!std.mem.endsWith(u8, file, ".toml")) return adapter(gpa, file, opts.prefix, opts, opts.compatibility, diag);
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
@@ -420,6 +422,7 @@ pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http
         try validateModuleLocations(&parser, settings.modules, srv.locations);
         try validateModuleLocations(&parser, settings.modules, srv.named);
     }
+    cfg.auto_reload = settings.auto_reload;
     cfg.logging_enabled = settings.modules.logging;
     var log_builder: support.Builder = .{ .cfg = cfg, .a = own, .diag = diag };
     const origin: support.Node = .{ .name = "logging", .args = &.{}, .file = file, .line = 0 };
@@ -513,11 +516,11 @@ fn adapter(gpa: std.mem.Allocator, file: []const u8, root: []const u8, opts: Opt
         .nginx => blk: {
             const prefix = try std.fmt.allocPrint(gpa, "{s}/", .{std.fs.path.dirname(file) orelse root});
             defer gpa.free(prefix);
-            break :blk nginx.load(gpa, file, .{ .prefix = root, .conf_prefix = prefix, .strict = opts.strict, .quiet_ignored = opts.quiet_ignored }, diag);
+            break :blk nginx.load(gpa, file, .{ .prefix = root, .conf_prefix = prefix, .strict = opts.strict, .quiet_ignored = opts.quiet_ignored, .sources = opts.sources }, diag);
         },
-        .apache => apache.load(gpa, file, .{ .server_root = root }, diag),
-        .litespeed => litespeed.load(gpa, file, root, diag),
-        .caddy => caddy.loadWithAcme(gpa, file, root, opts.acme_domains, diag),
+        .apache => apache.load(gpa, file, .{ .server_root = root, .sources = opts.sources }, diag),
+        .litespeed => litespeed.loadObserved(gpa, file, root, opts.sources, diag),
+        .caddy => caddy.loadObserved(gpa, file, root, opts.acme_domains, opts.sources, diag),
     };
 }
 

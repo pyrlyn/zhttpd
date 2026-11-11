@@ -63,7 +63,9 @@ FastCGI forwards to TCP responders; WSGI uses an isolated Python gateway.
 ACME uses mise-pinned lego, with multi-domain HTTP-01 / DNS-01 issuance, wildcard certificates, periodic renewal and
 certificate reload in all five compatibility modes. Separate SNI certificates
 use `[[acme.certificates]]`, each with its own DNS provider and credential file.
-Domains, SANs and certificate records can be added or removed with `-s reload`:
+Domains, SANs and certificate records can be added or removed with `-s reload`.
+Configuration files and their include/import dependencies are watched by default
+(`server.auto_reload = false` disables this). Saves trigger the same reload;
 missing certificates are issued before switching workers, while the master and
 existing HTTPS service stay running. Failed issuance keeps the active configuration.
 Production CA issuance is opt-in through `[acme]`.
@@ -135,7 +137,10 @@ check exact/wildcard SNI priority, HTTP/2 and HTTP/3 handshakes, independent
 renewal after provider failure, and configuration reordering during renewal.
 Reload tests cover adding/removing records and SANs, cached re-addition, atomic
 failure, superseded issuance, timeouts, and removal of the final managed certificate
-in all five modes with both HTTP-01 and DNS-01.
+in all five modes with both HTTP-01 and DNS-01, both manually and through file watching.
+Watcher tests cover debounced saves, same-size/mtime edits, symlink swaps,
+missing/invalid dependency recovery, glob membership changes, direct native configs
+and accepted connections awaiting their first request during reload.
 No public certificate is requested. Fixtures use temporary files/ports and
 terminate their own process groups on failure.
 

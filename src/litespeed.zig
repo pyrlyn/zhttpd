@@ -99,7 +99,11 @@ fn host(b: *B, s: *C.Server, nodes: []N, vh_root: []const u8) Error!void {
     }
 }
 pub fn load(gpa: std.mem.Allocator, file: []const u8, root: []const u8, diag: *http.diag.Diag) Error!*C.Config {
+    return loadObserved(gpa, file, root, null, diag);
+}
+pub fn loadObserved(gpa: std.mem.Allocator, file: []const u8, root: []const u8, sources: ?*http.config_watch.Sources, diag: *http.diag.Diag) Error!*C.Config {
     var b = try B.init(gpa, file, root, diag);
+    b.sources = sources;
     errdefer destroy(gpa, b.cfg);
     const nodes = try b.read(file, .braces);
     const defaults = try b.server(.{ .name = "main", .args = &.{}, .file = file, .line = 0 }, null);

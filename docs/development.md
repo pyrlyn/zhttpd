@@ -48,7 +48,8 @@ mise run test:e2e
 
 This prepares dependencies and tests actual HTTP/1.1, HTTP/2 and HTTP/3 clients,
 multiplexed streams, uploads, cancellation, virtual hosts, reload, configuration
-adapters, logging, FastCGI/WSGI, local ACME issuance/renewal/reload and WebSocket examples.
+adapters, automatic config reload, logging, FastCGI/WSGI, local ACME
+issuance/renewal/reload and WebSocket examples.
 ACME tests use a local CA; they do not request public certificates.
 After preparing dependencies, run just the protocol checks with:
 
@@ -62,12 +63,24 @@ After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:
 
 ```bash
 mise exec -- .run/venv/bin/python tests/acme_reload_e2e.py zig-out/bin/zhttpd
+mise exec -- .run/venv/bin/python tests/acme_reload_e2e.py zig-out/bin/zhttpd --auto
 ```
 
 Optional trailing mode names (`self`, `nginx`, `apache`, `litespeed`, `caddy`)
 select adapters; the default tests all five with both HTTP-01 and DNS-01.
 The suite checks certificate additions/removals, SAN changes, cached re-addition,
 atomic failure, superseded issuance and timeout recovery without restarting master.
+`--auto` runs the same scenarios by saving configuration files instead of sending
+reload signals.
+
+The configuration watcher checks also run with a minimal build:
+
+```bash
+mise exec -- .run/venv/bin/python tests/auto_reload_e2e.py zig-out/bin/zhttpd
+```
+
+They cover all five adapters, native includes/imports, glob membership, invalid
+and missing files, atomic saves, debounce, and disabling/re-enabling the watcher.
 
 ## HTTP error regression checks
 

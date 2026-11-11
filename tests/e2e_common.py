@@ -16,8 +16,8 @@ def free_port():
 
 
 @contextlib.contextmanager
-def running(command, port, cwd=None, env=None, startup_timeout=5):
-    with tempfile.TemporaryFile(mode='w+') as log:
+def running(command, port, cwd=None, env=None, startup_timeout=5, log_path=None):
+    with (open(log_path, 'w+') if log_path else tempfile.TemporaryFile(mode='w+')) as log:
         process = subprocess.Popen([str(x) for x in command], cwd=cwd, env=env,
                                    stdout=log, stderr=log, start_new_session=True)
         try:

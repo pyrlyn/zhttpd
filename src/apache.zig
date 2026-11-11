@@ -8,12 +8,13 @@ const Node = support.Node;
 const Error = support.Error;
 const C = http.config;
 const eq = support.eql;
-pub const Options = struct { server_root: []const u8 };
+pub const Options = struct { server_root: []const u8, sources: ?*http.config_watch.Sources = null };
 pub const destroy = support.destroy;
 
 pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
     var b = try B.init(gpa, file, opts.server_root, diag);
     errdefer destroy(gpa, b.cfg);
+    b.sources = opts.sources;
     const nodes = try expand(&b, try b.read(file, .apache), 0);
     try build(&b, nodes);
     return b.cfg;
@@ -21,6 +22,7 @@ pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http
 pub fn loadString(gpa: std.mem.Allocator, text: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
     var b = try B.init(gpa, "httpd.conf", opts.server_root, diag);
     errdefer destroy(gpa, b.cfg);
+    b.sources = opts.sources;
     const owned = try b.a.dupe(u8, text);
     try build(&b, try expand(&b, try b.parse(owned, "httpd.conf", .apache), 0));
     return b.cfg;
@@ -36,6 +38,7 @@ fn expand(b: *B, nodes: []Node, depth: u8) Error![]Node {
         if (eq(n.name, "Include") or eq(n.name, "IncludeOptional")) {
             try b.arity(n, 1, 1);
             const path = try b.fullPath(b.cfg.prefix, n.args[0]);
+            if (b.sources) |sources| try sources.observe(path, if (http.os.hasGlob(path)) .glob else .file);
             const paths: []const []const u8 = if (http.os.hasGlob(path)) try http.os.glob(b.a, path) else try b.a.dupe([]const u8, &.{path});
             if (paths.len == 0 and eq(n.name, "Include")) return b.fail(n, "Include matches no files", .{});
             for (paths) |p| {

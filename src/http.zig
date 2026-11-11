@@ -1,6 +1,7 @@
 //! Standalone HTTP runtime: request/response codecs, transports and server.
 //! Accepts config.Config from any adapter; does not import the nginx module.
 const std = @import("std");
+pub const config_watch = @import("config_watch.zig");
 pub const os = @import("os.zig");
 pub const regex = @import("regex.zig");
 pub const diag = @import("http/diag.zig");
