@@ -42,6 +42,24 @@ and the real-world configuration fixtures. Run it from the repository root so
 fixture paths resolve. The default build disables TLS; add `-Dtls=true` and the
 appropriate OpenSSL prefix to test a TLS build.
 
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` runs on pushes to `main`, pull requests and manual
+workflow dispatch. It uses the versions in `mise.toml` and the locked Python
+E2E dependencies.
+
+- Linux and macOS build the release server and Raft companion, run Zig unit
+  tests, Go race/mTLS tests, and real load-balancer/Raft cluster E2E tests.
+- A separate Linux job builds the pinned OpenSSL and HTTP codec libraries,
+  compiles the complete server, and runs unit tests plus the full HTTP/1.1,
+  HTTP/2, HTTP/3, configuration/reload, ACME, gateway and WebSocket E2E suite.
+
+The ACME/DNS and Raft checks use local fixtures and require no production
+credentials. Compiled protocol dependencies and mise toolchains are cached;
+changes to their versions or build scripts invalidate the native dependency
+cache. Job timeouts and per-ref cancellation prevent obsolete runs from piling
+up. The workflow token has read-only repository access.
+
 ## Full protocol and module checks
 
 ```bash
