@@ -39,8 +39,9 @@ Fair nginx tuning in the template:
   `ssl_session_tickets on`, `http2 off`
 
 zhttpd applies the same directives it implements (including TLS settings from
-`ssl_*` and `reuseport`). `tcp_nopush`, `accept_mutex`, and `http2` are ignored
-with a warning (HTTP/2 is not implemented; “off” is already the behaviour).
+`ssl_*`, `reuseport`, and `http2 off`). Compatibility is not identical: for
+example, its TLS session cache is per worker rather than nginx's shared cache.
+The selected scenarios exercise HTTP/1.1; HTTP/2 and HTTP/3 are tested separately.
 
 ## Load tool, files, certs
 
@@ -77,8 +78,8 @@ handshake-heavy case.
 `bench/leaders.toml` names the HttpArena leader per protocol:
 
 - HTTP/1.1: `dusty-tuned` (active, cloned under `bench/competitors/`)
-- HTTP/2: `h2o` (stub — zhttpd has no HTTP/2 yet)
-- HTTP/3: `bun` (stub — zhttpd has no HTTP/3 yet)
+- HTTP/2: `h2o` (competitor benchmark not wired up)
+- HTTP/3: `bun` (competitor benchmark not wired up)
 
 dusty-tuned is not nginx-compatible; it is run with an **equivalent setup**
 (same files, same ports, same cert, same oha command), not the same config file.
@@ -101,6 +102,23 @@ bench/run.sh                  # full plan on this machine
 SERVERS="zhttpd nginx" bench/run.sh
 DURATION=15 REPS=3 bench/run.sh
 
+# Focus on HTTPS (same configuration, files and load settings for every server).
+SCENARIO_FILTER='^https-' SERVERS="zhttpd nginx" bench/run.sh
+
+# Include a saved ReleaseFast binary built before the optimization.
+ZHTTPD_BASELINE=/absolute/path/to/baseline/zhttpd \
+  SERVERS="zhttpd-baseline nginx zhttpd" SCENARIO_FILTER='^https-' bench/run.sh
+
+# Linux: measure server CPU throughput without competing with the load client.
+# Both servers get the same one-worker config and CPU 0; oha gets CPUs 1-3.
+WORKERS=1 SERVER_CPUS=0 LOAD_CPUS=1-3 \
+  SERVERS="zhttpd nginx" SCENARIO_FILTER='^https-' bench/run.sh
+
+# An explicit acceptance gate: every measured scenario must reach >=1.5x nginx,
+# with median p99 no worse than nginx AND the saved zhttpd baseline (if supplied),
+# all repetitions/scenarios present, and no HTTP/client errors. Exits 1 on failure.
+python3 bench/check-target.py bench/results/STAMP 1.5
+
 # Linux (after the VM exists — see bench/lima/README.md)
 limactl start zhttpd-bench    # never start/stop default, infra-test, Colima, tc-prod-*
 limactl shell zhttpd-bench -- bash /Users/listepo/Grok/zig-http-server/bench/lima/setup-vm.sh
@@ -110,3 +128,13 @@ limactl shell zhttpd-bench -- bash /Users/listepo/Grok/zig-http-server/bench/run
 Do not publish a run whose `load.log` shows a colliding leftover server, bind
 failures, or a 1-minute load average that is dominated by unrelated work without
 saying so in the report.
+
+Timed samples now use oha `-w -t 10s`: in-flight requests finish after the
+deadline, with a timeout, instead of being counted as deadline-abort errors.
+Keep-alive throughput and fresh-connection TLS handshakes are separate metrics;
+passing one scenario does not establish a blanket performance guarantee.
+
+Use `CONF_TEMPLATE=/absolute/path/to/template.conf.in` to compare another shared
+configuration. The result directory retains the rendered configuration, binary
+SHA-256 hashes, and scenario manifest. Compare different configurations as
+separate series, not selected samples from different configurations.

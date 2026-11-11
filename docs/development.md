@@ -124,6 +124,20 @@ This uses Python's standard library and a temporary config and port. It checks
 response codes, GET/HEAD, body lengths, server tokens, custom `error_page`
 responses, redirects, and 204/304 handling. It terminates its test server on exit.
 
+For a TLS-enabled build, run `python3 tests/tls-io.py /path/to/zhttpd`.
+This generates a temporary test certificate with the `openssl` CLI and checks
+TLS 1.2 and 1.3 record fragmentation, coalesced records, pipelining, request body
+draining, HEAD/ranges, large responses with a slow reader, idle connections,
+Last-Modified headers, changes to open files, and TCP half-close with a pending
+response. Set `OPENSSL_CLI=/path/to/openssl` to use OpenSSL 3 for the additional
+TLS 1.3 KeyUpdate checks (older CLIs explicitly skip this check). `OPENSSL_BIN`
+is also supported, so the normal mise environment uses the pinned OpenSSL.
+These TLS checks and the benchmark-gate checks below run in `test-e2e` as well.
+
+`python3 tests/bench-target.py` verifies that the performance gate rejects p99
+regressions against nginx or a saved baseline, incomplete samples, errors, and
+insufficient throughput.
+
 ## nginx comparison smoke checks
 
 Build the TLS binary and comparison nginx using the

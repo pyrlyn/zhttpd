@@ -178,6 +178,8 @@ bench/run.sh --quick           # short comparison vs nginx and dusty-tuned
 bench/run.sh                   # full plan: see bench/PLAN.md
 ```
 
-Official results are in [bench/RESULTS.md](bench/RESULTS.md). The exact nginx
-config is generated from `bench/nginx.conf.in`. Linux epoll runs can use the
-dedicated Lima VM described in [bench/lima/README.md](bench/lima/README.md).
+Benchmark results and methodology are in [bench/RESULTS.md](bench/RESULTS.md)
+and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
+[bench/lima/README.md](bench/lima/README.md).
+The measured HTTPS optimization and its unmet 1.5x-nginx target are documented
+in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).

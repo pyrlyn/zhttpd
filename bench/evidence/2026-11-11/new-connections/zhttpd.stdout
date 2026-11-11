@@ -1,0 +1,3 @@
+zhttpd: listening on 0.0.0.0:48080
+zhttpd: listening on 0.0.0.0:48443 (ssl)
+zhttpd: master 3755 started 4 worker(s), event method epoll
