@@ -62,7 +62,11 @@ WebSocket supports RFC 6455 HTTP/1.1 upgrades and callback-based applications.
 FastCGI forwards to TCP responders; WSGI uses an isolated Python gateway.
 ACME uses mise-pinned lego, with multi-domain HTTP-01 / DNS-01 issuance, wildcard certificates, periodic renewal and
 certificate reload in all five compatibility modes. Separate SNI certificates
-use `[[acme.certificates]]`, each with its own DNS provider and credential file. Production CA issuance is opt-in through `[acme]`.
+use `[[acme.certificates]]`, each with its own DNS provider and credential file.
+Domains, SANs and certificate records can be added or removed with `-s reload`:
+missing certificates are issued before switching workers, while the master and
+existing HTTPS service stay running. Failed issuance keeps the active configuration.
+Production CA issuance is opt-in through `[acme]`.
 
 ## HTTP/2 and HTTP/3
 
@@ -129,6 +133,9 @@ TXT cleanup, failure retention and isolation of unrelated SNI certificates.
 Independent certificate tests use different DNS providers/credential files,
 check exact/wildcard SNI priority, HTTP/2 and HTTP/3 handshakes, independent
 renewal after provider failure, and configuration reordering during renewal.
+Reload tests cover adding/removing records and SANs, cached re-addition, atomic
+failure, superseded issuance, timeouts, and removal of the final managed certificate
+in all five modes with both HTTP-01 and DNS-01.
 No public certificate is requested. Fixtures use temporary files/ports and
 terminate their own process groups on failure.
 

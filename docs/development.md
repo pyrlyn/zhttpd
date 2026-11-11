@@ -48,7 +48,7 @@ mise run test:e2e
 
 This prepares dependencies and tests actual HTTP/1.1, HTTP/2 and HTTP/3 clients,
 multiplexed streams, uploads, cancellation, virtual hosts, reload, configuration
-adapters, logging, FastCGI/WSGI, local ACME issuance/renewal and WebSocket examples.
+adapters, logging, FastCGI/WSGI, local ACME issuance/renewal/reload and WebSocket examples.
 ACME tests use a local CA; they do not request public certificates.
 After preparing dependencies, run just the protocol checks with:
 
@@ -57,6 +57,17 @@ mise exec -- zig build test-protocols -Dtls=true -Dhttp=true \
   -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install \
   -De2e-python=.run/venv/bin/python
 ```
+
+After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:
+
+```bash
+mise exec -- .run/venv/bin/python tests/acme_reload_e2e.py zig-out/bin/zhttpd
+```
+
+Optional trailing mode names (`self`, `nginx`, `apache`, `litespeed`, `caddy`)
+select adapters; the default tests all five with both HTTP-01 and DNS-01.
+The suite checks certificate additions/removals, SAN changes, cached re-addition,
+atomic failure, superseded issuance and timeout recovery without restarting master.
 
 ## HTTP error regression checks
 

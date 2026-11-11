@@ -343,6 +343,15 @@ pub fn buildSni(gpa: std.mem.Allocator, cfg: *const config.Config, listen: *cons
     return tbl;
 }
 
+/// Release a table that was never handed to a worker (failed reload).
+pub fn freeSni(gpa: std.mem.Allocator, tbl: *SniTable) void {
+    for (tbl.managed) |item| if (tbl.ctxs[item.server.index] != item.ctx) SSL_CTX_free(item.ctx);
+    for (tbl.ctxs) |ctx| if (ctx) |value| SSL_CTX_free(value);
+    gpa.free(tbl.managed);
+    gpa.free(tbl.ctxs);
+    gpa.destroy(tbl);
+}
+
 pub fn newConn(tbl: *SniTable, fd: c_int) ?*SSL {
     const ssl = SSL_new(tbl.default_ctx) orelse return null;
     if (SSL_set_fd(ssl, fd) != 1) {

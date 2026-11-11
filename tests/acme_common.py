@@ -217,7 +217,7 @@ check_interval_seconds=1
             source = root/('sites.caddy' if mode == 'caddy' else 'server.conf')
             text = source.read_text()
             if mode == 'nginx': text = text.replace('server_name localhost;', 'server_name ' + ' '.join(domains[:-1]) + ';')
-            elif mode == 'apache': text = text.replace('ServerName localhost', 'ServerName ' + domains[0] + '\nServerAlias ' + ' '.join(domains[1:-1]))
+            elif mode == 'apache': text = text.replace('ServerName localhost', 'ServerName ' + domains[0] + ('\nServerAlias ' + ' '.join(domains[1:-1]) if len(domains) > 2 else ''))
             elif mode == 'litespeed': text = text.replace('map managed localhost', 'map managed ' + ','.join(domains[:-1]))
             else: text = text.replace(f'https://localhost:{port}', ', '.join(f'https://{domain}:{port}' for domain in domains[:-1]))
             # A second managed vhost tests certificate assignment across SNI entries.

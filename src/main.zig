@@ -333,11 +333,35 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
     try multiplex.validate(cfg);
     const nw = @max(cfg.worker_processes, 1);
     const fds = try gpa.alloc([]c_int, cfg.listens.len);
+    errdefer gpa.free(fds);
+    @memset(fds, &.{});
     const sni = try gpa.alloc(?*tls.SniTable, cfg.listens.len);
+    @memset(sni, null);
+    errdefer {
+        for (sni) |table| if (table) |t| {
+            if (tls.enabled) tls.freeSni(gpa, t);
+        };
+        gpa.free(sni);
+        for (fds) |list| {
+            for (list) |fd| {
+                if (fd < 0) continue;
+                var reused = false;
+                for (old) |socket| {
+                    if (socket.fd == fd) {
+                        reused = true;
+                        break;
+                    }
+                }
+                if (!reused) net.close(fd);
+            }
+            gpa.free(list);
+        }
+    }
     for (cfg.listens, 0..) |*l, li| {
         const per_worker = builtin.os.tag == .linux and l.opts.reuseport and !l.opts.quic;
         const n: usize = if (per_worker) nw else 1;
         fds[li] = try gpa.alloc(c_int, n);
+        @memset(fds[li], -1);
         for (0..n) |k| {
             // reuse a socket from the previous generation (reload) when possible
             var reused: ?c_int = null;
@@ -453,6 +477,32 @@ fn raiseNofile(want: ?u64) void {
     eprint("zhttpd: [alert] setrlimit(RLIMIT_NOFILE, {d}) failed\n", .{target});
 }
 
+fn destroyConfig(gpa: std.mem.Allocator, cfg: *config.Config) void {
+    cfg.deinit();
+    gpa.destroy(cfg);
+}
+
+fn validateReload(gpa: std.mem.Allocator, cfg: *config.Config, active: *const config.Config, globals: ?[]const u8, diag: *Diag) !void {
+    if (globals) |g| try applyGlobals(cfg, g, diag);
+    try multiplex.validate(cfg);
+    if (tls.enabled) {
+        try tls.validateConfig(gpa, cfg, diag);
+    } else {
+        for (cfg.listens) |l| if (l.opts.ssl) {
+            return error.Tls;
+        };
+    }
+    for (cfg.acme) |ac| {
+        if (ac.challenge != .@"http-01") continue;
+        for (active.listens) |l| {
+            if (!l.opts.quic and l.addr.port == ac.http_port) {
+                diag.add(.emerg, null, 0, "ACME HTTP-01 port {d} is occupied by the active configuration", .{ac.http_port});
+                return error.AcmePortConflict;
+            }
+        }
+    }
+}
+
 fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts) u8 {
     // worker_rlimit_nofile, or as high as the hard limit allows (bounded) when unset
     raiseNofile(cfg0.worker_rlimit_nofile);
@@ -494,6 +544,13 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
     var acme_started: i64 = 0;
     var acme_before: ?[32]u8 = null;
     var acme_active: z.http.acme.Settings = undefined;
+    // A candidate owns its settings until activated or discarded. An obsolete
+    // issuer may finish cleanup, but cannot activate its superseded candidate.
+    var pending: ?*config.Config = null;
+    var retired: ?*config.Config = null;
+    var acme_pending = false;
+    var acme_cancelled = false;
+    var refresh_tls = false;
     var old: std.ArrayList(c.pid_t) = .empty; // workers of previous generations, shutting down
     while (true) {
         sleepMs(100);
@@ -504,6 +561,21 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             if (pid <= 0) break;
             if (pid == acme_pid) {
                 acme_pid = 0;
+                if (acme_cancelled) {
+                    acme_cancelled = false;
+                    if (retired) |cfg| destroyConfig(gpa, cfg);
+                    retired = null;
+                    continue;
+                }
+                if (acme_pending) {
+                    acme_pending = false;
+                    if (status != 0 or !z.http.acme.ready(acme_active)) {
+                        eprint("zhttpd: [error] ACME reload issuance {s} failed; keeping the old configuration\n", .{acme_active.name});
+                        destroyConfig(gpa, pending.?);
+                        pending = null;
+                    }
+                    continue;
+                }
                 // Use the settings of the completed child, never an array index
                 // from a configuration that may have been reordered during reload.
                 const ac = acme_active;
@@ -511,7 +583,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                     if (!std.mem.eql(u8, job.settings.certificate, ac.certificate)) continue;
                     if (status == 0) {
                         const after = z.http.acme.fingerprint(ac.certificate);
-                        if (after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) m_reload = true;
+                        if (after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) refresh_tls = true;
                     } else eprint("zhttpd: [error] ACME renewal {s} failed; current HTTPS configuration remains active\n", .{ac.name});
                     job.next_check_ms = z.server.loop.nowMs() + @as(i64, if (status == 0) job.settings.check_interval_seconds else @min(job.settings.check_interval_seconds, 3600)) * 1000;
                 }
@@ -550,21 +622,6 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         }
         const now = z.server.loop.nowMs();
         if (acme_pid > 0 and now - acme_started > @as(i64, acme_active.operation_timeout_seconds) * 1000) _ = kill(acme_pid, 9);
-        if (acme_pid == 0) {
-            var due: ?usize = null;
-            for (acme_jobs, 0..) |job, i| {
-                if (now >= job.next_check_ms and (due == null or job.next_check_ms < acme_jobs[due.?].next_check_ms)) due = i;
-            }
-            if (due) |i| {
-                const ac = acme_jobs[i].settings;
-                acme_active = ac;
-                acme_before = z.http.acme.fingerprint(ac.certificate);
-                acme_pid = z.http.acme.start(gpa, ac, gen.error_fd) catch 0;
-                acme_started = now;
-                acme_jobs[i].next_check_ms = now + @as(i64, @min(ac.check_interval_seconds, 3600)) * 1000;
-                if (acme_pid == 0) eprint("zhttpd: [error] cannot start ACME renewal {s}\n", .{ac.name});
-            }
-        }
         if (m_reopen) {
             m_reopen = false;
             signalAll(&gen, SIGUSR1);
@@ -572,20 +629,54 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         if (m_reload) {
             m_reload = false;
             eprint("zhttpd: [notice] reconfiguring\n", .{});
+            if (pending) |cfg| {
+                if (acme_pending) {
+                    retired = cfg;
+                    acme_cancelled = true;
+                    acme_pending = false;
+                } else destroyConfig(gpa, cfg);
+                pending = null;
+            }
             const ncfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility }, &diag) catch {
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            validateReload(gpa, ncfg, gen.cfg, o.globals, &diag) catch {
+                destroyConfig(gpa, ncfg);
+                eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
+                continue;
+            };
+            pending = ncfg;
+        }
+        var missing: ?z.http.acme.Settings = null;
+        if (pending) |cfg| {
+            for (cfg.acme) |ac| {
+                if (!z.http.acme.ready(ac)) {
+                    missing = ac;
+                    break;
+                }
+            }
+        }
+        // Keep serving the active generation throughout issuance. Activation is
+        // one transaction after every certificate has passed TLS validation.
+        if ((pending != null and missing == null and !acme_pending) or (pending == null and refresh_tls)) {
+            const ncfg = pending orelse gen.cfg;
+            const owns_candidate = pending != null;
+            pending = null;
+            refresh_tls = false;
             var socks: std.ArrayList(Sock) = .empty;
+            defer socks.deinit(gpa);
             for (gen.cfg.listens, 0..) |l, li| if (gen.fds[li].len == 1) {
                 socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false, .quic = l.opts.quic }) catch {};
             };
             const next_jobs = z.http.acme.renewals(gpa, ncfg.acme, acme_jobs) catch {
+                if (owns_candidate) destroyConfig(gpa, ncfg);
                 eprint("zhttpd: [emerg] cannot allocate ACME renewal schedule\n", .{});
                 continue;
             };
             const ngen = prepare(gpa, ncfg, socks.items, &diag) catch {
                 gpa.free(next_jobs);
+                if (owns_candidate) destroyConfig(gpa, ncfg);
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
@@ -601,6 +692,35 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             for (socks.items) |s| if (!s.used) net.close(s.fd);
             for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
             gen = next;
+            eprint("zhttpd: [notice] reload complete\n", .{});
+        }
+        if (acme_pid == 0 and missing != null) {
+            const ac = missing.?;
+            eprint("zhttpd: issuing reload ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
+            acme_active = ac;
+            acme_started = now;
+            acme_pid = z.http.acme.start(gpa, ac, gen.error_fd) catch 0;
+            acme_pending = acme_pid > 0;
+            if (!acme_pending) {
+                eprint("zhttpd: [error] cannot start ACME reload issuance; keeping the old configuration\n", .{});
+                destroyConfig(gpa, pending.?);
+                pending = null;
+            }
+        }
+        if (acme_pid == 0 and pending == null) {
+            var due: ?usize = null;
+            for (acme_jobs, 0..) |job, i| {
+                if (now >= job.next_check_ms and (due == null or job.next_check_ms < acme_jobs[due.?].next_check_ms)) due = i;
+            }
+            if (due) |i| {
+                const ac = acme_jobs[i].settings;
+                acme_active = ac;
+                acme_before = z.http.acme.fingerprint(ac.certificate);
+                acme_pid = z.http.acme.start(gpa, ac, gen.error_fd) catch 0;
+                acme_started = now;
+                acme_jobs[i].next_check_ms = now + @as(i64, @min(ac.check_interval_seconds, 3600)) * 1000;
+                if (acme_pid == 0) eprint("zhttpd: [error] cannot start ACME renewal {s}\n", .{ac.name});
+            }
         }
     }
 }
