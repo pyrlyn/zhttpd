@@ -431,7 +431,11 @@ pub const CleanupRetry = struct {
         return if (s.next_attempt_ms) |deadline| now >= deadline else false;
     }
     pub fn record(s: *CleanupRetry, result: CleanupResult, now: i64) bool {
-        const changed = s.last_error != result.deferred;
+        // Compare payloads explicitly before updating the saved optional error.
+        const changed = if (s.last_error) |previous|
+            (if (result.deferred) |current| previous != current else true)
+        else
+            result.deferred != null;
         s.last_error = result.deferred;
         if (result.deferred != null) {
             s.next_attempt_ms = now + s.delay_ms;
