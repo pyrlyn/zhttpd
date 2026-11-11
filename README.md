@@ -51,3 +51,22 @@ bench/run.sh                   # full plan: see bench/PLAN.md
 Official results are in [bench/RESULTS.md](bench/RESULTS.md). The exact nginx
 config is generated from `bench/nginx.conf.in`. Linux epoll runs can use the
 dedicated Lima VM described in [bench/lima/README.md](bench/lima/README.md).
+
+
+## Container image
+
+Images are published to `ghcr.io/pyrlyn/zhttpd` by a **manual** Coolify deploy
+(git pull of the branch, `docker build` of this repository's Dockerfile, push,
+then deploy). There is no GitHub Actions image-build workflow and no auto-deploy
+on git push.
+
+Tag mapping (also in the Coolify workflow comments / pyrlyn/infra `paas/config/apps.yml`):
+
+| Git event | Tags |
+| --- | --- |
+| push to `dev` | `:dev` and `:dev-<short-sha>` |
+| push to `main` | `:prod` and `:latest` |
+| release tag `vX.Y.Z` (on main) | `:prod-X.Y.Z`, plus refresh `:prod` and `:latest` |
+
+The dev stand pulls `:dev` (or a pinned `:dev-<sha>`). Production pins `:prod-<version>`.
+The image is labelled with `org.opencontainers.image.source=https://github.com/pyrlyn/zhttpd`.

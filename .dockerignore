@@ -1,0 +1,11 @@
+# copied as .dockerignore
+.git
+.zig-cache
+zig-out
+bench
+tools
+tests
+scripts
+deps
+*.md
+mise.toml
