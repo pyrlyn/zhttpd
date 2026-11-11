@@ -663,8 +663,7 @@ pub fn writeHeadTo(conn: *Conn, w: *std.Io.Writer, status: u16, o: HeadOpts) !vo
     }
     // nginx sends Last-Modified only with 200/206/304
     if (o.last_modified) |t| if (status == 200 or status == 206 or status == 304) {
-        var db: [29]u8 = undefined;
-        try w.print("Last-Modified: {s}\r\n", .{response.httpDate(&db, t)});
+        try w.print("Last-Modified: {s}\r\n", .{conn.w.lastModified(t)});
     };
     if (o.chunked) try w.writeAll("Transfer-Encoding: chunked\r\n");
     try w.writeAll(if (conn.keep_alive) "Connection: keep-alive\r\n" else "Connection: close\r\n");

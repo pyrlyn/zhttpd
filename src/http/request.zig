@@ -15,26 +15,38 @@ pub const Header = struct { name: []const u8, value: []const u8 };
 pub const Version = enum(u8) { http10 = 10, http11 = 11 };
 
 pub const Request = struct {
-    method: Method = .GET,
+    // Keep frequently read flags beside the slices, ahead of the header array
+    // in Zig's automatic layout (the unused header slots can span pages).
+    method: Method align(8) = .GET,
     method_raw: []const u8 = "",
     /// Request target exactly as sent ($request_uri).
     target: []const u8 = "",
-    /// Percent-decoded, dot-segment-resolved path ($uri); lives in `path_buf`.
+    /// Normalized path ($uri); borrows the request buffer or `path_buf`.
     path: []const u8 = "",
     /// Query string without '?' ($args).
     args: []const u8 = "",
-    version: Version = .http11,
+    version: Version align(8) = .http11,
     /// Full request line without CRLF ($request).
     line: []const u8 = "",
     headers: [max_headers]Header = undefined,
     nheaders: usize = 0,
     host: ?[]const u8 = null,
     content_length: ?u64 = null,
-    chunked: bool = false,
-    keep_alive: bool = true,
-    expect_continue: bool = false,
+    chunked: bool align(8) = false,
+    keep_alive: bool align(8) = true,
+    expect_continue: bool align(8) = false,
     /// Bytes of the head including the final blank line.
     head_len: usize = 0,
+
+    /// Header slots beyond nheaders are never read. Reset only live metadata:
+    /// assigning the whole struct copies a 3 KiB undefined header array too.
+    pub fn reset(req: *Request) void {
+        inline for (@typeInfo(Request).@"struct".field_names) |name| {
+            if (comptime !std.mem.eql(u8, name, "headers")) {
+                @field(req, name) = @field(@as(Request, .{}), name);
+            }
+        }
+    }
 
     pub fn header(r: *const Request, name: []const u8) ?[]const u8 {
         for (r.headers[0..r.nheaders]) |h| {
@@ -109,7 +121,7 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
         return .incomplete;
     };
     if (end > limits.max_head) return error.HeadersTooLarge;
-    req.* = .{};
+    req.reset();
     req.head_len = end;
     const head = buf[start..end];
     var lines = std.mem.splitScalar(u8, head, '\n');
@@ -247,6 +259,11 @@ fn parseRequestLine(line: []const u8, req: *Request, path_buf: []u8, limits: Lim
 /// encoded NUL bytes or bad escapes. `out` must be at least `raw.len` bytes.
 pub fn normalizePath(raw: []const u8, out: []u8, merge_slashes: bool) ?[]const u8 {
     if (raw.len == 0 or raw[0] != '/' or out.len < raw.len) return null;
+    // Most paths already have their canonical spelling. Keep the input slice
+    // instead of copying it twice; complex paths use the same decoder below.
+    if (std.mem.indexOfScalar(u8, raw, '%') == null and
+        std.mem.indexOf(u8, raw, "/.") == null and
+        (!merge_slashes or std.mem.indexOf(u8, raw, "//") == null)) return raw;
     // pass 1: percent-decode (+ merge slashes)
     var n: usize = 0;
     var i: usize = 0;
@@ -416,6 +433,22 @@ test "parse simple GET 1.1" {
     try t.expect(req.keep_alive);
     try t.expectEqualStrings("NEXT", s[req.head_len..]);
     try t.expectEqualStrings("t", req.headerVar("user_agent").?);
+}
+
+test "reused request resets metadata and hides previous headers" {
+    var req: Request = .{};
+    var pb: [256]u8 = undefined;
+    _ = try parse("POST /old?q=1 HTTP/1.1\r\nHost: old\r\nContent-Length: 7\r\nExpect: 100-continue\r\nConnection: close\r\nX-Old: secret\r\n\r\n", &req, &pb);
+    try t.expect(req.expect_continue);
+    _ = try parse("GET /new HTTP/1.1\r\nHost: new\r\n\r\n", &req, &pb);
+    try t.expectEqual(Method.GET, req.method);
+    try t.expectEqualStrings("/new", req.path);
+    try t.expectEqualStrings("", req.args);
+    try t.expectEqualStrings("new", req.host.?);
+    try t.expectEqual(@as(usize, 1), req.nheaders);
+    try t.expect(req.header("x-old") == null);
+    try t.expect(req.content_length == null);
+    try t.expect(!req.expect_continue and !req.chunked and req.keep_alive);
 }
 
 test "incomplete, 1.0 keep-alive, pipelining" {

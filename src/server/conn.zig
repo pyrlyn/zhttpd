@@ -38,20 +38,26 @@ pub const Conn = struct {
     tag: Tag align(8) = .{ .kind = .client },
     up_tag: Tag align(8) = .{ .kind = .upstream },
     w: *Worker = undefined,
-    fd: c_int = -1,
+    fd: c_int align(8) = -1,
     ssl: ?*tls.SSL = null,
     multiplex: ?*anyopaque = null,
     stream_protocol: u8 = 0,
     websocket: ?*@import("websocket").Session = null,
+    tls_read: tls.ReadState align(8) = .{},
     listen: *const config.Listen = undefined,
-    local: Addr = .{},
-    peer: Addr = .{},
+    local: Addr align(8) = .{},
+    peer: Addr align(8) = .{},
     id: u64 = 0,
-    state: State = .read_head,
+    // Keep hot scalar fields with the pointers, ahead of byte-aligned buffers
+    // in Zig's automatic struct layout. Otherwise state lands on the last page.
+    state: State align(8) = .read_head,
     prev: ?*Conn = null,
     next: ?*Conn = null,
+    posted: bool align(8) = false,
+    posted_prev: ?*Conn = null,
+    posted_next: ?*Conn = null,
     deadline: i64 = 0,
-    requests: u32 = 0,
+    requests: u32 align(8) = 0,
 
     // input
     rbuf: [rbuf_size]u8 = undefined,
@@ -59,29 +65,29 @@ pub const Conn = struct {
     scan: usize = 0,
 
     // request body
-    body_mode: BodyMode = .none,
+    body_mode: BodyMode align(8) = .none,
     body_left: u64 = 0,
     chunk: request.ChunkedDecoder = .{},
-    body_store: bool = false,
+    body_store: bool align(8) = false,
     body_limit: u64 = 0,
     body_pos: usize = 0,
     body: std.ArrayList(u8) = .empty,
-    after_body: AfterBody = .respond,
+    after_body: AfterBody align(8) = .respond,
 
     // output
     wbuf: [wbuf_size]u8 = undefined,
     segs: [4][]const u8 = undefined,
-    nsegs: u8 = 0,
-    seg_i: u8 = 0,
-    file_fd: c_int = -1,
+    nsegs: u8 align(8) = 0,
+    seg_i: u8 align(8) = 0,
+    file_fd: c_int align(8) = -1,
     /// file_fd belongs to the worker's open file cache: never close it here
-    file_borrowed: bool = false,
+    file_borrowed: bool align(8) = false,
     file_off: u64 = 0,
     file_end: u64 = 0,
-    file_sendfile: bool = false,
-    close_after: bool = false,
-    keep_alive: bool = false,
-    drop: bool = false, // `return 444`
+    file_sendfile: bool align(8) = false,
+    close_after: bool align(8) = false,
+    keep_alive: bool align(8) = false,
+    drop: bool align(8) = false, // `return 444`
 
     // request
     req: Request = .{},
@@ -89,7 +95,7 @@ pub const Conn = struct {
     arena_mem: [arena_size]u8 = undefined,
     fba: std.heap.FixedBufferAllocator = undefined,
     ctx: vars.Ctx = undefined,
-    in_request: bool = false,
+    in_request: bool align(8) = false,
     start_ms: i64 = 0,
     up: proxy.Upstream = .{},
     head_len: usize = 0, // response head length in wbuf
@@ -113,6 +119,7 @@ pub const Conn = struct {
         conn.multiplex = null;
         conn.stream_protocol = 0;
         conn.websocket = null;
+        conn.tls_read = .{};
         conn.state = .read_head;
         conn.requests = 0;
         conn.rlen = 0;
@@ -134,11 +141,20 @@ pub const Conn = struct {
     // ------------------------------------------------------------- raw I/O (TLS aware)
 
     pub fn recv(conn: *Conn, buf: []u8) net.Io {
-        if (tls.enabled) if (conn.ssl) |ssl| return switch (tls.read(ssl, buf)) {
-            .ok => |n| .{ .ok = n },
-            .want_read, .want_write => .again,
-            .eof => .eof,
-            .err => .{ .err = 0 },
+        if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
+            if (!conn.tls_read.ready and !conn.tls_read.eof and !conn.tls_read.want_write and !tls.hasPending(ssl)) return .again;
+        };
+        if (tls.enabled) if (conn.ssl) |ssl| {
+            const r = tls.read(ssl, buf);
+            // SSL_read may need to write protocol traffic (e.g. KeyUpdate).
+            // Preserve its retry even when the encrypted input was drained.
+            conn.tls_read.want_write = r == .want_write;
+            return switch (r) {
+                .ok => |n| .{ .ok = n },
+                .want_read, .want_write => .again,
+                .eof => .eof,
+                .err => .{ .err = 0 },
+            };
         };
         return net.read(conn.fd, buf);
     }
@@ -206,8 +222,9 @@ pub const Conn = struct {
                 }
             }
             if (conn.file_off >= conn.file_end) return .done;
-            if (conn.ssl == null and conn.file_sendfile) {
-                switch (net.sendFile(conn.fd, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
+            if (conn.file_sendfile and conn.ssl == null) {
+                const r = net.sendFile(conn.fd, conn.file_fd, conn.file_off, conn.file_end - conn.file_off);
+                switch (r) {
                     .ok => |n| {
                         conn.file_off += n;
                         conn.ctx.bytes_sent += n;
@@ -230,6 +247,7 @@ pub const Conn = struct {
     // ------------------------------------------------------------- state machine
 
     pub fn drive(conn: *Conn) void {
+        if (conn.posted) return;
         while (true) {
             const progressed = switch (conn.state) {
                 .handshake => conn.doHandshake(),
@@ -249,6 +267,16 @@ pub const Conn = struct {
                 .closed => false,
             };
             if (!progressed) return;
+            // Give other ready connections a turn after each response. The
+            // continuation must run even without another edge from the OS:
+            // pipelined bytes may already be in rbuf or inside OpenSSL.
+            if (conn.state == .read_head and !conn.in_request and conn.requests > 0) {
+                if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
+                    if (conn.rlen == 0 and !conn.tls_read.ready and !conn.tls_read.eof and !tls.hasPending(ssl)) return;
+                };
+                conn.w.post(conn);
+                return;
+            }
         }
     }
 
@@ -315,7 +343,7 @@ pub const Conn = struct {
 
     /// Answer a malformed request (400/414/501/505) and close, like nginx.
     fn badRequest(conn: *Conn, status: u16) void {
-        conn.req = .{};
+        conn.req.reset();
         conn.req.version = .http10;
         conn.req.keep_alive = false;
         conn.req.line = std.mem.sliceTo(conn.rbuf[0..@min(conn.rlen, 1024)], '\r');
@@ -549,6 +577,9 @@ pub const Conn = struct {
             conn.close();
             return;
         }
+        if (tls.enabled and conn.requests == 1) if (conn.ssl) |ssl| {
+            tls.trackReads(ssl, &conn.tls_read);
+        };
         // pipelined bytes after this request move to the front
         const next = conn.body_pos;
         const rest = conn.rlen - next;
@@ -604,6 +635,7 @@ pub const Conn = struct {
 
     pub fn close(conn: *Conn) void {
         if (conn.state == .closed) return;
+        conn.w.unpost(conn);
         conn.closeFile();
         proxy.release(conn);
         multiplex.freeH2(conn);
