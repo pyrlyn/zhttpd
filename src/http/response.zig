@@ -1,5 +1,7 @@
-//! Response helpers: status lines, HTTP dates, nginx-compatible default error pages.
+//! Response helpers: status lines, HTTP dates, branded default error pages.
 const std = @import("std");
+const error_page = @import("error_page.zig");
+pub const page_buffer_size = error_page.buffer_size;
 
 pub fn reason(code: u16) []const u8 {
     return switch (code) {
@@ -50,16 +52,17 @@ pub fn hasDefaultPage(code: u16) bool {
     return (code >= 301 and code <= 308 and code != 304 and code != 305 and code != 306) or (code >= 400 and code <= 599 and reason(code).len > 0);
 }
 
-/// nginx-style body: "<html>\r\n<head><title>404 Not Found</title></head>\r\n..."
+/// Branded errors; redirects retain the compact nginx-compatible body.
 pub fn writeDefaultPage(w: *std.Io.Writer, code: u16, tokens: []const u8) !void {
+    if (code >= 400) return error_page.write(w, code, reason(code), tokens);
     try w.print("<html>\r\n<head><title>{d} {s}</title></head>\r\n<body>\r\n<center><h1>{d} {s}</h1></center>\r\n<hr><center>{s}</center>\r\n</body>\r\n</html>\r\n", .{ code, reason(code), code, reason(code), tokens });
 }
 
 pub fn defaultPageLen(code: u16, tokens: []const u8) usize {
-    var buf: [512]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    writeDefaultPage(&w, code, tokens) catch return 0;
-    return w.buffered().len;
+    var buf: [256]u8 = undefined;
+    var sink = std.Io.Writer.Discarding.init(&buf);
+    writeDefaultPage(&sink.writer, code, tokens) catch unreachable;
+    return @intCast(sink.fullCount());
 }
 
 pub const Civil = struct { year: i64, month: u8, day: u8, hour: u8, min: u8, sec: u8, wday: u8 };
@@ -151,9 +154,38 @@ test "dates" {
     try std.testing.expectEqualStrings("10/Nov/2026:09:30:00 +0200", logDate(&l, 1794295800, 7200));
 }
 
-test "default page matches nginx layout" {
+test "default errors fit the worker buffer with exact lengths" {
+    for (400..600) |value| {
+        const code: u16 = @intCast(value);
+        if (!hasDefaultPage(code)) continue;
+        for ([_][]const u8{ "zhttpd", "zhttpd/0.1.0" }) |tokens| {
+            var buf: [page_buffer_size]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            try writeDefaultPage(&w, code, tokens);
+            const body = w.buffered();
+            try std.testing.expectEqual(defaultPageLen(code, tokens), body.len);
+            try std.testing.expect(std.mem.startsWith(u8, body, "<!doctype html>"));
+            try std.testing.expect(std.mem.endsWith(u8, body, "</body></html>\n"));
+            try std.testing.expect(std.mem.indexOf(u8, body, reason(code)) != null);
+            try std.testing.expect(std.mem.indexOf(u8, body, "<script") == null);
+            if (std.mem.eql(u8, tokens, "zhttpd"))
+                try std.testing.expect(std.mem.indexOf(u8, body, "zhttpd/") == null);
+        }
+    }
+}
+
+test "error page escapes server tokens" {
+    var buf: [page_buffer_size]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeDefaultPage(&w, 404, "<test>&\"'");
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "&lt;test&gt;&amp;&quot;&#39;") != null);
+    try std.testing.expectEqual(w.buffered().len, defaultPageLen(404, "<test>&\"'"));
+}
+
+test "redirects retain nginx layout and bodyless statuses have no default page" {
     var buf: [512]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeDefaultPage(&w, 404, "nginx");
-    try std.testing.expectEqualStrings("<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n", w.buffered());
+    try writeDefaultPage(&w, 301, "zhttpd");
+    try std.testing.expectEqualStrings("<html>\r\n<head><title>301 Moved Permanently</title></head>\r\n<body>\r\n<center><h1>301 Moved Permanently</h1></center>\r\n<hr><center>zhttpd</center>\r\n</body>\r\n</html>\r\n", w.buffered());
+    for ([_]u16{ 100, 200, 204, 304, 444 }) |code| try std.testing.expect(!hasDefaultPage(code));
 }

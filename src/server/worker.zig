@@ -50,7 +50,7 @@ pub const Worker = struct {
     date_buf: [29]u8 = undefined,
     next_id: u64 = 1,
     stopping: bool = false,
-    page_buf: [1024]u8 = undefined,
+    page_buf: [response.page_buffer_size]u8 = undefined,
     log_buf: [8192]u8 = undefined,
     accept_paused_until: i64 = 0,
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs

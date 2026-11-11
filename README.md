@@ -1,3 +1,5 @@
+<img src="src/http/assets/icon.svg" width="64" height="64" alt="zhttpd icon">
+
 # zhttpd
 
 A Zig HTTP/1.0+1.1 server that reads `nginx.conf`. TLS 1.3 via OpenSSL. Event
@@ -23,6 +25,21 @@ the repository. Regenerate it with `scripts/gen-certs.sh` before a TLS run.
 scripts/smoke.sh               # short smoke vs nginx
 zig-out/bin/zhttpd -c path/to/nginx.conf
 ```
+
+## Default error pages
+
+Built-in 4xx and 5xx pages use the zhttpd identity: a pair of chevrons around a
+packet, warm paper, graphite, and lime. The reusable SVG icon lives in
+[`src/http/assets/icon.svg`](src/http/assets/icon.svg). CSS, SVG, and favicon
+are embedded in the binary; error pages need no JavaScript, fonts, or asset
+requests. Layout adapts to mobile screens and supports keyboard navigation.
+
+Configured `error_page` responses still take precedence. `server_tokens off`
+hides the version in both the header and page footer. Redirect bodies retain
+their nginx-compatible layout. Default error bodies and their Content-Length
+intentionally differ from nginx in `scripts/smoke.sh` comparisons.
+
+Verify with `zig build test`, `zig build`, and `python3 tests/error-pages.py`.
 
 ## Benchmarks
 
