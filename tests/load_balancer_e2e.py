@@ -58,6 +58,20 @@ def eventually(predicate, label, timeout=8):
     raise AssertionError(label)
 
 
+def redirect(port, target, method, body):
+    result = None
+
+    def ready():
+        nonlocal result
+        result = request(port, target, method, body)
+        # The runtime deliberately serves locally if a snapshot is unavailable.
+        assert result[0] in (200, 307), result
+        return result[0] == 307
+
+    eventually(ready, 'no redirect with a healthy peer')
+    return result
+
+
 def eventually_stable(predicate, label, duration=.4, timeout=10):
     since = None
 
@@ -128,36 +142,49 @@ cpu_capacity = 2
                 held_a = hold(a, 12)
                 eventually(lambda: request(a)[0] == 307, 'A did not shed load')
                 # Both worker records contribute to the instance total.
+                def aggregate_ready():
+                    records = [p.read_text().split() for p in backend.glob('a.*.load')]
+                    return len(records) == 2 and sum(int(r[3]) for r in records) >= 12
+
+                # A redirect can start after only one worker has published its
+                # next sample; wait for both periodic counters to catch up.
+                eventually(aggregate_ready, 'worker counters did not converge')
                 records = [p.read_text().split() for p in backend.glob('a.*.load')]
-                assert len(records) == 2 and sum(int(r[3]) for r in records) >= 12
                 assert all(int(r[4]) > 0 and float(r[5]) >= 0 for r in records)
                 target = '/echo%2Fraw?x=%26&x=2'
                 body = b'POST body\x00\xff\r\n'
-                status, headers, _ = request(a, target, 'POST', body)
+                status, headers, _ = redirect(a, target, 'POST', body)
                 assert status == 307 and headers['Cache-Control'] == 'no-store'
                 location = headers['Location']
                 assert location == f'http://127.0.0.1:{b}{target}&__zhttpd_lb=1', location
                 # A real redirect-following client must replay the original method/body.
-                before = len(Echo.calls)
-                result = subprocess.run(['curl', '--silent', '--show-error', '--fail',
-                    '--location', '--max-redirs', '2', '--write-out', '\n%{num_redirects}', '--data-binary', '@-',
-                    f'http://127.0.0.1:{a}{target}'], input=body, capture_output=True, check=True)
-                response_body, redirects = result.stdout.rsplit(b'\n', 1)
-                assert redirects == b'1', result.stdout
-                assert json.loads(response_body) == dict(method='POST', path=target,
-                    body=base64.b64encode(body).decode())
-                assert len(Echo.calls) == before + 1
+                def curl_redirected():
+                    before = len(Echo.calls)
+                    result = subprocess.run(['curl', '--silent', '--show-error', '--fail',
+                        '--location', '--max-redirs', '2', '--write-out', '\n%{num_redirects}', '--data-binary', '@-',
+                        f'http://127.0.0.1:{a}{target}'], input=body, capture_output=True, check=True)
+                    response_body, redirects = result.stdout.rsplit(b'\n', 1)
+                    assert redirects in (b'0', b'1'), result.stdout
+                    assert json.loads(response_body) == dict(method='POST', path=target,
+                        body=base64.b64encode(body).decode())
+                    assert len(Echo.calls) == before + 1
+                    return redirects == b'1'
+
+                eventually(curl_redirected, 'curl did not follow a 307')
                 for method in ('PUT', 'PATCH', 'DELETE'):
-                    status, headers, _ = request(a, target, method, body)
+                    status, headers, _ = redirect(a, target, method, body)
                     assert status == 307
                     redirected = urlsplit(headers['Location'])
                     status, _, data = request(b, redirected.path + '?' + redirected.query, method, body)
                     assert status == 200 and json.loads(data)['method'] == method
                     assert json.loads(data)['body'] == base64.b64encode(body).decode()
                 # Expect uploads receive a final 307 without sending their body.
-                with socket.create_connection(('127.0.0.1', a), timeout=3) as sock:
-                    sock.sendall(b'POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 999999\r\nExpect: 100-continue\r\n\r\n')
-                    assert sock.recv(4096).startswith(b'HTTP/1.1 307 ')
+                def expect_redirect():
+                    with socket.create_connection(('127.0.0.1', a), timeout=3) as sock:
+                        sock.sendall(b'POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 999999\r\nExpect: 100-continue\r\n\r\n')
+                        return sock.recv(4096).startswith(b'HTTP/1.1 307 ')
+
+                eventually(expect_redirect, 'Expect upload did not receive a final 307')
                 # Reverse the load while the client is between redirect hops.
                 close_all(held_a)
                 held_b = hold(b, 40)
