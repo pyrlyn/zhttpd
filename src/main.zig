@@ -157,6 +157,11 @@ pub fn main(init: std.process.Init) u8 {
 
     if (o.signal) |sig| return sendSignal(cfg, sig);
 
+    cfg.load_balancer.validateWorkers(cfg.worker_processes) catch {
+        eprint("zhttpd: [emerg] load_balancer supports at most 256 workers\n", .{});
+        return 1;
+    };
+
     multiplex.validate(cfg) catch |err| {
         eprint("zhttpd: [emerg] HTTP protocol configuration: {s} (HTTP/2 and HTTP/3 require -Dtls=true -Dhttp=true)\n", .{@errorName(err)});
         return 1;
@@ -361,6 +366,7 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
     if (tls.enabled) for (cfg.acme, snapshots) |ac, *saved| {
         if (ac.encrypt_key) saved.* = try z.http.server.acme_encrypted.snapshot(gpa, ac);
     };
+    try cfg.load_balancer.validateWorkers(cfg.worker_processes);
     const nw = @max(cfg.worker_processes, 1);
     const fds = try gpa.alloc([]c_int, cfg.listens.len);
     errdefer gpa.free(fds);
@@ -522,6 +528,7 @@ fn destroyConfig(gpa: std.mem.Allocator, cfg: *config.Config) void {
 fn validateReload(gpa: std.mem.Allocator, cfg: *config.Config, active: *const config.Config, globals: ?[]const u8, diag: *Diag) !void {
     if (globals) |g| try applyGlobals(cfg, g, diag);
     try multiplex.validate(cfg);
+    try cfg.load_balancer.validateWorkers(cfg.worker_processes);
     if (tls.enabled) {
         try tls.validateConfig(gpa, cfg, diag);
     } else {

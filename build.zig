@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
     opts.addOption(bool, "tls", tls);
     opts.addOption(bool, "http", http);
 
+    const load_balancer_mod = b.addModule("load_balancer", .{ .root_source_file = b.path("src/load_balancer.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    load_balancer_mod.addCSourceFile(.{ .file = b.path("src/load_balancer/backend.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+    load_balancer_mod.linkSystemLibrary("pthread", .{});
     const expression_mod = b.addModule("expression", .{ .root_source_file = b.path("src/expression.zig"), .target = target, .optimize = optimize });
     const logging_mod = b.addModule("logging", .{ .root_source_file = b.path("src/logging.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "expression", .module = expression_mod }} });
     const acme_mod = b.addModule("acme", .{ .root_source_file = b.path("src/acme.zig"), .target = target, .optimize = optimize, .link_libc = true });
@@ -36,6 +39,7 @@ pub fn build(b: *std.Build) void {
     http_mod.addImport("logging", logging_mod);
     http_mod.addImport("fastcgi", fastcgi_mod);
     http_mod.addImport("acme", acme_mod);
+    http_mod.addImport("load_balancer", load_balancer_mod);
     if (tls) {
         if (openssl) |p| {
             http_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
@@ -146,8 +150,22 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "Run zhttpd (pass args after --)").dependOn(&run.step);
 
+    const raft_build = b.addSystemCommand(&.{ "bash", "scripts/build-raft.sh" });
+    raft_build.setCwd(b.path("."));
+    b.step("raft", "Build the optional zhttpd-raft consensus companion (Go required)").dependOn(&raft_build.step);
+    const raft_test = b.addSystemCommand(&.{ "go", "-C", "modules/raft", "test", "./..." });
+    raft_test.setCwd(b.path("."));
+    b.step("test-raft", "Test the Raft state machine and exports").dependOn(&raft_test.step);
+
     const e2e_python = b.option([]const u8, "e2e-python", "Python with tests/requirements-e2e.txt installed") orelse "python3";
     const e2e_command = if (std.mem.indexOfScalar(u8, e2e_python, '/') != null) (b.root.joinString(b.allocator, e2e_python) catch @panic("OOM")) else e2e_python;
+    const raft_e2e = b.addSystemCommand(&.{e2e_command});
+    raft_e2e.addFileArg(b.path("tests/raft_e2e.py"));
+    raft_e2e.addArtifactArg(exe);
+    raft_e2e.addArg("zig-out/bin/zhttpd-raft");
+    raft_e2e.setCwd(b.path("."));
+    raft_e2e.step.dependOn(&raft_build.step);
+    b.step("test-raft-e2e", "Test Raft failover, durable state, membership and load balancing").dependOn(&raft_e2e.step);
     const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);
@@ -155,8 +173,11 @@ pub fn build(b: *std.Build) void {
     b.step("test-protocols", "Run HTTP/1.1, HTTP/2 and HTTP/3 wire tests").dependOn(&e2e.step);
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
     e2e_step.dependOn(&e2e.step);
+    const benchmark_gate = b.addSystemCommand(&.{e2e_command});
+    benchmark_gate.addFileArg(b.path("tests/bench-target.py"));
+    e2e_step.dependOn(&benchmark_gate.step);
     var previous: *std.Build.Step = &e2e.step;
-    for ([_][]const u8{ "error-pages.py", "config_e2e.py", "auto_reload_e2e.py", "tls_files_e2e.py", "tls_password_e2e.py", "sni_password_e2e.py", "dns_env_reload_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_encryption_e2e.py", "acme_password_rotation_e2e.py", "acme_migration_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
+    for ([_][]const u8{ "tls-io.py", "error-pages.py", "config_e2e.py", "auto_reload_e2e.py", "tls_files_e2e.py", "tls_password_e2e.py", "sni_password_e2e.py", "dns_env_reload_e2e.py", "load_balancer_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_encryption_e2e.py", "acme_password_rotation_e2e.py", "acme_migration_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
         const check = b.addSystemCommand(&.{e2e_command});
         check.addFileArg(b.path(b.fmt("tests/{s}", .{script})));
         check.addArtifactArg(exe);
@@ -178,6 +199,14 @@ pub fn build(b: *std.Build) void {
     ws_check.step.dependOn(previous);
     e2e_step.dependOn(&ws_check.step);
 
+    const lb_tests = b.addRunArtifact(b.addTest(.{ .root_module = load_balancer_mod }));
+    b.step("test-load-balancer", "Test the independent load balancer module").dependOn(&lb_tests.step);
+    const lb_e2e = b.addSystemCommand(&.{e2e_command});
+    lb_e2e.addFileArg(b.path("tests/load_balancer_e2e.py"));
+    lb_e2e.addArtifactArg(exe);
+    lb_e2e.setCwd(b.path("."));
+    b.step("test-load-balancer-e2e", "Run shared metrics and 307 redirect wire tests (requires curl)").dependOn(&lb_e2e.step);
+
     const http_tests = b.addRunArtifact(b.addTest(.{ .root_module = http_mod }));
     b.step("test-http", "Test HTTP independently of nginx").dependOn(&http_tests.step);
     const nginx_tests = b.addRunArtifact(b.addTest(.{ .root_module = nginx_mod }));
@@ -188,6 +217,7 @@ pub fn build(b: *std.Build) void {
     run_tests.setCwd(b.path("."));
     const test_step = b.step("test", "Run all independent module unit tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&lb_tests.step);
     test_step.dependOn(&http_tests.step);
     test_step.dependOn(&nginx_tests.step);
     for ([_]*std.Build.Module{ settings_mod, apache_mod, caddy_mod, litespeed_mod, websocket_mod, fastcgi_mod, wsgi_mod, acme_mod, logging_mod, expression_mod }) |mod| {

@@ -10,7 +10,7 @@ const Error = support.Error || error{BadVariable};
 const C = http.config;
 pub const Compatibility = enum { self, nginx, apache, litespeed, caddy };
 pub const Options = struct { prefix: []const u8, conf_prefix: []const u8, strict: bool = false, quiet_ignored: bool = false, compatibility: Compatibility = .nginx, acme_domains: []const []const u8 = &.{}, sources: ?*http.config_watch.Sources = null };
-const Modules = struct { http: bool = true, self: bool = true, nginx: bool = true, apache: bool = true, litespeed: bool = true, caddy: bool = true, websocket: bool = true, logging: bool = true, fastcgi: bool = true, wsgi: bool = true, acme: bool = true };
+const Modules = struct { http: bool = true, self: bool = true, nginx: bool = true, apache: bool = true, litespeed: bool = true, caddy: bool = true, websocket: bool = true, logging: bool = true, fastcgi: bool = true, wsgi: bool = true, acme: bool = true, load_balancer: bool = true };
 const Route = struct { path: ?[]const u8 = null, match: enum { prefix, exact } = .prefix, response: ?[]const u8 = null, root: ?[]const u8 = null, proxy: ?[]const u8 = null, websocket: bool = false, fastcgi: ?[]const u8 = null, wsgi: ?[]const u8 = null, status: u16 = 200 };
 const Native = struct {
     listen: ?[]const u8 = null,
@@ -29,6 +29,7 @@ const Native = struct {
 const Logging = struct { access: ?[]const u8 = null, format: []const u8 = "combined", error_path: ?[]const u8 = null, level: ?u8 = null };
 const KeyPassword = struct { key: []const u8 = "", password_file: []const u8 = "" };
 const Settings = struct {
+    load_balancer: http.load_balancer.Settings = .{},
     acme: http.acme.Settings = .{},
     certificates: std.ArrayList(http.acme.Settings) = .empty,
     has_acme: bool = false,
@@ -179,7 +180,7 @@ const Toml = struct {
                 }
                 if (!std.mem.endsWith(u8, table, "]")) return p.fail("invalid table", .{});
                 section = std.mem.trim(u8, table[1 .. table.len - 1], " \t");
-                if (!std.mem.eql(u8, section, "modules") and !std.mem.eql(u8, section, "server") and !std.mem.eql(u8, section, "http") and !std.mem.eql(u8, section, "http.tls") and !std.mem.eql(u8, section, "tls") and !std.mem.eql(u8, section, "logging") and !std.mem.eql(u8, section, "acme")) return p.fail("unknown table {s}", .{section});
+                if (!std.mem.eql(u8, section, "modules") and !std.mem.eql(u8, section, "server") and !std.mem.eql(u8, section, "http") and !std.mem.eql(u8, section, "http.tls") and !std.mem.eql(u8, section, "tls") and !std.mem.eql(u8, section, "logging") and !std.mem.eql(u8, section, "acme") and !std.mem.eql(u8, section, "load_balancer")) return p.fail("unknown table {s}", .{section});
                 const entry = try tables.getOrPut(p.a, section);
                 if (entry.found_existing) return p.fail("duplicate table {s}", .{section});
                 continue;
@@ -192,7 +193,7 @@ const Toml = struct {
             const v = try p.value(line[sep + 1 ..]);
             if (std.mem.eql(u8, section, "modules")) {
                 var found = false;
-                inline for (.{ "http", "self", "nginx", "apache", "litespeed", "caddy", "websocket", "logging", "fastcgi", "wsgi", "acme" }) |field| if (std.mem.eql(u8, key, field)) {
+                inline for (.{ "http", "self", "nginx", "apache", "litespeed", "caddy", "websocket", "logging", "fastcgi", "wsgi", "acme", "load_balancer" }) |field| if (std.mem.eql(u8, key, field)) {
                     @field(result.modules, field) = try p.boolean(v);
                     found = true;
                 };
@@ -216,6 +217,25 @@ const Toml = struct {
                 if (!std.mem.eql(u8, key, "password_file")) return p.fail("unknown common TLS setting {s}", .{key});
                 result.tls_password_file = try p.string(v);
                 if (result.tls_password_file.?.len == 0) return p.fail("tls.password_file must not be empty", .{});
+            } else if (std.mem.eql(u8, section, "load_balancer")) {
+                var found = false;
+                inline for (.{ "node_id", "backend", "publish_backend" }) |field| if (std.mem.eql(u8, key, field)) {
+                    @field(result.load_balancer, field) = try p.string(v);
+                    found = true;
+                };
+                inline for (.{ "node_ids", "node_urls" }) |field| if (std.mem.eql(u8, key, field)) {
+                    @field(result.load_balancer, field) = try p.strings(v);
+                    found = true;
+                };
+                inline for (.{ "interval_ms", "ttl_ms", "threshold_percent", "min_improvement_percent", "max_connections", "memory_limit_mb", "cpu_capacity" }) |field| if (std.mem.eql(u8, key, field)) {
+                    @field(result.load_balancer, field) = try p.number(v);
+                    found = true;
+                };
+                if (std.mem.eql(u8, key, "enabled")) {
+                    result.load_balancer.enabled = try p.boolean(v);
+                    found = true;
+                }
+                if (!found) return p.fail("unknown load_balancer setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "logging")) {
                 result.has_logging = true;
                 if (std.mem.eql(u8, key, "access")) result.logging.access = try p.string(v) else if (std.mem.eql(u8, key, "format")) {
@@ -243,6 +263,8 @@ const Toml = struct {
                 } else return p.fail("unknown route setting {s}", .{key});
             } else return p.fail("key must be inside a known table", .{});
         }
+        if (result.load_balancer.enabled and !result.modules.load_balancer) return p.fail("load_balancer module is disabled", .{});
+        result.load_balancer.validate() catch return p.fail("invalid load_balancer settings (membership, origins, capacities or timing)", .{});
         const mode = result.compatibility orelse return p.fail("server.compatibility is required", .{});
         if (!result.modules.http) return p.fail("http module is disabled", .{});
         const active = switch (mode) {
@@ -512,6 +534,12 @@ fn loadConfig(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *ht
     }
     cfg.auto_reload = settings.auto_reload;
     cfg.logging_enabled = settings.modules.logging;
+    cfg.load_balancer = settings.load_balancer;
+    cfg.load_balancer.validateWorkers(cfg.worker_processes) catch return parser.fail("load_balancer supports at most 256 workers", .{});
+    if (cfg.load_balancer.enabled) {
+        cfg.load_balancer.backend = try std.fs.path.resolve(own, &.{ root, cfg.load_balancer.backend });
+        if (cfg.load_balancer.publish_backend) |path| cfg.load_balancer.publish_backend = try std.fs.path.resolve(own, &.{ root, path });
+    }
     var log_builder: support.Builder = .{ .cfg = cfg, .a = own, .diag = diag };
     const origin: support.Node = .{ .name = "logging", .args = &.{}, .file = file, .line = 0 };
     if (settings.logging.error_path) |p| cfg.error_log.path = try log_builder.logPath(origin, p);
@@ -668,4 +696,23 @@ test "separate certificate records have independent settings and key namespaces"
     try t.expectError(error.ConfigFailed, p.parse(prefix ++ first ++ "dns_provider='route53'\n"));
     try t.expectError(error.ConfigFailed, p.parse(prefix ++ first ++ first));
     try t.expectError(error.ConfigFailed, p.parse(prefix ++ "[acme]\ndomain='example.com'\n" ++ second));
+}
+
+test "load balancer TOML validation and module gate" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var d: http.diag.Diag = .{ .gpa = t.allocator };
+    defer d.deinit();
+    var p: Toml = .{ .a = arena.allocator(), .file = "config.toml", .diag = &d };
+    const base = "[server]\ncompatibility='self'\n[http]\nlisten='8080'\n";
+    const lb = "[load_balancer]\nenabled=true\nbackend='/shared/metrics'\nnode_id='a'\nnode_ids=['a','b']\nnode_urls=['http://a:8080','https://b']\nmax_connections=100\nmemory_limit_mb=1024\n";
+    const parsed = try p.parse(base ++ lb);
+    try t.expect(parsed.load_balancer.enabled);
+    try t.expectEqual(@as(u32, 100), parsed.load_balancer.max_connections);
+    try t.expectError(error.ConfigFailed, p.parse("[modules]\nload_balancer=false\n" ++ base ++ lb));
+    try t.expectError(error.ConfigFailed, p.parse(base ++ lb ++ "ttl_ms=100\n"));
+    try t.expectError(error.ConfigFailed, p.parse(base ++ lb ++ "threshold_percent=101\n"));
+    try t.expectError(error.ConfigFailed, p.parse(base ++ "[load_balancer]\nenabled=true\n"));
+    try t.expectError(error.ConfigFailed, p.parse(base ++ lb ++ "unknown=1\n"));
 }

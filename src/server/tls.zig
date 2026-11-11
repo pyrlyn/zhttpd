@@ -7,12 +7,24 @@ const config = @import("../http/config.zig");
 const acme = @import("acme");
 const Diag = @import("../http/diag.zig").Diag;
 const PasswordFile = @import("password_file.zig").PasswordFile;
+const builtin = @import("builtin");
 
 pub const enabled = build_options.tls;
+pub const track_read_ready = builtin.os.tag == .linux;
+pub const ReadState = struct { ready: bool = true, eof: bool = false, want_write: bool = false };
 
 pub const SSL_CTX = opaque {};
 pub const SSL = opaque {};
 const SSL_METHOD = opaque {};
+const BIO = opaque {};
+const BioCallback = *const fn (*BIO, c_int, ?[*]const u8, usize, c_int, c_long, c_int, ?*usize) callconv(.c) c_long;
+extern "c" fn SSL_get_rbio(ssl: *const SSL) ?*BIO;
+extern "c" fn SSL_has_pending(ssl: *const SSL) c_int;
+extern "c" fn BIO_set_callback_ex(bio: *BIO, cb: ?BioCallback) void;
+extern "c" fn BIO_set_callback_arg(bio: *BIO, arg: *anyopaque) void;
+extern "c" fn BIO_get_callback_arg(bio: *const BIO) ?*anyopaque;
+extern "c" fn BIO_set_flags(bio: *BIO, flags: c_int) void;
+extern "c" fn BIO_clear_flags(bio: *BIO, flags: c_int) void;
 
 extern "c" fn OSSL_QUIC_server_method() *const SSL_METHOD;
 extern "c" fn TLS_server_method() *const SSL_METHOD;
@@ -95,6 +107,7 @@ fn alpn(ssl: *SSL, out: *[*]const u8, outlen: *u8, input: [*]const u8, len: c_ui
 
 const SSL_FILETYPE_PEM = 1;
 const SSL_CTRL_MODE = 33;
+const SSL_CTRL_SET_READ_AHEAD = 41;
 const SSL_CTRL_SET_SESS_CACHE_SIZE = 42;
 const SSL_CTRL_SET_SESS_CACHE_MODE = 44;
 const SSL_CTRL_SET_TLSEXT_SERVERNAME_CB = 53;
@@ -264,6 +277,10 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
     if (t.prefer_server_ciphers) opts |= SSL_OP_CIPHER_SERVER_PREFERENCE;
     _ = SSL_CTX_set_options(ctx, opts);
     _ = SSL_CTX_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_RELEASE_BUFFERS, null);
+    // Read the record header and payload in one socket read when available.
+    // Keep OpenSSL's default AUTO_RETRY mode: the edge-triggered connection loop
+    // drains SSL_read until WANT_READ, including records buffered by read-ahead.
+    _ = SSL_CTX_ctrl(ctx, SSL_CTRL_SET_READ_AHEAD, 1, null);
     if (t.ciphers) |cs| {
         const z = try gpa.dupeSentinel(u8, cs, 0);
         defer gpa.free(z);
@@ -416,6 +433,45 @@ pub fn newConn(tbl: *SniTable, fd: c_int) ?*SSL {
         return null;
     }
     return ssl;
+}
+
+/// Persistent HTTP/1 connections benefit from tracked reads; handshakes and
+/// multiplexed transports retain OpenSSL's ordinary socket BIO path.
+pub fn trackReads(ssl: *SSL, read_state: *ReadState) void {
+    if (track_read_ready) {
+        const bio = SSL_get_rbio(ssl) orelse return;
+        BIO_set_callback_arg(bio, read_state);
+        BIO_set_callback_ex(bio, socketReadCallback);
+    }
+}
+
+pub fn hasPending(ssl: *SSL) bool {
+    return SSL_has_pending(ssl) != 0;
+}
+
+// Linux epoll(7): a short read on a stream socket exhausts read readiness.
+// Observe the encrypted socket read, never infer this from SSL_read's decrypted
+// byte count. Buffered TLS records must still be drained normally.
+fn socketReadCallback(bio: *BIO, operation: c_int, _: ?[*]const u8, requested: usize, _: c_int, _: c_long, result: c_int, processed: ?*usize) callconv(.c) c_long {
+    const read_op = 2;
+    const return_op = 0x80;
+    if (operation & ~@as(c_int, return_op) != read_op) return result;
+    const state: *ReadState = @ptrCast(@alignCast(BIO_get_callback_arg(bio) orelse return result));
+    if (operation & return_op == 0) {
+        if (!state.ready and !state.eof) {
+            BIO_clear_flags(bio, 0x0f); // RWS | SHOULD_RETRY
+            BIO_set_flags(bio, 0x09); // READ | SHOULD_RETRY
+            std.c._errno().* = @backingInt(std.c.E.AGAIN);
+            return -1;
+        }
+    } else if (result > 0) {
+        if (processed) |n| if (n.* < requested) {
+            state.ready = false;
+        };
+    } else if (std.c._errno().* == @backingInt(std.c.E.AGAIN)) {
+        state.ready = false;
+    }
+    return result;
 }
 
 pub const IoResult = union(enum) { ok: usize, want_read, want_write, eof, err };

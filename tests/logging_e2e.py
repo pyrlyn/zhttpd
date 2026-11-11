@@ -71,7 +71,9 @@ level = "error"
             os.kill(process.pid, signal.SIGUSR1)
             for _ in range(100):
                 request(port)
-                if log.exists(): break
+                # Reopening creates an empty file; a racing request may still
+                # use the old descriptor. Keep sending until a record arrives.
+                if log.exists() and log.stat().st_size: break
                 time.sleep(.03)
             wait_text(log)
             assert request(port, '/missing') == 404

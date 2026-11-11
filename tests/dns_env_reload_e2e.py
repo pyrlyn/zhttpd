@@ -90,6 +90,9 @@ operation_timeout_seconds=30
 
             config = write()
             with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log) as proc:
+                # A TCP listener alone does not mean startup has written its PID.
+                peer_cert(f.port, 'base.test')
+                peer_cert(f.port, 'dedicated.test')
                 def issued(domain): return f.ca.issued_by.get((domain,), 0)
                 def count(text): return log.read_text().count(text)
                 def healthy():

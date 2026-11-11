@@ -23,6 +23,9 @@ for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
         atomic(other, pem_cert(a)); atomic(other_key, pem_key(ka))
         config = configure_manual(root, mode, port, cert, key, other, other_key)
         with running([binary, '-c', config], port, log_path=log) as proc:
+            # Listening starts before TLS contexts and the PID file are ready.
+            # Complete a request before rotating files used by startup itself.
+            assert peer_cert(port) == der(a)
             def count(text): return log.read_text().count(text)
             def healthy():
                 assert proc.poll() is None
@@ -93,6 +96,7 @@ for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
         if mode != 'self':
             # The format-neutral collector must work without a TOML wrapper too.
             with running([binary, '--compatibility', mode, '-c', root/'server.conf'], port):
+                assert peer_cert(port) == der(b)
                 atomic(target_cert, pem_cert(a)); atomic(target_key, pem_key(ka))
                 until = time.monotonic()+12
                 while peer_cert(port) != der(a):

@@ -27,6 +27,22 @@ fn eql(a: []const u8, b: []const u8) bool {
 pub fn process(conn: *Conn) void {
     const ctx = &conn.ctx;
     if (eql(ctx.uri, "*")) return finalize(conn, 400);
+    if (conn.w.cfg.load_balancer.enabled) {
+        const lb = @import("load_balancer");
+        if (lb.redirectedTarget(conn.req.target)) |clean| {
+            conn.req.target = clean;
+            conn.req.args = if (std.mem.indexOfScalar(u8, clean, '?')) |q| clean[q + 1 ..] else "";
+            ctx.args = conn.req.args;
+        } else if (conn.w.balancer.destination(conn.w.now_ms, ctx.scheme_https)) |origin| {
+            if (lb.location(conn.arena(), origin, conn.req.target) catch null) |target| {
+                // Send the final response immediately, including Expect: 100-continue.
+                // Never consume/execute a non-idempotent request before redirecting it.
+                conn.close_after = true;
+                writeSimpleLoc(conn, 307, null, "", "Cache-Control: no-store\r\n", target);
+                return;
+            }
+        }
+    }
     switch (runStmts(conn, ctx.srv.stmts) catch return finalize(conn, 500)) {
         .done => return,
         .cont, .brk, .last => {},
@@ -647,8 +663,7 @@ pub fn writeHeadTo(conn: *Conn, w: *std.Io.Writer, status: u16, o: HeadOpts) !vo
     }
     // nginx sends Last-Modified only with 200/206/304
     if (o.last_modified) |t| if (status == 200 or status == 206 or status == 304) {
-        var db: [29]u8 = undefined;
-        try w.print("Last-Modified: {s}\r\n", .{response.httpDate(&db, t)});
+        try w.print("Last-Modified: {s}\r\n", .{conn.w.lastModified(t)});
     };
     if (o.chunked) try w.writeAll("Transfer-Encoding: chunked\r\n");
     try w.writeAll(if (conn.keep_alive) "Connection: keep-alive\r\n" else "Connection: close\r\n");

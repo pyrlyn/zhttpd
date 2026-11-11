@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  native:
+    name: Build, unit and Raft (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    env:
+      MISE_ENABLE_TOOLS: zig,go,python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Zig, Go and Python
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache_key_prefix: mise-native
+      - name: Build release server and Raft companion
+        run: zig build -j2 -Doptimize=ReleaseFast install raft --summary all
+      - name: Zig unit tests
+        run: zig build test -j2 --summary all
+      - name: Raft unit and mTLS tests with race detector
+        run: go -C modules/raft test -race -count=1 ./...
+      - name: Load balancing and Raft cluster E2E
+        run: zig build test-load-balancer-e2e test-raft-e2e -j2 --summary all
+
+  protocols:
+    name: TLS, HTTP protocols and module E2E (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned complete toolchain
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache_key_prefix: mise-protocols
+      - name: Cache compiled OpenSSL and HTTP codecs
+        id: native-deps
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps/openssl-install
+            deps/http-install
+          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'scripts/build-http-deps.sh') }}
+      - name: Build pinned OpenSSL and HTTP codecs
+        if: steps.native-deps.outputs.cache-hit != 'true'
+        run: |
+          mise run deps:tls
+          mise run deps:http
+      - name: Install locked Python E2E dependencies
+        run: mise run deps:python
+      - name: Select runner libc for Zig
+        # Conda clang's sysroot has linker scripts for /lib64, unlike Ubuntu.
+        # Dependency builds above still use the pinned compiler through mise.
+        run: |
+          echo "CC=/usr/bin/cc" >> "$GITHUB_ENV"
+          CC=/usr/bin/cc zig libc
+      - name: Build release server with TLS, HTTP/2 and HTTP/3
+        run: >-
+          zig build -j2 -Doptimize=ReleaseFast -Dtls=true -Dhttp=true
+          -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install --summary all
+      - name: Unit tests with TLS and HTTP codecs enabled
+        run: >-
+          zig build test -j2 -Dtls=true -Dhttp=true
+          -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install --summary all
+      - name: Protocol, configuration, reload, ACME, gateway and WebSocket E2E
+        run: >-
+          zig build test-e2e -j2 -Dtls=true -Dhttp=true
+          -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
+          -De2e-python=.run/venv/bin/python --summary all

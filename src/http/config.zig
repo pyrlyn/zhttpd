@@ -226,6 +226,7 @@ pub const Config = struct {
     has_http: bool = false,
     logging_enabled: bool = true,
     auto_reload: bool = true,
+    load_balancer: @import("load_balancer").Settings = .{},
     acme: []const @import("acme").Settings = &.{},
     servers: []*Server = &.{},
     listens: []Listen = &.{},

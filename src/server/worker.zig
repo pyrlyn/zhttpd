@@ -44,14 +44,19 @@ pub const Worker = struct {
     active: ?*Conn = null,
     nconns: u32 = 0,
     max_conns: u32,
+    balancer: @import("load_balancer").Runtime = .{},
     pool: ?*Conn = null,
     graveyard: ?*Conn = null,
+    posted_head: ?*Conn = null,
+    posted_tail: ?*Conn = null,
     now_ms: i64 = 0,
     wall_sec: i64 = 0,
     wall_usec: i64 = 0,
     gmtoff: i64 = 0,
     date_sec: i64 = -1,
     date_buf: [29]u8 = undefined,
+    modified_sec: ?i64 = null,
+    modified_buf: [29]u8 = undefined,
     next_id: u64 = 1,
     stopping: bool = false,
     page_buf: [response.page_buffer_size]u8 = undefined,
@@ -73,7 +78,10 @@ pub const Worker = struct {
             .error_level = cfg.error_log.level,
             .max_conns = cfg.worker_connections,
         };
+        errdefer w.loop.deinit();
         w.files = try filecache.Cache.init(gpa, cfg.open_file_cache_max);
+        errdefer w.files.deinit(gpa);
+        w.balancer = try @import("load_balancer").Runtime.init(gpa, cfg.load_balancer, cfg.worker_processes);
         w.updateTime();
         w.gmtoff = localOffset(w.wall_sec);
         return w;
@@ -81,6 +89,7 @@ pub const Worker = struct {
 
     /// Release an embedded worker after run() returns.
     pub fn deinit(w: *Worker) void {
+        w.balancer.deinit();
         while (w.active) |cn| cn.close();
         w.bury();
         while (w.pool) |cn| {
@@ -115,7 +124,18 @@ pub const Worker = struct {
         w.wall_usec = t.usec;
     }
 
+    /// Cache formatting only, keyed by the actual file metadata. File contents
+    /// and metadata still follow open_file_cache's usual validation rules.
+    pub fn lastModified(w: *Worker, sec: i64) []const u8 {
+        if (w.modified_sec == null or w.modified_sec.? != sec) {
+            _ = response.httpDate(&w.modified_buf, sec);
+            w.modified_sec = sec;
+        }
+        return &w.modified_buf;
+    }
+
     pub fn run(w: *Worker) void {
+        defer w.balancer.deinit();
         for (w.listeners) |*l| {
             if (l.listen.opts.quic and !multiplex.startH3(l, w)) {
                 w.errlog(.emerg, "cannot initialize HTTP/3 listener", .{});
@@ -140,8 +160,9 @@ pub const Worker = struct {
             for (w.listeners) |l| modern = modern or l.quic != null;
             var cn_it = w.active;
             while (cn_it) |cn| : (cn_it = cn.next) modern = modern or cn.multiplex != null;
-            const evs = w.loop.wait(&events, if (modern) 5 else 1000);
+            const evs = w.loop.wait(&events, if (w.posted_head != null) 0 else if (modern) 5 else 1000);
             w.updateTime();
+            w.balancer.update(w.nconns);
             for (evs) |ev| w.dispatch(ev);
             for (w.listeners) |*l| multiplex.driveH3(l);
             cn_it = w.active;
@@ -149,6 +170,7 @@ pub const Worker = struct {
                 cn_it = cn.next;
                 if (cn.state == .multiplexed) multiplex.driveH2(cn);
             }
+            w.runPosted();
             w.bury();
             if (w.now_ms - last_sweep >= 500) {
                 last_sweep = w.now_ms;
@@ -179,6 +201,36 @@ pub const Worker = struct {
         w.bury();
     }
 
+    pub fn post(w: *Worker, cn: *Conn) void {
+        if (cn.posted or cn.state == .closed) return;
+        cn.posted = true;
+        cn.posted_prev = w.posted_tail;
+        cn.posted_next = null;
+        if (w.posted_tail) |tail| tail.posted_next = cn else w.posted_head = cn;
+        w.posted_tail = cn;
+    }
+
+    pub fn unpost(w: *Worker, cn: *Conn) void {
+        if (!cn.posted) return;
+        if (cn.posted_prev) |prev| prev.posted_next = cn.posted_next else w.posted_head = cn.posted_next;
+        if (cn.posted_next) |next| next.posted_prev = cn.posted_prev else w.posted_tail = cn.posted_prev;
+        cn.posted = false;
+        cn.posted_prev = null;
+        cn.posted_next = null;
+    }
+
+    fn runPosted(w: *Worker) void {
+        const last = w.posted_tail orelse return;
+        while (w.posted_head) |cn| {
+            w.unpost(cn);
+            w.current = cn;
+            cn.drive();
+            w.current = null;
+            // Newly posted continuations wait for the next event-loop turn.
+            if (cn == last) break;
+        }
+    }
+
     fn dispatch(w: *Worker, ev: loop_mod.Event) void {
         const tag: *align(8) Tag = @ptrFromInt(ev.udata);
         switch (tag.kind) {
@@ -193,6 +245,8 @@ pub const Worker = struct {
                     cn.close();
                     return;
                 }
+                if (ev.readable or ev.eof) cn.tls_read.ready = true;
+                if (ev.eof) cn.tls_read.eof = true;
                 w.current = cn;
                 defer w.current = null;
                 cn.drive();
@@ -238,6 +292,9 @@ pub const Worker = struct {
                         cn.close();
                         continue;
                     };
+                    // Start TLS from its readiness event. Handshakes inside
+                    // multi_accept delay connections that are already active.
+                    if (tls.enabled and cn.ssl != null) continue;
                     // data usually arrives with the connection: try right away
                     w.current = cn;
                     cn.drive();
@@ -267,6 +324,7 @@ pub const Worker = struct {
         if (w.active) |a| a.prev = cn;
         w.active = cn;
         w.nconns += 1;
+        w.balancer.update(w.nconns);
         return cn;
     }
 
@@ -275,6 +333,7 @@ pub const Worker = struct {
         if (cn.prev) |p| p.next = cn.next else w.active = cn.next;
         if (cn.next) |n| n.prev = cn.prev;
         w.nconns -= 1;
+        w.balancer.update(w.nconns);
         cn.prev = null;
         cn.next = w.graveyard;
         w.graveyard = cn;
@@ -378,6 +437,33 @@ pub const Worker = struct {
 };
 
 extern "c" fn tzset() void;
+
+test "posted continuations are unique and can be removed before pool reuse" {
+    var w: Worker = undefined;
+    w.posted_head = null;
+    w.posted_tail = null;
+    var conns: [3]Conn = @splat(.{});
+    for (&conns) |*cn| w.post(cn);
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == &conns[0]);
+    try std.testing.expect(w.posted_tail == &conns[2]);
+    w.unpost(&conns[1]);
+    try std.testing.expect(conns[0].posted_next == &conns[2]);
+    try std.testing.expect(conns[2].posted_prev == &conns[0]);
+    try std.testing.expect(!conns[1].posted);
+    w.unpost(&conns[0]);
+    w.unpost(&conns[2]);
+    w.unpost(&conns[2]);
+    try std.testing.expect(w.posted_head == null and w.posted_tail == null);
+    conns[1].state = .closed;
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == null);
+    conns[1].state = .read_head;
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == &conns[1] and w.posted_tail == &conns[1]);
+    try std.testing.expect(conns[1].posted_prev == null and conns[1].posted_next == null);
+}
+
 extern "c" fn localtime_r(t: *const c.time_t, out: *Tm) ?*Tm;
 const Tm = extern struct {
     sec: c_int,

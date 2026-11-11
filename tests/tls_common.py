@@ -36,4 +36,3 @@ async def quic_cert(port):
     config = QuicConfiguration(is_client=True, alpn_protocols=['h3'], server_name='localhost', verify_mode=ssl.CERT_NONE)
     async with connect('127.0.0.1', port, configuration=config) as protocol:
         return der(protocol._quic.tls._peer_certificate)
-
