@@ -58,7 +58,8 @@ The ACME/DNS and Raft checks use local fixtures and require no production
 credentials. Compiled protocol dependencies and mise toolchains are cached;
 changes to their versions or build scripts invalidate the native dependency
 cache. Job timeouts and per-ref cancellation prevent obsolete runs from piling
-up. The workflow token has read-only repository access.
+up. Manual and automatic runs use separate concurrency groups so manual checks
+do not cancel push/PR checks. The workflow token has read-only repository access.
 
 ## Full protocol and module checks
 
