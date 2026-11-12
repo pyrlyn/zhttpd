@@ -249,3 +249,7 @@ records subsequent changes and the still-failing 50% target.
 The [bounded buffering follow-up](bench/H3-THROUGHPUT-OPTIMIZATION.md) records
 large-response batching, HTTP/3 callback caching, active-memory costs and the
 remaining suite-wide throughput/latency target failures.
+
+The [multiplexed memory follow-up](bench/MUX-MEMORY-OPTIMIZATION.md) records
+direct HTTP/2 file reads, compact stream buffers, memory measurements and
+the remaining throughput targets.

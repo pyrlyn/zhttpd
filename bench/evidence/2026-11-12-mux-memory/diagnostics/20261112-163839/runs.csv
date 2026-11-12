@@ -1,0 +1,7 @@
+rep,order,server,scenario,load_before,load_after,file
+1,1,zhttpd-baseline,h3-small-ka-c4-p16,1.80,1.67,h3-small-ka-c4-p16.zhttpd-baseline.r1.json
+1,2,nginx,h3-small-ka-c4-p16,1.67,1.78,h3-small-ka-c4-p16.nginx.r1.json
+1,3,zhttpd,h3-small-ka-c4-p16,1.78,1.72,h3-small-ka-c4-p16.zhttpd.r1.json
+2,1,zhttpd,h3-small-ka-c4-p16,1.72,1.82,h3-small-ka-c4-p16.zhttpd.r2.json
+2,2,nginx,h3-small-ka-c4-p16,1.84,1.93,h3-small-ka-c4-p16.nginx.r2.json
+2,3,zhttpd-baseline,h3-small-ka-c4-p16,1.93,2.10,h3-small-ka-c4-p16.zhttpd-baseline.r2.json

@@ -176,15 +176,18 @@ func startNode(c Config) (n *Node, err error) {
 func (n *Node) close() {
 	n.cancel()
 	if n.server != nil {
-		_ = n.server.Close()
+		_ = n.server.Shutdown(context.Background())
 	}
+	// Drain application futures while Raft's FSM runner is still alive.
+	// Shutdown may leave a committed Apply future queued to that runner without
+	// a response. Stop HTTP admission and the publishers before stopping Raft.
+	n.wg.Wait()
 	if n.raft != nil {
 		_ = n.raft.Shutdown().Error()
 	}
 	if n.transport != nil {
 		_ = n.transport.Close()
 	}
-	n.wg.Wait()
 	if n.client != nil {
 		n.client.CloseIdleConnections()
 	}

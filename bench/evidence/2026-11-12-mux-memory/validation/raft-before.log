@@ -1,0 +1,7 @@
+2026-11-12T16:29:56.393+0200 [WARN]  raft: heartbeat timeout reached, starting election: last-leader-addr= last-leader-id=
+--- FAIL: TestShutdownDrainsPublisher (1.39s)
+    tls_test.go:157: publisher lost its consensus engine: raft is already shutdown
+    tls_test.go:168: publisher's final write was not applied
+FAIL
+exit status 1
+FAIL	zhttpd/raft	1.892s

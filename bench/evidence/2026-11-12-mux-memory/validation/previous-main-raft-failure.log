@@ -1,0 +1,141 @@
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	﻿2026-11-12T13:52:16.0094617Z ##[group]Run go -C modules/raft test -race -count=1 ./...
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0095086Z ^[[36;1mgo -C modules/raft test -race -count=1 ./...^[[0m
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0117102Z shell: /usr/bin/bash -e {0}
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0117379Z env:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0117590Z   PYTHONUNBUFFERED: 1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0117949Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/zhttpd/zhttpd/.run/cache/zig
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0118415Z   GOCACHE: /home/runner/work/zhttpd/zhttpd/.run/cache/go-build
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0118861Z   GOMODCACHE: /home/runner/work/zhttpd/zhttpd/.run/cache/go-mod
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0119525Z   MISE_ENABLE_TOOLS: zig,go,python
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0119827Z   MISE_LOG_LEVEL: info
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0120135Z   MISE_TRUSTED_CONFIG_PATHS: /home/runner/work/zhttpd/zhttpd
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0120476Z   MISE_YES: 1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0120687Z   CC: clang
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0120881Z   CXX: clang++
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0121168Z   GOBIN: /home/runner/.local/share/mise/installs/go/1.27.1/bin
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0121814Z   GOROOT: /home/runner/.local/share/mise/installs/go/1.27.1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0122299Z   OPENSSL_BIN: /home/runner/work/zhttpd/zhttpd/deps/openssl-install/bin/openssl
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T13:52:16.0122736Z ##[endgroup]
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6315976Z 2026-11-12T13:52:17.648Z [WARN]  raft: heartbeat timeout reached, starting election: last-leader-addr= last-leader-id=
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6317419Z 2026-11-12T13:52:17.727Z [ERROR] raft-net: failed to decode incoming command: error="transport shutdown"
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6318789Z 2026/11/12 13:52:17 http: TLS handshake error from 127.0.0.1:47308: read tcp 127.0.0.1:34487->127.0.0.1:47308: read: connection reset by peer
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6320142Z panic: test timed out after 10m0s
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6320612Z 	running tests:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6321031Z 		TestMutualTLSReplication (10m0s)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6321366Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6321528Z goroutine 68 [running]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6321955Z testing.(*M).startAlarm.func1()
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6322701Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2959 +0x605
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6323511Z created by time.goFunc
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6324160Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/time/sleep.go:182 +0x45
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6324744Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6324940Z goroutine 1 [chan receive, 9 minutes]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6325546Z testing.(*T).Run(0xc0000fc6c8, {0xbe40a4, 0x18}, 0x1134578)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6326399Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2266 +0xb3e
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6327219Z testing.runTests.func1(0xc0000fc6c8)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6327963Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2742 +0x85
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6328769Z testing.tRunner(0xc0000fc6c8, 0xc00021fa40)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6329803Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2193 +0x21d
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6331077Z testing.runTests({0xbdab30, 0xb}, {0xbdab30, 0xb}, 0xc0000b63f0, {0x1195c90, 0x7, 0x7}, {0xc2b58f9a23d9f9dc, 0x8bb3028ddf, ...})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6332324Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2740 +0x9ea
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6333099Z testing.(*M).Run(0xc0001928c0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6333798Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2600 +0xf45
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6334537Z main.main()
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6335039Z 	_testmain.go:58 +0x165
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6335316Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6335540Z goroutine 26 [sync.WaitGroup.Wait, 9 minutes]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6336326Z sync.runtime_SemacquireWaitGroup(0x0?, 0xe0?)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6337230Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/runtime/sema.go:114 +0x2e
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6338011Z sync.(*WaitGroup).Wait(0xc00012a148)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6338742Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/sync/waitgroup.go:206 +0xc5
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6339894Z zhttpd/raft.(*Node).close(0xc00012a000)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6340567Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/node.go:187 +0x11f
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6341701Z zhttpd/raft.TestMutualTLSReplication.func1()
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6342425Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/tls_test.go:67 +0x6a
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6343177Z zhttpd/raft.TestMutualTLSReplication(0xc0000fdd48)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6343918Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/tls_test.go:116 +0xe45
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6344617Z testing.tRunner(0xc0000fdd48, 0x1134578)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6345376Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2193 +0x21d
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6346192Z created by testing.(*T).Run in goroutine 1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6346953Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/testing/testing.go:2258 +0xb13
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6347558Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6347750Z goroutine 39 [select, 9 minutes]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6348293Z github.com/hashicorp/raft.(*deferError).Error(...)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6349205Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/future.go:113
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6350920Z zhttpd/raft.(*Node).apply(0xc00012a000, {{0xbd76c1, 0x7}, {0x0, 0x0}, 0x0, {0x0, 0x0}, 0xc00023a3a0, 0x0})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6351927Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/node.go:225 +0x19e
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6352882Z zhttpd/raft.(*Node).postMetrics(0xc00012a000, {{0xc07b40, 0x1}, 0x1a1d007d93e, 0xc000302960})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6353841Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/node.go:447 +0x211
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6354542Z zhttpd/raft.(*Node).publishLoop(0xc00012a000)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6355245Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/export.go:124 +0x3ef
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6355938Z zhttpd/raft.startNode.func4()
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6356538Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/node.go:172 +0xa5
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6357250Z created by zhttpd/raft.startNode in goroutine 26
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6358027Z 	/home/runner/work/zhttpd/zhttpd/modules/raft/node.go:172 +0x2335
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6358532Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6358725Z goroutine 43 [IO wait, 9 minutes]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6359495Z internal/poll.runtime_pollWait(0x7f8bee513e00, 0x72)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6360338Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/runtime/netpoll.go:351 +0x85
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6361197Z internal/poll.(*pollDesc).wait(0xc000308520, 0x72, 0x0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6362101Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_poll_runtime.go:84 +0xb1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6362973Z internal/poll.(*pollDesc).waitRead(...)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6363776Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_poll_runtime.go:89
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6364734Z internal/poll.(*FD).Read(0xc000308500, {0xc000418800, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6365658Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_unix.go:170 +0x499
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6366553Z net.(*netFD).Read(0xc000308500, {0xc000418800, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6367382Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/net/fd_posix.go:68 +0x4b
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6368395Z net.(*conn).Read(0xc00031e0c0, {0xc000418800, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6369923Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/net/net.go:196 +0xad
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6371229Z crypto/tls.(*Conn).readFromUntil(0xc00036c008, {0x112f180, 0xc00031e0c0}, 0x5)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6372541Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:820 +0x299
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6373546Z crypto/tls.(*Conn).readRecordOrCCS(0xc00036c008, 0x0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6374389Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:626 +0x337
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6375176Z crypto/tls.(*Conn).readRecord(...)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6375867Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:588
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6376776Z crypto/tls.(*Conn).Read(0xc00036c008, {0xc0005c0000, 0x40000, 0xc0000d6140?})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6377894Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:1392 +0x2d0
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6380942Z bufio.(*Reader).fill(0xc000488360)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6381649Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/bufio/bufio.go:113 +0x2a4
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6382414Z bufio.(*Reader).ReadByte(0xc000488360)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6383130Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/bufio/bufio.go:273 +0x49
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6384332Z github.com/hashicorp/raft.(*NetworkTransport).handleCommand(0xc000334460, 0xc000488360, 0xc000388640, 0xc0000d1a40)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6385731Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:640 +0x7a
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6387191Z github.com/hashicorp/raft.(*NetworkTransport).handleConn(0xc000334460, {0x11320f8, 0xc00031a5a0}, {0x1133b58, 0xc00036c008})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6388754Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:622 +0x5ed
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6390164Z created by github.com/hashicorp/raft.(*NetworkTransport).listen in goroutine 53
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6391571Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:597 +0x5ea
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6392354Z 
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6392537Z goroutine 27 [IO wait, 9 minutes]:
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6393099Z internal/poll.runtime_pollWait(0x7f8bee513600, 0x72)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6393913Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/runtime/netpoll.go:351 +0x85
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6394762Z internal/poll.(*pollDesc).wait(0xc00011a5a0, 0x72, 0x0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6395683Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_poll_runtime.go:84 +0xb1
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6396571Z internal/poll.(*pollDesc).waitRead(...)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6397375Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_poll_runtime.go:89
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6398323Z internal/poll.(*FD).Read(0xc00011a580, {0xc000419000, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6399480Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/internal/poll/fd_unix.go:170 +0x499
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6400392Z net.(*netFD).Read(0xc00011a580, {0xc000419000, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6401219Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/net/fd_posix.go:68 +0x4b
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6402041Z net.(*conn).Read(0xc00031e028, {0xc000419000, 0x800, 0x800})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6402820Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/net/net.go:196 +0xad
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6403725Z crypto/tls.(*Conn).readFromUntil(0xc0002d2808, {0x112f180, 0xc00031e028}, 0x5)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6404693Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:820 +0x299
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6405534Z crypto/tls.(*Conn).readRecordOrCCS(0xc0002d2808, 0x0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6406352Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:626 +0x337
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6407127Z crypto/tls.(*Conn).readRecord(...)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6407808Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:588
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6408717Z crypto/tls.(*Conn).Read(0xc0002d2808, {0xc0006c0000, 0x40000, 0xc00041e540?})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6409873Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/crypto/tls/conn.go:1392 +0x2d0
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6410668Z bufio.(*Reader).fill(0xc0000b88a0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6411357Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/bufio/bufio.go:113 +0x2a4
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6412111Z bufio.(*Reader).ReadByte(0xc0000b88a0)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6412815Z 	/home/runner/.local/share/mise/installs/go/1.27.1/src/bufio/bufio.go:273 +0x49
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6414002Z github.com/hashicorp/raft.(*NetworkTransport).handleCommand(0xc000290460, 0xc0000b88a0, 0xc000388000, 0xc0000d0d80)
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6415391Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:640 +0x7a
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6416848Z github.com/hashicorp/raft.(*NetworkTransport).handleConn(0xc000290460, {0x11320f8, 0xc00025c0f0}, {0x1133b58, 0xc0002d2808})
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6418511Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:622 +0x5ed
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6419948Z created by github.com/hashicorp/raft.(*NetworkTransport).listen in goroutine 34
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6421143Z 	/home/runner/work/zhttpd/zhttpd/.run/cache/go-mod/github.com/hashicorp/raft@v1.8.0/net_transport.go:597 +0x5ea
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6422114Z FAIL	zhttpd/raft	600.041s
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6422533Z FAIL
+Build, unit and Raft (ubuntu-24.04)	Raft unit and mTLS tests with race detector	2026-11-12T14:02:16.6474181Z ##[error]Process completed with exit code 1.

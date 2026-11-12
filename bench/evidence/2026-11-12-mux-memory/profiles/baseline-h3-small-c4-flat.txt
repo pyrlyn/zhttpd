@@ -1,0 +1,35 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cpu-clock'
+# Event count (approx.): 9801603128
+#
+# Overhead  Command  Shared Object      Symbol                                                        
+# ........  .......  .................  ..............................................................
+#
+     7.52%  zhttpd   [kernel.kallsyms]  [k] __wake_up_sync_key
+     3.52%  zhttpd   zhttpd             [.] server.conn.Conn.drive
+     3.27%  zhttpd   zhttpd             [.] response_headers
+     2.56%  zhttpd   zhttpd             [.] compiler_rt.memcpy.memcpyFast
+     2.09%  zhttpd   libc.so.6          [.] cfree
+     1.82%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+     1.74%  zhttpd   zhttpd             [.] nghttp3_qpack_huffman_decode
+     1.70%  zhttpd   zhttpd             [.] header
+     1.45%  zhttpd   zhttpd             [.] getrn
+     1.41%  zhttpd   zhttpd             [.] nghttp3_map_find
+     1.35%  zhttpd   zhttpd             [.] nghttp3_qpack_huffman_encode
+     1.27%  zhttpd   [vdso]             [.] 0x00000000000002e0
+     1.27%  zhttpd   zhttpd             [.] aes_gcm_enc_256_kernel
+     1.25%  zhttpd   zhttpd             [.] ERR_clear_error
+     1.14%  zhttpd   zhttpd             [.] free@plt
+     1.14%  zhttpd   zhttpd             [.] nghttp3_qpack_decoder_read_request
+     1.12%  zhttpd   libc.so.6          [.] malloc
+     1.12%  zhttpd   zhttpd             [.] ossl_quic_tx_packetiser_generate
+     1.06%  zhttpd   zhttpd             [.] nghttp3_http_on_header
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

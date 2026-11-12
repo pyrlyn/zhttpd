@@ -1,0 +1,24 @@
+zhttpd: the configuration file /tmp/zhttpd-protocols-1sqqcd7o/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-1sqqcd7o/nginx.conf test is successful
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+Build Summary: 5/5 steps succeeded
+test-protocols success
++- run python3.13 success 7s
+   +- compile exe zhttpd fast native cached 8ms MaxRSS:38M
+   |  +- options cached
+   +- compile exe h2-keyupdate-test fast native cached 8ms MaxRSS:37M
+
+zhttpd: the configuration file /tmp/zhttpd-protocols-i6xxqccz/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-i6xxqccz/nginx.conf test is successful
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+Build Summary: 5/5 steps succeeded
+test-protocols success
++- run python3.13 success 7s
+   +- compile exe zhttpd debug native cached 9ms MaxRSS:39M
+   |  +- options cached
+   +- compile exe h2-keyupdate-test debug native cached 9ms MaxRSS:37M
+

@@ -1,0 +1,106 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cpu-clock'
+# Event count (approx.): 9921843608
+#
+# Children      Self  Command  Shared Object      Symbol                                         
+# ........  ........  .......  .................  ...............................................
+#
+    63.00%     0.20%  zhttpd   zhttpd             [.] zhttp_h2_drive
+    41.73%     0.00%  zhttpd   zhttpd             [.] flush_h2 (inlined)
+    40.34%     0.06%  zhttpd   zhttpd             [.] SSL_write
+    40.09%     0.24%  zhttpd   zhttpd             [.] ssl3_write_bytes
+    36.40%     0.04%  zhttpd   zhttpd             [.] armv8_aes_gcm_encrypt
+    36.36%    36.36%  zhttpd   zhttpd             [.] aes_gcm_enc_256_kernel
+    36.34%     0.00%  zhttpd   [unknown]          [.] 0x0000000000004000
+    36.32%     1.54%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+    36.32%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync
+    36.32%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync_handler
+    34.74%     0.04%  zhttpd   [kernel.kallsyms]  [k] el0_svc_common.constprop.0
+    34.74%     0.00%  zhttpd   [kernel.kallsyms]  [k] do_el0_svc
+    34.50%     0.30%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+    29.04%     0.22%  zhttpd   zhttpd             [.] BIO_write
+    28.90%     0.06%  zhttpd   zhttpd             [.] bwrite_conv
+    28.80%     0.16%  zhttpd   zhttpd             [.] tls_retry_write_records
+    28.16%     0.08%  zhttpd   zhttpd             [.] buffer_write.part.0
+    22.40%     0.16%  zhttpd   zhttpd             [.] sock_write
+    22.24%     0.18%  zhttpd   libc.so.6          [.] write
+    21.53%     0.00%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_write
+    21.51%     0.04%  zhttpd   [kernel.kallsyms]  [k] ksys_write
+    21.45%     0.04%  zhttpd   [kernel.kallsyms]  [k] vfs_write
+    21.37%     0.02%  zhttpd   [kernel.kallsyms]  [k] sock_write_iter
+    21.35%     0.04%  zhttpd   [kernel.kallsyms]  [k] __sock_sendmsg
+    21.25%     0.04%  zhttpd   [kernel.kallsyms]  [k] inet_sendmsg
+    21.19%     0.00%  zhttpd   [kernel.kallsyms]  [k] tcp_sendmsg
+    20.86%     0.22%  zhttpd   [kernel.kallsyms]  [k] tcp_sendmsg_locked
+    15.65%     0.02%  zhttpd   zhttpd             [.] nghttp2_session_send
+    15.61%     0.38%  zhttpd   zhttpd             [.] nghttp2_session_mem_send_internal
+    14.44%     0.04%  zhttpd   zhttpd             [.] h2_send_data
+    14.38%     0.63%  zhttpd   libc.so.6          [.] __libc_pread
+    12.24%     0.04%  zhttpd   [kernel.kallsyms]  [k] ksys_pread64
+    12.20%     0.00%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_pread64
+    12.00%     0.10%  zhttpd   [kernel.kallsyms]  [k] vfs_read
+    11.59%    11.59%  zhttpd   zhttpd             [.] compiler_rt.memcpy.memcpyFast
+    11.59%     0.02%  zhttpd   [kernel.kallsyms]  [k] ext4_file_read_iter
+    11.57%     0.00%  zhttpd   [kernel.kallsyms]  [k] generic_file_read_iter
+    11.45%     0.30%  zhttpd   [kernel.kallsyms]  [k] filemap_read
+    11.33%     0.00%  zhttpd   zhttpd             [.] compiler_rt.memcpy.copyForwards (inlined)
+    11.19%     0.00%  zhttpd   zhttpd             [.] compiler_rt.memcpy.copyBlocks (inlined)
+    11.19%     0.00%  zhttpd   zhttpd             [.] compiler_rt.memcpy.copyBlocksAlignedSource (inlined)
+    10.93%     0.08%  zhttpd   zhttpd             [.] tls_write_records_default
+    10.93%     0.00%  zhttpd   zhttpd             [.] tls_write_records
+     9.76%     0.10%  zhttpd   [kernel.kallsyms]  [k] tcp_write_xmit
+     8.91%     0.14%  zhttpd   [kernel.kallsyms]  [k] copy_page_to_iter
+     8.83%     0.12%  zhttpd   [kernel.kallsyms]  [k] __tcp_transmit_skb
+     8.54%     0.04%  zhttpd   [kernel.kallsyms]  [k] ip_queue_xmit
+     8.50%     0.06%  zhttpd   [kernel.kallsyms]  [k] __ip_queue_xmit
+     8.26%     0.02%  zhttpd   [kernel.kallsyms]  [k] ip_output
+     8.22%     0.06%  zhttpd   [kernel.kallsyms]  [k] __ip_finish_output
+     8.22%     0.00%  zhttpd   [kernel.kallsyms]  [k] ip_finish_output
+     8.20%     8.20%  zhttpd   [kernel.kallsyms]  [k] __arch_copy_to_user
+     8.12%     0.10%  zhttpd   [kernel.kallsyms]  [k] ip_finish_output2
+     8.00%     0.06%  zhttpd   [kernel.kallsyms]  [k] neigh_hh_output
+     7.94%     0.10%  zhttpd   [kernel.kallsyms]  [k] __dev_queue_xmit
+     7.45%     0.34%  zhttpd   [kernel.kallsyms]  [k] __local_bh_enable_ip
+     7.11%     0.06%  zhttpd   [kernel.kallsyms]  [k] do_softirq
+     7.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] ____do_softirq
+     7.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] __do_softirq
+     7.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] call_on_irq_stack
+     7.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] do_softirq_own_stack
+     7.03%     0.28%  zhttpd   [kernel.kallsyms]  [k] handle_softirqs
+     6.87%     0.02%  zhttpd   [kernel.kallsyms]  [k] skb_do_copy_data_nocache
+     6.77%     0.16%  zhttpd   [kernel.kallsyms]  [k] net_rx_action
+     6.60%     6.60%  zhttpd   [kernel.kallsyms]  [k] __arch_copy_from_user
+     6.22%     0.00%  zhttpd   [kernel.kallsyms]  [k] tcp_push_one
+     5.31%     0.02%  zhttpd   zhttpd             [.] WPACKET_memcpy
+     5.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] __napi_poll
+     4.91%     0.06%  zhttpd   [kernel.kallsyms]  [k] __netif_receive_skb
+     4.89%     0.02%  zhttpd   [kernel.kallsyms]  [k] process_backlog
+     4.85%     0.02%  zhttpd   [kernel.kallsyms]  [k] __netif_receive_skb_one_core
+     4.67%     0.04%  zhttpd   [kernel.kallsyms]  [k] ip_rcv
+     4.50%     0.08%  zhttpd   [kernel.kallsyms]  [k] ip_rcv_finish
+     4.34%     0.02%  zhttpd   [kernel.kallsyms]  [k] ip_local_deliver
+     4.22%     0.04%  zhttpd   [kernel.kallsyms]  [k] ip_local_deliver_finish
+     4.04%     0.12%  zhttpd   [kernel.kallsyms]  [k] ip_protocol_deliver_rcu
+     3.78%     0.12%  zhttpd   [kernel.kallsyms]  [k] tcp_v4_rcv
+     3.62%     0.04%  zhttpd   [kernel.kallsyms]  [k] tcp_v4_do_rcv
+     3.58%     0.02%  zhttpd   [kernel.kallsyms]  [k] tcp_rcv_established
+     3.55%     0.04%  zhttpd   [kernel.kallsyms]  [k] tcp_push
+     3.51%     0.00%  zhttpd   [kernel.kallsyms]  [k] __tcp_push_pending_frames
+     3.47%     1.51%  zhttpd   zhttpd             [.] pump_backend
+     2.54%     0.18%  zhttpd   zhttpd             [.] tls13_cipher
+     2.32%     0.02%  zhttpd   [kernel.kallsyms]  [k] sk_page_frag_refill
+     2.30%     0.06%  zhttpd   [kernel.kallsyms]  [k] skb_page_frag_refill
+     2.24%     0.06%  zhttpd   [kernel.kallsyms]  [k] tcp_data_queue
+     2.24%     0.00%  zhttpd   [kernel.kallsyms]  [k] alloc_pages
+     2.22%     0.12%  zhttpd   [kernel.kallsyms]  [k] __alloc_pages
+     2.22%     0.00%  zhttpd   [kernel.kallsyms]  [k] alloc_pages_mpol
+     2.10%     0.16%  zhttpd   [kernel.kallsyms]  [k] get_page_from_freelist
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
