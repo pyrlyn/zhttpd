@@ -49,6 +49,7 @@ logging, load balancing and automatic ACME. Unknown settings and invalid module 
 Legacy `-c nginx.conf` remains supported; other direct formats use `--compatibility`.
 
 - [Native TOML schema, routing, logging and Let's Encrypt](docs/configuration.md)
+- [Native HTTP API, middleware, JWT, CORS, gzip and idempotency](docs/http-application.md)
 - [Adapter coverage and log compatibility](docs/compatibility.md)
 - [WebSocket SDK/API for Zig, C and C++](docs/websocket-sdk.md)
 - [Runnable configuration examples](examples/configs/config.toml)

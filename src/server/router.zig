@@ -25,6 +25,18 @@ pub fn findLocation(locs: []const *Location, uri: []const u8) Match {
     return .{ .loc = loc, .caps = caps };
 }
 
+pub fn findLocationMethod(locs: []const *Location, uri: []const u8, method: []const u8) Match {
+    const path = findLocation(locs, uri);
+    if (path.loc) |l| {
+        if (l.conf.methods.len == 0) return path;
+        // Only equivalent URL patterns can override the most specific path.
+        for (locs) |candidate| {
+            if (candidate.kind == l.kind and std.mem.eql(u8, candidate.name, l.name) and @import("policy.zig").methodAllowed(candidate.conf.methods, method)) return .{ .loc = candidate, .caps = path.caps };
+        }
+    }
+    return path;
+}
+
 fn find(locs: []const *Location, uri: []const u8, caps: *Regex.Captures) ?*Location {
     for (locs) |l| {
         if (l.kind == .exact and std.mem.eql(u8, l.name, uri)) return l;

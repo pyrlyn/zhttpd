@@ -106,10 +106,21 @@ pub const Builder = struct {
         return b.locationKind(s, n, path, .prefix);
     }
     pub fn locationKind(b: *Builder, s: *config.Server, n: Node, path: []const u8, kind: config.LocKind) Error!*config.Location {
+        return b.locationMethods(s, n, path, kind, &.{});
+    }
+    pub fn locationMethods(b: *Builder, s: *config.Server, n: Node, path: []const u8, kind: config.LocKind, methods: []const []const u8) Error!*config.Location {
         if (path.len == 0 or path[0] != '/') return b.fail(n, "location must start with /", .{});
-        for (s.locations) |l| if (l.kind == kind and std.mem.eql(u8, l.name, path)) return b.fail(n, "duplicate location {s}", .{path});
+        for (methods) |m| {
+            if (m.len == 0) return b.fail(n, "empty HTTP method", .{});
+            for (m) |ch| if ((ch < 'A' or ch > 'Z') and ch != '_' and ch != '-') return b.fail(n, "invalid HTTP method", .{});
+        }
+        for (s.locations) |l| if (l.kind == kind and std.mem.eql(u8, l.name, path)) {
+            if (methods.len == 0 or l.conf.methods.len == 0) return b.fail(n, "overlapping route {s}", .{path});
+            for (methods) |m| if (http.server.policy.methodAllowed(l.conf.methods, m) or (std.mem.eql(u8, m, "GET") and http.server.policy.methodAllowed(l.conf.methods, "HEAD"))) return b.fail(n, "overlapping route methods {s}", .{path});
+        };
         const lc = try b.a.create(config.LocConf);
         lc.* = s.conf.*;
+        lc.methods = methods;
         const loc = try b.a.create(config.Location);
         loc.* = .{ .kind = kind, .name = path, .conf = lc, .file = n.file, .line = n.line };
         s.locations = try append(b.a, *config.Location, s.locations, loc);

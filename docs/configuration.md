@@ -909,3 +909,8 @@ float, многострочные строки и quoted keys. Неизвест�
 Для синхронизации через Raft задайте `publish_backend` (локальный inbox) отдельно
 от `backend` (committed view). [Raft-модуль](raft.md) реплицирует метрики, документы
 конфигурации и состав кластера.
+
+## Native HTTP application policies
+
+See [Native HTTP applications and server policies](http-application.md) for method routes,
+JWT, CORS, rate limiting, gzip, JSON errors, health checks and the embeddable Zig API.

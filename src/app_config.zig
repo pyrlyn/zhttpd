@@ -11,8 +11,28 @@ const C = http.config;
 pub const Compatibility = enum { self, nginx, apache, litespeed, caddy };
 pub const Options = struct { prefix: []const u8, conf_prefix: []const u8, strict: bool = false, quiet_ignored: bool = false, compatibility: Compatibility = .nginx, acme_domains: []const []const u8 = &.{}, sources: ?*http.config_watch.Sources = null };
 const Modules = struct { http: bool = true, self: bool = true, nginx: bool = true, apache: bool = true, litespeed: bool = true, caddy: bool = true, websocket: bool = true, logging: bool = true, fastcgi: bool = true, wsgi: bool = true, acme: bool = true, load_balancer: bool = true };
-const Route = struct { path: ?[]const u8 = null, match: enum { prefix, exact } = .prefix, response: ?[]const u8 = null, root: ?[]const u8 = null, proxy: ?[]const u8 = null, websocket: bool = false, fastcgi: ?[]const u8 = null, wsgi: ?[]const u8 = null, status: u16 = 200 };
+const Policies = struct {
+    gzip: ?bool = null,
+    json_errors: ?bool = null,
+    cors_origins: ?[]const []const u8 = null,
+    cors_methods: ?[]const []const u8 = null,
+    cors_headers: ?[]const []const u8 = null,
+    cors_credentials: ?bool = null,
+    rate_limit: ?u32 = null,
+    rate_burst: ?u32 = null,
+    jwt_secret_file: ?[]const u8 = null,
+    jwt_issuer: ?[]const u8 = null,
+    jwt_audience: ?[]const u8 = null,
+    jwt_scope: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
+};
+const Route = struct { path: ?[]const u8 = null, match: enum { prefix, exact } = .prefix, methods: []const []const u8 = &.{}, policies: Policies = .{}, response: ?[]const u8 = null, root: ?[]const u8 = null, proxy: ?[]const u8 = null, websocket: bool = false, fastcgi: ?[]const u8 = null, wsgi: ?[]const u8 = null, status: u16 = 200 };
 const Native = struct {
+    policies: Policies = .{},
+    health_path: ?[]const u8 = null,
+    header_timeout_ms: u32 = 60000,
+    body_timeout_ms: u32 = 60000,
+    send_timeout_ms: u32 = 60000,
     listen: ?[]const u8 = null,
     root: ?[]const u8 = null,
     response: ?[]const u8 = null,
@@ -68,6 +88,16 @@ const Toml = struct {
     }
     fn number(p: *Toml, v: Value) Error!u32 {
         return if (v == .number) v.number else p.fail("expected a nonnegative integer", .{});
+    }
+    fn policy(p: *Toml, out: *Policies, key: []const u8, v: Value) Error!bool {
+        inline for (@typeInfo(Policies).@"struct".field_names) |name| {
+            if (std.mem.eql(u8, key, name)) {
+                const T = @typeInfo(@FieldType(Policies, name)).optional.child;
+                @field(out, name) = if (T == bool) try p.boolean(v) else if (T == u32) try p.number(v) else if (T == []const u8) try p.string(v) else try p.strings(v);
+                return true;
+            }
+        }
+        return false;
     }
     fn value(p: *Toml, input: []const u8) Error!Value {
         const text = std.mem.trim(u8, input, " \t\r");
@@ -247,7 +277,7 @@ const Toml = struct {
                 if (std.mem.eql(u8, key, "auto_reload")) result.auto_reload = try p.boolean(v) else if (std.mem.eql(u8, key, "compatibility")) result.compatibility = std.meta.stringToEnum(Compatibility, try p.string(v)) orelse return p.fail("compatibility must be self, nginx, apache, litespeed or caddy", .{}) else if (std.mem.eql(u8, key, "config")) result.config = try p.string(v) else if (std.mem.eql(u8, key, "prefix")) result.prefix = try p.string(v) else if (std.mem.eql(u8, key, "pid")) result.pid = try p.string(v) else if (std.mem.eql(u8, key, "error_log")) result.error_log = try p.string(v) else return p.fail("unknown server setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "http")) {
                 result.has_http = true;
-                if (std.mem.eql(u8, key, "listen")) result.native.listen = try p.string(v) else if (std.mem.eql(u8, key, "root")) result.native.root = try p.string(v) else if (std.mem.eql(u8, key, "response")) result.native.response = try p.string(v) else if (std.mem.eql(u8, key, "index")) result.native.index = try p.string(v) else if (std.mem.eql(u8, key, "http2")) result.native.http2 = try p.boolean(v) else if (std.mem.eql(u8, key, "http3")) result.native.http3 = try p.boolean(v) else if (std.mem.eql(u8, key, "max_body_size")) result.native.max_body_size = try p.number(v) else if (std.mem.eql(u8, key, "keepalive_timeout_ms")) result.native.keepalive_timeout_ms = try p.number(v) else return p.fail("unknown HTTP setting {s}", .{key});
+                if (std.mem.eql(u8, key, "listen")) result.native.listen = try p.string(v) else if (std.mem.eql(u8, key, "root")) result.native.root = try p.string(v) else if (std.mem.eql(u8, key, "response")) result.native.response = try p.string(v) else if (std.mem.eql(u8, key, "index")) result.native.index = try p.string(v) else if (std.mem.eql(u8, key, "http2")) result.native.http2 = try p.boolean(v) else if (std.mem.eql(u8, key, "http3")) result.native.http3 = try p.boolean(v) else if (std.mem.eql(u8, key, "max_body_size")) result.native.max_body_size = try p.number(v) else if (std.mem.eql(u8, key, "keepalive_timeout_ms")) result.native.keepalive_timeout_ms = try p.number(v) else if (std.mem.eql(u8, key, "health_path")) result.native.health_path = try p.string(v) else if (std.mem.eql(u8, key, "header_timeout_ms")) result.native.header_timeout_ms = try p.number(v) else if (std.mem.eql(u8, key, "body_timeout_ms")) result.native.body_timeout_ms = try p.number(v) else if (std.mem.eql(u8, key, "send_timeout_ms")) result.native.send_timeout_ms = try p.number(v) else if (try p.policy(&result.native.policies, key, v)) {} else return p.fail("unknown HTTP setting {s}", .{key});
             } else if (std.mem.eql(u8, section, "http.tls")) {
                 result.has_http = true;
                 if (std.mem.eql(u8, key, "certificate")) result.native.certificate = try p.string(v) else if (std.mem.eql(u8, key, "key")) result.native.key = try p.string(v) else if (std.mem.eql(u8, key, "password_file")) {
@@ -260,7 +290,7 @@ const Toml = struct {
                     const code = try p.number(v);
                     if (code < 200 or code > 599) return p.fail("route status must be 200..599", .{});
                     r.status = @intCast(code);
-                } else return p.fail("unknown route setting {s}", .{key});
+                } else if (std.mem.eql(u8, key, "methods")) r.methods = try p.strings(v) else if (try p.policy(&r.policies, key, v)) {} else return p.fail("unknown route setting {s}", .{key});
             } else return p.fail("key must be inside a known table", .{});
         }
         if (result.load_balancer.enabled and !result.modules.load_balancer) return p.fail("load_balancer module is disabled", .{});
@@ -383,6 +413,10 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
     try b.indexes(s.conf, &.{n.index});
     s.conf.client_max_body_size = n.max_body_size;
     s.conf.keepalive_timeout_ms = n.keepalive_timeout_ms;
+    s.client_header_timeout_ms = n.header_timeout_ms;
+    s.conf.client_body_timeout_ms = n.body_timeout_ms;
+    s.conf.send_timeout_ms = n.send_timeout_ms;
+    try applyPolicies(&b, origin, s.conf, n.policies, root);
     s.http2 = n.http2;
     if ((n.certificate != null) != (n.key != null)) return b.fail(origin, "TLS certificate and key must be specified together", .{});
     const secure = n.certificate != null;
@@ -398,7 +432,8 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
         const count: u8 = @as(u8, @intFromBool(r.response != null)) + @as(u8, @intFromBool(r.root != null)) + @as(u8, @intFromBool(r.proxy != null)) + @as(u8, @intFromBool(r.websocket)) + @as(u8, @intFromBool(r.fastcgi != null)) + @as(u8, @intFromBool(r.wsgi != null));
         if (count != 1) return b.fail(origin, "route requires exactly one of response, root, proxy, websocket, fastcgi, wsgi", .{});
         if (r.status != 200 and r.response == null) return b.fail(origin, "route status only applies to response", .{});
-        const loc = try b.locationKind(s, origin, route_path, if (r.match == .exact) .exact else .prefix);
+        const loc = try b.locationMethods(s, origin, route_path, if (r.match == .exact) .exact else .prefix, r.methods);
+        try applyPolicies(&b, origin, loc.conf, r.policies, root);
         fallback = fallback or (r.match == .prefix and std.mem.eql(u8, route_path, "/"));
         if (r.response) |text| loc.stmts = try b.a.dupe(C.Stmt, &.{.{ .ret = .{ .code = r.status, .text = try b.literal(text) } }});
         if (r.root) |path| loc.conf.root = try b.literal(try b.fullPath(root, path));
@@ -414,14 +449,50 @@ fn native(gpa: std.mem.Allocator, file: []const u8, root: []const u8, n: Native,
         const loc = try b.location(s, origin, "/");
         loc.stmts = try b.a.dupe(C.Stmt, &.{.{ .ret = .{ .code = if (n.response != null) 200 else 404, .text = if (n.response) |text| try b.literal(text) else null } }});
     } else if (fallback and n.response != null) return b.fail(origin, "http.response conflicts with a / prefix route", .{});
-    b.cfg.source_files = try b.a.dupe([]const u8, &.{file});
+    if (n.health_path) |path| {
+        const loc = try b.locationMethods(s, origin, path, .exact, &.{"GET"});
+        loc.conf.health = true;
+        loc.conf.jwt = null;
+        loc.conf.rate_limit = 0;
+    }
+    b.cfg.source_files = try support.append(b.a, []const u8, b.cfg.source_files, file);
     return b.cfg;
+}
+
+fn applyPolicies(b: *support.Builder, node: support.Node, lc: *C.LocConf, p: Policies, root: []const u8) Error!void {
+    if (p.gzip) |v| lc.gzip = v;
+    if (p.json_errors) |v| lc.json_errors = v;
+    if (p.content_type) |v| {
+        for (v) |ch| if (ch < 0x20 or ch == 0x7f) return b.fail(node, "invalid content_type", .{});
+        lc.default_type = v;
+    }
+    if (p.cors_origins) |v| lc.cors.origins = v;
+    if (p.cors_methods) |v| lc.cors.methods = v;
+    if (p.cors_headers) |v| lc.cors.headers = v;
+    if (p.cors_credentials) |v| lc.cors.credentials = v;
+    if (p.rate_limit) |v| lc.rate_limit = v;
+    if (p.rate_burst) |v| lc.rate_burst = v;
+    if (p.jwt_secret_file) |file| {
+        const path = try b.fullPath(root, file);
+        var passwords: http.server.password_file.PasswordFile = .{};
+        defer passwords.deinit();
+        passwords.read(b.a, path) catch return b.fail(node, "cannot read JWT secret file", .{});
+        if (passwords.count != 1 or passwords.lines[0].len < 32) return b.fail(node, "JWT secret requires one line of at least 32 bytes", .{});
+        lc.jwt = .{ .secret = try b.a.dupe(u8, passwords.lines[0]), .issuer = p.jwt_issuer orelse return b.fail(node, "JWT issuer is required", .{}), .audience = p.jwt_audience orelse return b.fail(node, "JWT audience is required", .{}), .scope = p.jwt_scope orelse "" };
+        b.cfg.source_files = try support.append(b.a, []const u8, b.cfg.source_files, path);
+    } else if (lc.jwt) |*jwt| {
+        if (p.jwt_issuer) |v| jwt.issuer = v;
+        if (p.jwt_audience) |v| jwt.audience = v;
+        if (p.jwt_scope) |v| jwt.scope = v;
+    } else if (p.jwt_issuer != null or p.jwt_audience != null or p.jwt_scope != null) return b.fail(node, "JWT policy requires jwt_secret_file", .{});
+    http.server.policy.validate(lc) catch |err| return b.fail(node, "invalid HTTP policy: {s}", .{@errorName(err)});
 }
 
 pub fn load(gpa: std.mem.Allocator, file: []const u8, opts: Options, diag: *http.diag.Diag) Error!*C.Config {
     const cfg = try loadConfig(gpa, file, opts, diag);
     errdefer support.destroy(gpa, cfg);
     if (opts.sources) |sources| {
+        for (cfg.source_files) |path| try sources.observe(path, .file);
         for (cfg.servers) |srv| {
             if (srv.tls.certificate) |path| try sources.observe(path, .tls);
             if (srv.tls.certificate_key) |path| try sources.observe(path, .tls);
