@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -33,7 +34,7 @@ def running(command, port, cwd=None, env=None, startup_timeout=5, log_path=None)
                 raise AssertionError('listener did not start')
             yield process
         except BaseException:
-            log.flush(); log.seek(0); print(log.read())
+            log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
             raise
         finally:
             # Always target only the process group created by this fixture.
