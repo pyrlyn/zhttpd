@@ -109,6 +109,9 @@ static stream *lookup(session *s, int64_t id) {
     for (stream *p = s->streams; p; p = p->next) if (p->id == id) return p;
     return NULL;
 }
+static stream *h3_stream(void *user, int64_t id, void *stream_user) {
+    return stream_user ? stream_user : lookup(user, id);
+}
 static stream *new_stream(session *s, int64_t id, SSL *quic) {
     if (s->nstreams >= STREAMS + 6) return NULL;
     /* Account for each accepted byte immediately. All-or-nothing QUIC writes
@@ -151,6 +154,9 @@ static void sweep(session *s) {
         *pp = p->next;
         if (p->request) s->close(p->request);
         if (s->h3 && (p->id & 3) == 0) {
+            /* A reset/write failure may leave the nghttp3 stream alive. Drop
+             * its association before this object can enter the reuse cache. */
+            nghttp3_conn_set_stream_user_data(s->h3, p->id, NULL);
             ++s->completed_bidi;
             nghttp3_conn_set_max_client_streams_bidi(s->h3, STREAMS + s->completed_bidi);
         }
@@ -291,8 +297,8 @@ static nghttp2_ssize h2_read(nghttp2_session *h, int32_t id, uint8_t *buf, size_
 }
 static nghttp3_ssize h3_read(nghttp3_conn *h, int64_t id, nghttp3_vec *vec, size_t nvec,
                            uint32_t *flags, void *user, void *stream_user) {
-    (void)h; (void)nvec; (void)stream_user;
-    stream *p = lookup(user, id);
+    (void)h; (void)nvec;
+    stream *p = h3_stream(user, id, stream_user);
     if (!p) return NGHTTP3_ERR_CALLBACK_FAILURE;
     size_t n = p->output_len - p->output_pos;
     if (!n && !p->eof) return NGHTTP3_ERR_WOULDBLOCK;
@@ -302,8 +308,8 @@ static nghttp3_ssize h3_read(nghttp3_conn *h, int64_t id, nghttp3_vec *vec, size
     return n ? 1 : 0;
 }
 static int h3_acked(nghttp3_conn *h, int64_t id, uint64_t n, void *user, void *su) {
-    (void)h; (void)su;
-    stream *p = lookup(user, id);
+    (void)h;
+    stream *p = h3_stream(user, id, su);
     if (p) { if (n > p->offered) return NGHTTP3_ERR_CALLBACK_FAILURE; p->offered -= (size_t)n; }
     return 0;
 }
@@ -368,7 +374,7 @@ static int pump_backend(stream *p) {
     if (p->output_pos == p->output_len && !p->offered) p->output_pos = p->output_len = 0;
     /* A completed request cannot consume more input. Let the codec drain its
      * retained response bytes before revisiting the application writer. */
-    if (p->request && (!p->request_end || p->input_pos < p->input_len || !p->submitted || !p->output_len))
+    if (p->request && (!p->output_len || !p->request_end || p->input_pos < p->input_len || !p->submitted))
         p->owner->drive(p->request);
     /* An early response can finish before the client body; discard buffered
      * input while returning its flow-control credit to the connection. */
@@ -560,27 +566,34 @@ static void free_session(session *s) {
 }
 void zhttp_h2_free(void *ptr) { if (ptr) free_session(ptr); }
 
+static int h3_headers_begin(nghttp3_conn *h, int64_t id, void *user, void *su) {
+    stream *p = h3_stream(user, id, su);
+    /* sweep clears this association before it can recycle the object. Keep
+     * the pointer instead of searching the list for every header/data
+     * callback. Streams reset before headers still use the lookup fallback. */
+    return !p || nghttp3_conn_set_stream_user_data(h, id, p) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
+}
 static int h3_header(nghttp3_conn *h, int64_t id, int32_t token, nghttp3_rcbuf *n, nghttp3_rcbuf *v,
                      uint8_t flags, void *user, void *su) {
-    (void)h; (void)token; (void)flags; (void)su;
+    (void)h; (void)token; (void)flags;
     nghttp3_vec name = nghttp3_rcbuf_get_buf(n), value = nghttp3_rcbuf_get_buf(v);
-    return header(lookup(user, id), name.base, name.len, value.base, value.len) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
+    return header(h3_stream(user, id, su), name.base, name.len, value.base, value.len) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
 }
 static int h3_headers_done(nghttp3_conn *h, int64_t id, int fin, void *user, void *su) {
-    (void)h; (void)fin; (void)su;
-    return start_request(lookup(user, id)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
+    (void)h; (void)fin;
+    return start_request(h3_stream(user, id, su)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
 }
 static int h3_data(nghttp3_conn *h, int64_t id, const uint8_t *data, size_t n, void *user, void *su) {
-    (void)h; (void)su;
-    return body(lookup(user, id), data, n) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
+    (void)h;
+    return body(h3_stream(user, id, su), data, n) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
 }
 static int h3_end(nghttp3_conn *h, int64_t id, void *user, void *su) {
-    (void)h; (void)su;
-    return end_request(lookup(user, id)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
+    (void)h;
+    return end_request(h3_stream(user, id, su)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
 }
 static int h3_reset(nghttp3_conn *h, int64_t id, uint64_t code, void *user, void *su) {
-    (void)h; (void)su;
-    stream *p = lookup(user, id);
+    (void)h;
+    stream *p = h3_stream(user, id, su);
     if (p) { SSL_STREAM_RESET_ARGS args = {code}; SSL_stream_reset(p->quic, &args, sizeof(args)); }
     return 0;
 }
@@ -594,7 +607,7 @@ static int h3_shutdown(nghttp3_conn *h, int64_t id, void *user) {
 }
 static int init_h3(session *s) {
     nghttp3_callbacks cb = {0};
-    cb.recv_header = h3_header; cb.end_headers = h3_headers_done;
+    cb.begin_headers = h3_headers_begin; cb.recv_header = h3_header; cb.end_headers = h3_headers_done;
     cb.recv_data = h3_data; cb.end_stream = h3_end; cb.acked_stream_data = h3_acked;
     cb.stop_sending = h3_reset; cb.reset_stream = h3_reset; cb.rand = h3_rand;
     cb.shutdown = h3_shutdown;

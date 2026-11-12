@@ -133,8 +133,26 @@ static void output_growth_and_cache(void) {
     }
     cached_streams = 0; cached_output_bytes = 0;
 }
+static void h3_stream_association_lifetime(void) {
+    session *s = calloc(1, sizeof(*s)); assert(s); ++active_sessions;
+    nghttp3_callbacks cb = {0}; nghttp3_settings settings; nghttp3_settings_default(&settings);
+    assert(nghttp3_conn_server_new(&s->h3, &cb, &settings, NULL, s) == 0);
+    stream *p = new_stream(s, 0, NULL); assert(p);
+    assert(nghttp3_conn_read_stream(s->h3, 0, NULL, 0, 0) == 0);
+    assert(h3_headers_begin(s->h3, 0, s, NULL) == 0);
+    assert(nghttp3_conn_get_stream_user_data(s->h3, 0) == p);
+    /* Simulate transport teardown while nghttp3 still owns its stream. */
+    p->closed = 1; sweep(s);
+    assert(nghttp3_conn_get_stream_user_data(s->h3, 0) == NULL);
+    stream *reused = new_stream(s, 4, NULL); assert(reused == p);
+    reused->offered = 7;
+    assert(h3_acked(s->h3, 0, 1, s, nghttp3_conn_get_stream_user_data(s->h3, 0)) == 0);
+    assert(reused->offered == 7); /* an old stream cannot mutate the new owner */
+    free_session(s);
+    assert(!stream_cache && !cached_streams && !cached_output_bytes && !active_sessions);
+}
 int main(void) {
-    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache();
-    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth and bounded cache");
+    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache(); h3_stream_association_lifetime();
+    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth, bounded cache and stream association lifetime");
     return 0;
 }
