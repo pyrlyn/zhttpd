@@ -10,6 +10,9 @@ const multiplex = @import("multiplex.zig");
 const vars = @import("vars.zig");
 const conn_mod = @import("conn.zig");
 const Conn = conn_mod.Conn;
+const RequestData = conn_mod.RequestData;
+const request_pool_limit = 32;
+const conn_pool_limit = 64;
 const Tag = conn_mod.Tag;
 const proxy = @import("proxy.zig");
 const response = @import("../http/response.zig");
@@ -47,6 +50,9 @@ pub const Worker = struct {
     max_conns: u32,
     balancer: @import("load_balancer").Runtime = .{},
     pool: ?*Conn = null,
+    pool_count: usize = 0,
+    request_pool: ?*RequestData = null,
+    request_pool_count: usize = 0,
     graveyard: ?*Conn = null,
     posted_head: ?*Conn = null,
     posted_tail: ?*Conn = null,
@@ -101,7 +107,11 @@ pub const Worker = struct {
         w.bury();
         while (w.pool) |cn| {
             w.pool = cn.next;
-            std.heap.page_allocator.destroy(cn);
+            w.gpa.destroy(cn);
+        }
+        while (w.request_pool) |data| {
+            w.request_pool = data.next;
+            std.heap.page_allocator.destroy(data);
         }
         for (w.logs.items) |l| if (l.fd > 2) net.close(l.fd);
         w.logs.deinit(w.gpa);
@@ -364,12 +374,32 @@ pub const Worker = struct {
         }
     }
 
+    pub fn acquireRequestData(w: *Worker) ?*RequestData {
+        if (w.request_pool) |data| {
+            w.request_pool = data.next;
+            w.request_pool_count -= 1;
+            return data;
+        }
+        return std.heap.page_allocator.create(RequestData) catch null;
+    }
+
+    pub fn releaseRequestData(w: *Worker, data: *RequestData) void {
+        if (w.request_pool_count >= request_pool_limit) {
+            std.heap.page_allocator.destroy(data);
+            return;
+        }
+        data.next = w.request_pool;
+        w.request_pool = data;
+        w.request_pool_count += 1;
+    }
+
     pub fn acquire(w: *Worker) ?*Conn {
         const cn = if (w.pool) |p| blk: {
             w.pool = p.next;
+            w.pool_count -= 1;
             break :blk p;
         } else blk: {
-            const p = std.heap.page_allocator.create(Conn) catch return null;
+            const p = w.gpa.create(Conn) catch return null;
             p.* = .{};
             break :blk p;
         };
@@ -399,8 +429,13 @@ pub const Worker = struct {
         while (w.graveyard) |cn| {
             w.graveyard = cn.grave_next;
             cn.grave_next = null;
-            cn.next = w.pool;
-            w.pool = cn;
+            if (w.pool_count >= conn_pool_limit) {
+                w.gpa.destroy(cn);
+            } else {
+                cn.next = w.pool;
+                w.pool = cn;
+                w.pool_count += 1;
+            }
         }
     }
 
@@ -448,7 +483,7 @@ pub const Worker = struct {
                 .lit => |s| logging.appendBounded(&line, s),
                 .v => |v| {
                     var tmp: std.ArrayList(u8) = .empty;
-                    vars.appendVar(a, &cn.ctx, v, &tmp, 0) catch {};
+                    vars.appendVar(a, cn.ctx, v, &tmp, 0) catch {};
                     if (tmp.items.len == 0) logging.appendBounded(&line, "-") else logging.appendEscaped(&line, tmp.items, lg.format.escape);
                 },
             };
@@ -567,6 +602,7 @@ test "nested codec teardown preserves active traversal until batch recycling" {
     var w: Worker = undefined;
     w.active = null;
     w.pool = null;
+    w.pool_count = 0;
     w.graveyard = null;
     w.nconns = 0;
     w.balancer = .{};
@@ -574,6 +610,7 @@ test "nested codec teardown preserves active traversal until batch recycling" {
     for (&conns) |*cn| {
         cn.next = w.pool;
         w.pool = cn;
+        w.pool_count += 1;
     }
     const tail = w.acquire().?;
     const child = w.acquire().?;
@@ -592,4 +629,33 @@ test "nested codec teardown preserves active traversal until batch recycling" {
     try std.testing.expect(reused == child);
     try std.testing.expect(reused.grave_next == null);
     try std.testing.expect(reused.next == head and head.prev == reused);
+}
+
+test "connection and request pools remain bounded after a concurrency spike" {
+    var w: Worker = undefined;
+    w.gpa = std.testing.allocator;
+    w.pool = null;
+    w.pool_count = 0;
+    w.active = null;
+    w.graveyard = null;
+    w.nconns = 0;
+    w.balancer = .{};
+    w.request_pool = null;
+    w.request_pool_count = 0;
+    for (0..conn_pool_limit + 8) |_| _ = w.acquire().?;
+    while (w.active) |cn| w.release(cn);
+    try std.testing.expectEqual(@as(usize, 0), w.pool_count);
+    w.bury();
+    try std.testing.expectEqual(@as(usize, conn_pool_limit), w.pool_count);
+    while (w.pool) |cn| {
+        w.pool = cn.next;
+        w.gpa.destroy(cn);
+    }
+    var data: [request_pool_limit + 8]*RequestData = undefined;
+    for (&data) |*item| item.* = w.acquireRequestData().?;
+    for (data) |item| w.releaseRequestData(item);
+    try std.testing.expectEqual(@as(usize, request_pool_limit), w.request_pool_count);
+    for (0..request_pool_limit) |_| std.heap.page_allocator.destroy(w.acquireRequestData().?);
+    try std.testing.expect(w.request_pool == null);
+    try std.testing.expectEqual(@as(usize, 0), w.request_pool_count);
 }

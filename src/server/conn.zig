@@ -1,10 +1,8 @@
 //! One client connection: an explicit state machine driven by readiness events.
 //!
-//! Memory: every buffer a request needs lives inside `Conn` (read buffer, write buffer,
-//! decoded-path buffer, a fixed per-request arena). Connections are pooled per worker,
-//! so small static responses need no request-buffer allocation. Large TLS responses
-//! use temporary plaintext/ciphertext staging buffers; proxy request bodies are
-//! bounded by `client_max_body_size`.
+//! Request buffers are borrowed from a bounded worker pool while a request is
+//! active. Idle keep-alive and TLS/codec connections retain only transport state.
+//! Large TLS responses additionally borrow bounded plaintext/ciphertext buffers.
 const std = @import("std");
 const c = std.c;
 const config = @import("../http/config.zig");
@@ -37,6 +35,27 @@ pub const AfterBody = enum { respond, proxy };
 
 pub const Flush = enum { done, again, err };
 
+/// Reusable request storage. Pointers into it remain valid through logging,
+/// proxy teardown and the last output write, but never across an idle request.
+pub const RequestData = struct {
+    next: ?*RequestData = null,
+    req: Request = undefined,
+    ctx: vars.Ctx = undefined,
+    up: proxy.Upstream = undefined,
+    rbuf: [rbuf_size]u8 = undefined,
+    wbuf: [wbuf_size]u8 = undefined,
+    path_buf: [path_size]u8 = undefined,
+    arena_mem: [arena_size]u8 = undefined,
+
+    pub fn init(data: *RequestData) void {
+        // Do not copy undefined buffers: that would commit every mapped page.
+        data.req.reset();
+        data.up.fd = -1;
+        data.up.phase = .idle;
+        data.up.request_owned = null;
+    }
+};
+
 pub const Conn = struct {
     tag: Tag align(8) = .{ .kind = .client },
     up_tag: Tag align(8) = .{ .kind = .upstream },
@@ -64,8 +83,10 @@ pub const Conn = struct {
     deadline: i64 = 0,
     requests: u32 align(8) = 0,
 
+    data: ?*RequestData = null,
+
     // input
-    rbuf: [rbuf_size]u8 = undefined,
+    rbuf: []u8 = undefined,
     rlen: usize = 0,
     scan: usize = 0,
 
@@ -80,7 +101,7 @@ pub const Conn = struct {
     after_body: AfterBody align(8) = .respond,
 
     // output
-    wbuf: [wbuf_size]u8 = undefined,
+    wbuf: []u8 = undefined,
     segs: [4][]const u8 = undefined,
     nsegs: u8 align(8) = 0,
     seg_i: u8 align(8) = 0,
@@ -99,15 +120,38 @@ pub const Conn = struct {
     drop: bool align(8) = false, // `return 444`
 
     // request
-    req: Request = .{},
-    path_buf: [path_size]u8 = undefined,
-    arena_mem: [arena_size]u8 = undefined,
+    req: *Request = undefined,
+    path_buf: []u8 = undefined,
+    arena_mem: []u8 = undefined,
     fba: std.heap.FixedBufferAllocator = undefined,
-    ctx: vars.Ctx = undefined,
+    ctx: *vars.Ctx = undefined,
     in_request: bool align(8) = false,
     start_ms: i64 = 0,
-    up: proxy.Upstream = .{},
+    up: *proxy.Upstream = undefined,
     head_len: usize = 0, // response head length in wbuf
+
+    fn acquireData(conn: *Conn) bool {
+        if (conn.data != null) return true;
+        const data = conn.w.acquireRequestData() orelse return false;
+        data.init();
+        conn.data = data;
+        conn.req = &data.req;
+        conn.ctx = &data.ctx;
+        conn.up = &data.up;
+        conn.rbuf = &data.rbuf;
+        conn.wbuf = &data.wbuf;
+        conn.path_buf = &data.path_buf;
+        conn.arena_mem = &data.arena_mem;
+        return true;
+    }
+
+    fn releaseData(conn: *Conn) void {
+        if (conn.data) |data| {
+            conn.w.releaseRequestData(data);
+            conn.data = null;
+        }
+        conn.body.clearAndFree(conn.w.gpa);
+    }
 
     pub fn headSlice(conn: *Conn) []const u8 {
         return conn.wbuf[0..conn.head_len];
@@ -139,12 +183,6 @@ pub const Conn = struct {
         conn.seg_i = 0;
         conn.file_fd = -1;
         conn.in_request = false;
-        // Proxy start initializes its full state when needed. Idle teardown
-        // only reads these fields; avoid copying the unused 8 KiB FastCGI buffer
-        // for every HTTP/2 or HTTP/3 request that acquires a pooled Conn.
-        conn.up.fd = -1;
-        conn.up.phase = .idle;
-        conn.up.request_owned = null;
         conn.body.clearRetainingCapacity();
         conn.start_ms = 0;
         conn.deadline = w.now_ms + defaultServer(conn).client_header_timeout_ms;
@@ -387,11 +425,15 @@ pub const Conn = struct {
     }
 
     fn readHead(conn: *Conn) bool {
+        if (!conn.acquireData()) {
+            conn.close();
+            return false;
+        }
         const srv0 = conn.defaultServer();
         const limits: request.Limits = .{ .max_head = rbuf_size - 1024, .max_uri = path_size };
         while (true) {
             if (conn.rlen > 0) {
-                const st = request.parseHead(conn.rbuf[0..conn.rlen], conn.scan, &conn.req, &conn.path_buf, limits, srv0.merge_slashes) catch |e| {
+                const st = request.parseHead(conn.rbuf[0..conn.rlen], conn.scan, conn.req, conn.path_buf, limits, srv0.merge_slashes) catch |e| {
                     conn.badRequest(request.errorStatus(e));
                     return true;
                 };
@@ -416,7 +458,10 @@ pub const Conn = struct {
                     }
                     conn.rlen += n;
                 },
-                .again => return false,
+                .again => {
+                    if (conn.rlen == 0) conn.releaseData();
+                    return false;
+                },
                 .eof, .err => {
                     conn.close();
                     return false;
@@ -442,7 +487,7 @@ pub const Conn = struct {
         conn.requests += 1;
         conn.in_request = true;
         if (conn.start_ms == 0) conn.start_ms = conn.w.now_ms;
-        conn.fba = .init(&conn.arena_mem);
+        conn.fba = .init(conn.arena_mem);
         conn.close_after = false;
         conn.drop = false;
         conn.nsegs = 0;
@@ -454,11 +499,11 @@ pub const Conn = struct {
         conn.body_store = false;
         conn.body.clearRetainingCapacity();
         conn.body_pos = conn.req.head_len;
-        conn.ctx = .{
+        conn.ctx.* = .{
             .srv = srv,
             .conf = srv.conf,
             .cfg = conn.w.cfg,
-            .req = &conn.req,
+            .req = conn.req,
             .uri = conn.req.path,
             .args = conn.req.args,
             .scheme_https = conn.ssl != null or conn.stream_protocol != 0,
@@ -603,7 +648,7 @@ pub const Conn = struct {
         conn.nsegs = 0;
         conn.seg_i = 0;
         conn.closeFile();
-        conn.fba = .init(&conn.arena_mem);
+        conn.fba = .init(conn.arena_mem);
         conn.ctx.error_page_done = false;
         handler.finalize(conn, status);
         conn.state = .sending;
@@ -676,6 +721,7 @@ pub const Conn = struct {
         conn.seg_i = 0;
         conn.state = .read_head;
         conn.deadline = conn.w.now_ms + if (rest > 0) conn.defaultServer().client_header_timeout_ms else conn.ctx.conf.keepalive_timeout_ms;
+        if (rest == 0) conn.releaseData();
         if (rest > 0) conn.start_ms = conn.w.now_ms;
     }
 
@@ -746,6 +792,7 @@ pub const Conn = struct {
         if (conn.fd >= 0) net.close(conn.fd);
         conn.fd = -1;
         conn.state = .closed;
+        conn.releaseData();
         conn.w.release(conn);
     }
 };
@@ -782,4 +829,33 @@ test "TLS file staging is optional and returns to a bounded worker cache" {
     w.gpa = limited.allocator();
     cn.prepareFileBuffer(1024 * 1024);
     try std.testing.expect(cn.file_buf == null); // existing wbuf is the fallback
+}
+
+test "request storage is detached on idle and initialized again on reuse" {
+    const t = std.testing;
+    try t.expect(@sizeOf(Conn) <= 1024); // Keep idle connection records small.
+    var w: Worker = undefined;
+    w.gpa = t.allocator;
+    w.request_pool = null;
+    w.request_pool_count = 0;
+    var first: Conn = .{ .w = &w };
+    var second: Conn = .{ .w = &w };
+    try t.expect(first.acquireData());
+    const storage = first.data.?;
+    @memset(first.rbuf, 0xa5);
+    first.req.nheaders = 3;
+    first.up.fd = 123;
+    try first.body.appendSlice(t.allocator, "upload");
+    first.releaseData();
+    try t.expect(first.data == null);
+    try t.expectEqual(@as(usize, 0), first.body.capacity);
+    try t.expect(second.acquireData());
+    try t.expect(second.data.? == storage);
+    try t.expectEqual(@as(usize, 0), second.req.nheaders);
+    try t.expectEqual(@as(c_int, -1), second.up.fd);
+    try t.expect(second.up.request_owned == null);
+    try t.expectEqual(@as(u8, 0xa5), second.rbuf[0]);
+    try t.expectEqual(@as(u8, 0xa5), second.rbuf[rbuf_size - 1]);
+    second.releaseData();
+    std.heap.page_allocator.destroy(w.acquireRequestData().?);
 }

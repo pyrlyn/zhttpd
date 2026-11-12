@@ -189,14 +189,18 @@ pub fn build(b: *std.Build) void {
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
     const benchmark_gate = b.addSystemCommand(&.{e2e_command});
     benchmark_gate.addFileArg(b.path("tests/bench-target.py"));
+    const memory_gate = b.addSystemCommand(&.{e2e_command});
+    memory_gate.addFileArg(b.path("tests/bench-memory.py"));
     var previous: ?*std.Build.Step = null;
     if (e2e_group == null or e2e_group == .core) {
         previous = &e2e.step;
         e2e_step.dependOn(&benchmark_gate.step);
+        e2e_step.dependOn(&memory_gate.step);
     }
     for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
         .{ .group = .tls, .script = "tls-io.py" },
         .{ .group = .tls, .script = "tls-config.py" },
+        .{ .group = .core, .script = "request-storage.py" },
         .{ .group = .core, .script = "error-pages.py" },
         .{ .group = .core, .script = "config_e2e.py" },
         .{ .group = .reload, .script = "auto_reload_e2e.py" },

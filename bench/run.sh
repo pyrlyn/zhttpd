@@ -265,36 +265,7 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   case "$5" in n*) deadline=120 ;; *) deadline=$(( ${5%.*} + 30 )) ;; esac
   # Bound the process as well as each request: a stalled HTTP/3 driver must
   # invalidate a sample instead of hanging forever while oha drains requests.
-  python3 - "${LOAD_TIMEOUT:-$deadline}" "$SERVER_PID" "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$error_file" <<'PY'
-import json, os, resource, subprocess, sys, time
-from pathlib import Path
-
-def server_cpu(pid):
-    if not Path('/proc').is_dir():
-        return None
-    try:
-        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-        own = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
-        children = Path(f'/proc/{pid}/task/{pid}/children').read_text().split()
-        return own + sum(server_cpu(child) or 0 for child in children)
-    except FileNotFoundError:
-        return 0
-
-before = server_cpu(sys.argv[2])
-started = time.monotonic()
-try:
-    result = subprocess.run(sys.argv[3:], timeout=float(sys.argv[1]))
-    elapsed = time.monotonic() - started
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-    after = server_cpu(sys.argv[2])
-    print(json.dumps({'elapsed': elapsed,
-                      'client_cpu_cores': (usage.ru_utime + usage.ru_stime) / elapsed,
-                      'server_cpu_cores': (after - before) / elapsed if before is not None else None}), file=sys.stderr)
-    sys.exit(result.returncode)
-except subprocess.TimeoutExpired:
-    print('load process exceeded its deadline', file=sys.stderr)
-    sys.exit(124)
-PY
+  python3 "$BENCH/measure.py" "${LOAD_TIMEOUT:-$deadline}" "$SERVER_PID" "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$error_file"
 }
 
 # ---------------------------------------------------------------- run
@@ -345,7 +316,9 @@ for rep in $(seq 1 "$REPS"); do
     start_server "$srv" || exit 1
     while IFS='|' read -r name scheme ka conns path; do
       [ -z "$name" ] && continue
-      wait_time_wait
+      # Fresh-connection loads can exhaust ephemeral ports. Keep-alive loads
+      # reuse their bounded connection set and need no TIME_WAIT drain.
+      [ "$ka" = 1 ] || wait_time_wait
       if [ "$ka" = 1 ]; then w="$WARMUP"; d="$DURATION"; else w="n500"; d="n$NOKA_N"; fi
       oha_run "$scheme" "$ka" "$conns" "$path" "$w" /dev/null >/dev/null 2>&1 || exit 1
       [ "$ka" = 0 ] && wait_time_wait

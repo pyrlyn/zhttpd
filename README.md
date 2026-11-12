@@ -142,6 +142,9 @@ Sub-millisecond deadlines poll without sleeping until serviced. HTTP/2 frames
 are batched into TLS records, and QUIC stream I/O shares explicit event ticks.
 Each event-loop thread caches at most 32 reusable stream buffers (under 4 MiB
 total), and releases that cache when its last modern-protocol session closes.
+Request handlers use a separate pool of at most 32 storage blocks per worker;
+idle HTTP/1.x keep-alive connections return their request storage to that pool.
+The worker also retains at most 64 closed connection records.
 
 Small HTTP/3 frame fragments share a stream write, with FIN attached to the last
 payload. Linux batches up to eight received UDP datagrams and uses UDP GSO for
@@ -228,5 +231,9 @@ been repeated for the integrated HTTP/2–3/ACME tree. Build options and limitat
 in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).
 HTTP/2 and HTTP/3 measurements, raw evidence and the remaining target failures
 are in [bench/H2-H3-OPTIMIZATION.md](bench/H2-H3-OPTIMIZATION.md).
+The memory budget, measurement method and regression gate are described in
+[bench/MEMORY-OPTIMIZATION.md](bench/MEMORY-OPTIMIZATION.md).
+The stricter 80% target, fixed-footprint profile and rejected ReleaseSmall
+experiment are documented in [bench/MEMORY-80-ASSESSMENT.md](bench/MEMORY-80-ASSESSMENT.md).
 The [HTTP/3 and large-response follow-up](bench/H3-LARGE-OPTIMIZATION.md)
 records subsequent changes and the still-failing 50% target.

@@ -10,7 +10,7 @@ fn token(value: []const u8, wanted: []const u8) bool {
     return false;
 }
 pub fn upgrade(c: *Conn, callbacks: ws.Callbacks) void {
-    const r = &c.req;
+    const r = c.req;
     if (c.stream_protocol != 0 or r.method != .GET or r.version != .http11 or r.chunked or (r.content_length orelse 0) != 0 or
         !token(r.header("connection") orelse "", "upgrade") or !std.ascii.eqlIgnoreCase(r.header("upgrade") orelse "", "websocket")) return handler.finalize(c, 400);
     if (!std.mem.eql(u8, r.header("sec-websocket-version") orelse "", "13")) return handler.finalize(c, 400);
@@ -62,7 +62,7 @@ pub fn drive(c: *Conn) void {
             c.finishRequest();
             return;
         }
-        switch (c.recv(&c.rbuf)) {
+        switch (c.recv(c.rbuf)) {
             .ok => |n| {
                 c.deadline = c.w.now_ms + c.ctx.conf.keepalive_timeout_ms;
                 feed(c, c.rbuf[0..n]);

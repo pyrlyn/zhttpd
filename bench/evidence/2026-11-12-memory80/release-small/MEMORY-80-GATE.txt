@@ -1,0 +1,4 @@
+scenario | peak PSS KiB (candidate/nginx/baseline) | RSS ratio | PSS ratio | RPS vs baseline | p99 vs baseline
+FAIL http-small-ka-c64 | 5970/14504/6550 | 0.542 | 0.412 | 0.620 | 1.453
+FAIL https-large-ka-c64 | 10224/18883/10938 | 0.651 | 0.541 | 0.489 | 1.932
+FAIL https-small-ka-c64 | 10202/18825/10910 | 0.652 | 0.542 | 0.617 | 1.505
