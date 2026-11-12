@@ -1,0 +1,121 @@
+be4a149ab8995e64ccac73fd2071655af5d9372e521e4ab24360e100fb5a851f  /home/listepo.guest/zhttpd-perf-h3-throughput/baseline/bin/zhttpd
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cpu-clock'
+# Event count (approx.): 9738692250
+#
+# Children      Self  Command  Shared Object      Symbol                                                      
+# ........  ........  .......  .................  ............................................................
+#
+    96.70%     0.52%  zhttpd   zhttpd             [.] zhttp_h3_drive
+    77.04%     0.36%  zhttpd   zhttpd             [.] server.worker.Worker.run
+    76.47%     0.00%  zhttpd   zhttpd             [.] server.multiplex.driveH3 (inlined)
+    58.15%     0.00%  zhttpd   zhttpd             [.] drive_h3 (inlined)
+    37.87%     0.00%  zhttpd   zhttpd             [.] server.worker.Worker.dispatch (inlined)
+    36.38%     0.05%  zhttpd   zhttpd             [.] ossl_quic_reactor_tick
+    36.38%     0.00%  zhttpd   zhttpd             [.] ossl_quic_handle_events
+    36.33%     0.05%  zhttpd   zhttpd             [.] ossl_quic_port_subtick
+    36.33%     0.00%  zhttpd   zhttpd             [.] qeng_tick
+    35.19%     0.05%  zhttpd   zhttpd             [.] ossl_quic_channel_subtick
+    21.26%     0.21%  zhttpd   zhttpd             [.] pump_backend
+    19.50%     1.44%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+    19.50%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync
+    19.50%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync_handler
+    18.01%     0.05%  zhttpd   [kernel.kallsyms]  [k] do_el0_svc
+    17.91%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0_svc_common.constprop.0
+    17.70%     0.31%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+    15.74%     0.10%  zhttpd   zhttpd             [.] ossl_qtx_flush_net
+    15.43%     0.15%  zhttpd   zhttpd             [.] BIO_sendmmsg
+    15.43%     0.05%  zhttpd   zhttpd             [.] quic_sendmmsg
+    14.19%     0.00%  zhttpd   [kernel.kallsyms]  [k] ___sys_sendmsg
+    14.04%     3.72%  zhttpd   zhttpd             [.] server.conn.Conn.drive
+    14.04%     0.00%  zhttpd   zhttpd             [.] server.multiplex.driveRequest
+    13.88%     0.05%  zhttpd   [kernel.kallsyms]  [k] ____sys_sendmsg
+    13.83%     0.26%  zhttpd   zhttpd             [.] nghttp3_conn_read_stream2
+    13.67%     0.00%  zhttpd   [kernel.kallsyms]  [k] __sock_sendmsg
+    13.62%     0.10%  zhttpd   [kernel.kallsyms]  [k] inet_sendmsg
+    13.31%     0.10%  zhttpd   [kernel.kallsyms]  [k] udp_sendmsg
+    12.80%     0.00%  zhttpd   zhttpd             [.] server.conn.Conn.readHead (inlined)
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cpu-clock'
+# Event count (approx.): 9974873125
+#
+# Children      Self  Command  Shared Object      Symbol                                                                                            
+# ........  ........  .......  .................  ..................................................................................................
+#
+    80.10%     0.40%  zhttpd   zhttpd             [.] server.worker.Worker.run
+    79.60%     0.60%  zhttpd   zhttpd             [.] zhttp_h3_drive
+    79.35%     0.00%  zhttpd   zhttpd             [.] server.multiplex.driveH3 (inlined)
+    62.92%     0.00%  zhttpd   zhttpd             [.] ossl_quic_handle_events
+    62.82%     0.25%  zhttpd   zhttpd             [.] ossl_quic_port_subtick
+    62.82%     0.00%  zhttpd   zhttpd             [.] ossl_quic_reactor_tick
+    62.82%     0.00%  zhttpd   zhttpd             [.] qeng_tick
+    61.81%     0.25%  zhttpd   zhttpd             [.] ossl_quic_channel_subtick
+    41.51%     0.00%  zhttpd   zhttpd             [.] server.worker.Worker.dispatch (inlined)
+    32.80%     3.07%  zhttpd   zhttpd             [.] ossl_quic_tx_packetiser_generate
+    28.21%     0.35%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+    28.21%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync
+    28.21%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync_handler
+    27.86%     0.00%  zhttpd   [kernel.kallsyms]  [k] do_el0_svc
+    27.86%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0_svc_common.constprop.0
+    27.71%     0.05%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+    22.22%     0.86%  zhttpd   zhttpd             [.] ossl_qtx_flush_net
+    20.86%     0.15%  zhttpd   zhttpd             [.] BIO_sendmmsg
+    20.71%     0.20%  zhttpd   zhttpd             [.] quic_sendmmsg
+    19.95%     0.10%  zhttpd   libc.so.6          [.] sendmsg
+    19.60%     0.00%  zhttpd   [kernel.kallsyms]  [k] ___sys_sendmsg
+    19.60%     0.00%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_sendmsg
+    19.55%     0.00%  zhttpd   [kernel.kallsyms]  [k] __sys_sendmsg
+    18.74%     0.00%  zhttpd   [kernel.kallsyms]  [k] ____sys_sendmsg
+    18.69%     0.05%  zhttpd   [kernel.kallsyms]  [k] __sock_sendmsg
+    18.59%     0.05%  zhttpd   [kernel.kallsyms]  [k] inet_sendmsg
+    18.54%     0.00%  zhttpd   [kernel.kallsyms]  [k] udp_sendmsg
+    15.87%     1.56%  zhttpd   zhttpd             [.] ossl_qtx_write_pkt
+    14.71%     0.00%  zhttpd   zhttpd             [.] drive_h3 (inlined)
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cpu-clock'
+# Event count (approx.): 9934672125
+#
+# Children      Self  Command  Shared Object      Symbol                                                 
+# ........  ........  .......  .................  .......................................................
+#
+    75.52%     0.30%  zhttpd   zhttpd             [.] zhttp_h2_drive
+    52.60%     0.00%  zhttpd   zhttpd             [.] flush_h2 (inlined)
+    50.89%     0.05%  zhttpd   zhttpd             [.] SSL_write
+    50.78%     0.10%  zhttpd   zhttpd             [.] ssl3_write_bytes
+    50.63%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync
+    50.63%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync_handler
+    50.53%     2.68%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+    47.90%     0.30%  zhttpd   [kernel.kallsyms]  [k] do_el0_svc
+    47.60%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0_svc_common.constprop.0
+    47.29%     0.56%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+    40.97%     0.05%  zhttpd   zhttpd             [.] tls_retry_write_records
+    40.67%     0.10%  zhttpd   zhttpd             [.] BIO_write
+    40.57%     0.15%  zhttpd   zhttpd             [.] bwrite_conv
+    40.41%     0.10%  zhttpd   zhttpd             [.] sock_write
+    40.31%     0.76%  zhttpd   libc.so.6          [.] write
+    37.03%     0.05%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_write
+    36.92%     0.10%  zhttpd   [kernel.kallsyms]  [k] ksys_write
+    36.52%     0.10%  zhttpd   [kernel.kallsyms]  [k] vfs_write
+    36.27%     0.10%  zhttpd   [kernel.kallsyms]  [k] sock_write_iter
+    36.12%     0.05%  zhttpd   [kernel.kallsyms]  [k] __sock_sendmsg
+    35.71%     0.05%  zhttpd   [kernel.kallsyms]  [k] inet_sendmsg
+    35.61%     0.20%  zhttpd   [kernel.kallsyms]  [k] tcp_sendmsg
+    33.23%     0.25%  zhttpd   [kernel.kallsyms]  [k] tcp_sendmsg_locked
+    24.84%     0.05%  zhttpd   [kernel.kallsyms]  [k] __tcp_push_pending_frames
+    24.84%     0.05%  zhttpd   [kernel.kallsyms]  [k] tcp_push
+    24.73%     0.10%  zhttpd   [kernel.kallsyms]  [k] tcp_write_xmit
+    22.96%     0.51%  zhttpd   [kernel.kallsyms]  [k] __tcp_transmit_skb
+    22.41%     0.15%  zhttpd   zhttpd             [.] armv8_aes_gcm_encrypt
+    22.26%    22.26%  zhttpd   zhttpd             [.] aes_gcm_enc_256_kernel

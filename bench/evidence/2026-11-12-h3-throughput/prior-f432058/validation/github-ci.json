@@ -1,0 +1,67 @@
+{
+  "run_id": 43208865716,
+  "commit": "f43205847a431c974cef92afc5201f11fefc7c7d",
+  "url": "https://github.com/pyrlyn/zhttpd/actions/runs/43208865716",
+  "jobs": [
+    {
+      "name": "AWS-LC HTTP/1.1 TLS",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build, unit and Raft (macos-15)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build, unit and Raft (ubuntu-24.04)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (acme_reload)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (sni)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (acme_auto)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (rotation)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (reload)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (acme)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (encryption)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (tls)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "name": "Protocol E2E (core)",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}

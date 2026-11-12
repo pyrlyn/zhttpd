@@ -245,3 +245,7 @@ The stricter 80% target, fixed-footprint profile and rejected ReleaseSmall
 experiment are documented in [bench/MEMORY-80-ASSESSMENT.md](bench/MEMORY-80-ASSESSMENT.md).
 The [HTTP/3 and large-response follow-up](bench/H3-LARGE-OPTIMIZATION.md)
 records subsequent changes and the still-failing 50% target.
+
+The [bounded buffering follow-up](bench/H3-THROUGHPUT-OPTIMIZATION.md) records
+large-response batching, HTTP/3 callback caching, active-memory costs and the
+remaining suite-wide throughput/latency target failures.

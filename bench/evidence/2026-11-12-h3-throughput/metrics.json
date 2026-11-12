@@ -1,0 +1,102 @@
+{
+  "h3-large-ka-c4-p16": {
+    "zhttpd-baseline": {
+      "rps": 829.1471829159786,
+      "p99_ms": 80.39375799999999,
+      "peak_pss_kib": 18138.5,
+      "samples": 4
+    },
+    "nginx": {
+      "rps": 601.9838684495535,
+      "p99_ms": 158.870686,
+      "peak_pss_kib": 32638.0,
+      "samples": 4
+    },
+    "zhttpd": {
+      "rps": 1002.987970806842,
+      "p99_ms": 68.44918200000001,
+      "peak_pss_kib": 32068.0,
+      "samples": 4
+    }
+  },
+  "h3-small-ka-c16-p16": {
+    "zhttpd-baseline": {
+      "rps": 166216.017423247,
+      "p99_ms": 2.4741055000000003,
+      "peak_pss_kib": 14573.0,
+      "samples": 4
+    },
+    "nginx": {
+      "rps": 251512.84876280947,
+      "p99_ms": 1.3891529999999999,
+      "peak_pss_kib": 24016.0,
+      "samples": 4
+    },
+    "zhttpd": {
+      "rps": 172634.53580139118,
+      "p99_ms": 2.3934504999999997,
+      "peak_pss_kib": 14536.5,
+      "samples": 4
+    }
+  },
+  "h3-small-ka-c4-p16": {
+    "zhttpd-baseline": {
+      "rps": 162416.92840763513,
+      "p99_ms": 0.525361,
+      "peak_pss_kib": 10129.0,
+      "samples": 4
+    },
+    "nginx": {
+      "rps": 243994.93532694876,
+      "p99_ms": 0.349163,
+      "peak_pss_kib": 16810.5,
+      "samples": 4
+    },
+    "zhttpd": {
+      "rps": 168113.2700615293,
+      "p99_ms": 0.5153175000000001,
+      "peak_pss_kib": 10149.0,
+      "samples": 4
+    }
+  },
+  "h2-large-ka-c4-p16": {
+    "zhttpd-baseline": {
+      "rps": 1696.984196108772,
+      "p99_ms": 42.2032375,
+      "peak_pss_kib": 13029.5,
+      "samples": 4
+    },
+    "nginx": {
+      "rps": 1962.1788006050378,
+      "p99_ms": 44.61854099999999,
+      "peak_pss_kib": 15441.5,
+      "samples": 4
+    },
+    "zhttpd": {
+      "rps": 2320.877349630222,
+      "p99_ms": 30.322088,
+      "peak_pss_kib": 13315.0,
+      "samples": 4
+    }
+  },
+  "h2-small-ka-c4-p16": {
+    "zhttpd-baseline": {
+      "rps": 348412.0026516428,
+      "p99_ms": 0.2405095,
+      "peak_pss_kib": 8844.5,
+      "samples": 4
+    },
+    "nginx": {
+      "rps": 203802.4033298663,
+      "p99_ms": 0.42989,
+      "peak_pss_kib": 15398.5,
+      "samples": 4
+    },
+    "zhttpd": {
+      "rps": 352357.38626498106,
+      "p99_ms": 0.25221800000000005,
+      "peak_pss_kib": 8835.0,
+      "samples": 4
+    }
+  }
+}

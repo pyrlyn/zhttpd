@@ -1,0 +1,5 @@
+Runtime e96eb9b. 373 process snapshots, every 2 seconds.
+Interval 2026-11-12T13:22:53Z to 2026-11-12T13:35:19Z.
+Maximum simultaneous oha processes observed: 1.
+Compiler/build/profiler process samples: 0.
+All observed zhttpd/oha/Python workload processes belong to this measurement suite (including its final report generator and exiting oha processes). Standard VM daemons remain present. Sampling cannot rule out sub-two-second activity; the physical host is shared.

@@ -1,0 +1,383 @@
+{
+  "summary": {
+    "primary": {
+      "zhttpd-baseline": {
+        "n": 4,
+        "rps": 348412.0026516428,
+        "p99_ms": 0.2405095
+      },
+      "zhttpd": {
+        "n": 4,
+        "rps": 352357.38626498106,
+        "p99_ms": 0.25221800000000005
+      },
+      "p99_ratio": 1.0486820686916736
+    },
+    "additional": {
+      "zhttpd-baseline": {
+        "n": 12,
+        "rps": 348585.49786149093,
+        "p99_ms": 0.24132949999999997
+      },
+      "zhttpd": {
+        "n": 12,
+        "rps": 355675.8649392928,
+        "p99_ms": 0.238578
+      },
+      "p99_ratio": 0.9885985758061075
+    },
+    "pooled": {
+      "zhttpd-baseline": {
+        "n": 16,
+        "rps": 348412.0026516428,
+        "p99_ms": 0.2410455
+      },
+      "zhttpd": {
+        "n": 16,
+        "rps": 355451.5981786346,
+        "p99_ms": 0.2395185
+      },
+      "p99_ratio": 0.9936650964237043
+    }
+  },
+  "samples": {
+    "primary": {
+      "zhttpd-baseline": [
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r1.json",
+          "rps": 348492.91824952286,
+          "p99_ms": 0.238923
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r2.json",
+          "rps": 348331.08705376275,
+          "p99_ms": 0.241593
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r3.json",
+          "rps": 349694.7168256781,
+          "p99_ms": 0.239426
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r4.json",
+          "rps": 337940.2320277343,
+          "p99_ms": 0.32072300000000004
+        }
+      ],
+      "zhttpd": [
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r1.json",
+          "rps": 353905.0953980449,
+          "p99_ms": 0.24830000000000002
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r2.json",
+          "rps": 355991.51687410194,
+          "p99_ms": 0.23604999999999998
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r3.json",
+          "rps": 328067.5030268661,
+          "p99_ms": 0.446436
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r4.json",
+          "rps": 350809.6771319172,
+          "p99_ms": 0.25613600000000003
+        }
+      ]
+    },
+    "additional": {
+      "zhttpd-baseline": [
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r1.json",
+          "rps": 347666.62425877183,
+          "p99_ms": 0.242863
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r2.json",
+          "rps": 351355.8236950211,
+          "p99_ms": 0.236491
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r3.json",
+          "rps": 348069.5612213287,
+          "p99_ms": 0.242575
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r4.json",
+          "rps": 350868.42252878775,
+          "p99_ms": 0.236369
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r5.json",
+          "rps": 350300.6892277638,
+          "p99_ms": 0.242161
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r6.json",
+          "rps": 346834.8201256051,
+          "p99_ms": 0.24566200000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r7.json",
+          "rps": 352429.6839140535,
+          "p99_ms": 0.236872
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r8.json",
+          "rps": 346701.2097346141,
+          "p99_ms": 0.245373
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r9.json",
+          "rps": 348930.4056906484,
+          "p99_ms": 0.240498
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r10.json",
+          "rps": 351912.08560634166,
+          "p99_ms": 0.23549899999999999
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r11.json",
+          "rps": 347578.0924126641,
+          "p99_ms": 0.24304099999999998
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r12.json",
+          "rps": 348240.5900323334,
+          "p99_ms": 0.23825
+        }
+      ],
+      "zhttpd": [
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r1.json",
+          "rps": 355279.1107989424,
+          "p99_ms": 0.238115
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r2.json",
+          "rps": 355829.168397813,
+          "p99_ms": 0.240948
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r3.json",
+          "rps": 357123.4097054798,
+          "p99_ms": 0.236659
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r4.json",
+          "rps": 355624.0855583268,
+          "p99_ms": 0.240535
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r5.json",
+          "rps": 354348.6520398273,
+          "p99_ms": 0.24537
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r6.json",
+          "rps": 355085.8870912028,
+          "p99_ms": 0.239996
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r7.json",
+          "rps": 353787.72107904736,
+          "p99_ms": 0.24633000000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r8.json",
+          "rps": 356665.9996324066,
+          "p99_ms": 0.236414
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r9.json",
+          "rps": 358640.14799725835,
+          "p99_ms": 0.23733200000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r10.json",
+          "rps": 353766.1564974858,
+          "p99_ms": 0.237707
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r11.json",
+          "rps": 355727.6443202587,
+          "p99_ms": 0.239041
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r12.json",
+          "rps": 356606.9365986105,
+          "p99_ms": 0.23650000000000002
+        }
+      ]
+    },
+    "pooled": {
+      "zhttpd-baseline": [
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r1.json",
+          "rps": 348492.91824952286,
+          "p99_ms": 0.238923
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r2.json",
+          "rps": 348331.08705376275,
+          "p99_ms": 0.241593
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r3.json",
+          "rps": 349694.7168256781,
+          "p99_ms": 0.239426
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd-baseline.r4.json",
+          "rps": 337940.2320277343,
+          "p99_ms": 0.32072300000000004
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r1.json",
+          "rps": 347666.62425877183,
+          "p99_ms": 0.242863
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r2.json",
+          "rps": 351355.8236950211,
+          "p99_ms": 0.236491
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r3.json",
+          "rps": 348069.5612213287,
+          "p99_ms": 0.242575
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r4.json",
+          "rps": 350868.42252878775,
+          "p99_ms": 0.236369
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r5.json",
+          "rps": 350300.6892277638,
+          "p99_ms": 0.242161
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r6.json",
+          "rps": 346834.8201256051,
+          "p99_ms": 0.24566200000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r7.json",
+          "rps": 352429.6839140535,
+          "p99_ms": 0.236872
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r8.json",
+          "rps": 346701.2097346141,
+          "p99_ms": 0.245373
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r9.json",
+          "rps": 348930.4056906484,
+          "p99_ms": 0.240498
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r10.json",
+          "rps": 351912.08560634166,
+          "p99_ms": 0.23549899999999999
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r11.json",
+          "rps": 347578.0924126641,
+          "p99_ms": 0.24304099999999998
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd-baseline.r12.json",
+          "rps": 348240.5900323334,
+          "p99_ms": 0.23825
+        }
+      ],
+      "zhttpd": [
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r1.json",
+          "rps": 353905.0953980449,
+          "p99_ms": 0.24830000000000002
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r2.json",
+          "rps": 355991.51687410194,
+          "p99_ms": 0.23604999999999998
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r3.json",
+          "rps": 328067.5030268661,
+          "p99_ms": 0.446436
+        },
+        {
+          "file": "h2/h2-small-ka-c4-p16.zhttpd.r4.json",
+          "rps": 350809.6771319172,
+          "p99_ms": 0.25613600000000003
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r1.json",
+          "rps": 355279.1107989424,
+          "p99_ms": 0.238115
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r2.json",
+          "rps": 355829.168397813,
+          "p99_ms": 0.240948
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r3.json",
+          "rps": 357123.4097054798,
+          "p99_ms": 0.236659
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r4.json",
+          "rps": 355624.0855583268,
+          "p99_ms": 0.240535
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r5.json",
+          "rps": 354348.6520398273,
+          "p99_ms": 0.24537
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r6.json",
+          "rps": 355085.8870912028,
+          "p99_ms": 0.239996
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r7.json",
+          "rps": 353787.72107904736,
+          "p99_ms": 0.24633000000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r8.json",
+          "rps": 356665.9996324066,
+          "p99_ms": 0.236414
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r9.json",
+          "rps": 358640.14799725835,
+          "p99_ms": 0.23733200000000002
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r10.json",
+          "rps": 353766.1564974858,
+          "p99_ms": 0.237707
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r11.json",
+          "rps": 355727.6443202587,
+          "p99_ms": 0.239041
+        },
+        {
+          "file": "h2-small-control/runs/h2-small-ka-c4-p16.zhttpd.r12.json",
+          "rps": 356606.9365986105,
+          "p99_ms": 0.23650000000000002
+        }
+      ]
+    }
+  }
+}

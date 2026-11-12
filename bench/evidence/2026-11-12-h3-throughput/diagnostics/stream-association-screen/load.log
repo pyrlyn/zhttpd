@@ -1,0 +1,42 @@
+--- rep 1 zhttpd-baseline 13:17:32 load=0.83
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+ 0.0 rootlesskit
+--- rep 1 nginx 13:17:47 load=1.00
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+ 0.0 rootlesskit
+--- rep 1 zhttpd 13:18:02 load=1.28
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 2 zhttpd 13:18:16 load=1.84
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 2 nginx 13:18:31 load=1.72
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 2 zhttpd-baseline 13:18:46 load=1.85
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt

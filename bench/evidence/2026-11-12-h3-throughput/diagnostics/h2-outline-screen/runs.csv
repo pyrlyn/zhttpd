@@ -1,0 +1,9 @@
+rep,order,server,scenario,load_before,load_after,file
+1,1,zhttpd-baseline,h2-small-ka-c4-p16,0.71,0.99,h2-small-ka-c4-p16.zhttpd-baseline.r1.json
+1,2,zhttpd,h2-small-ka-c4-p16,1.15,1.20,h2-small-ka-c4-p16.zhttpd.r1.json
+2,1,zhttpd,h2-small-ka-c4-p16,1.20,1.37,h2-small-ka-c4-p16.zhttpd.r2.json
+2,2,zhttpd-baseline,h2-small-ka-c4-p16,1.37,1.55,h2-small-ka-c4-p16.zhttpd-baseline.r2.json
+3,1,zhttpd-baseline,h2-small-ka-c4-p16,1.50,1.51,h2-small-ka-c4-p16.zhttpd-baseline.r3.json
+3,2,zhttpd,h2-small-ka-c4-p16,1.51,1.66,h2-small-ka-c4-p16.zhttpd.r3.json
+4,1,zhttpd,h2-small-ka-c4-p16,1.69,1.89,h2-small-ka-c4-p16.zhttpd.r4.json
+4,2,zhttpd-baseline,h2-small-ka-c4-p16,1.89,1.90,h2-small-ka-c4-p16.zhttpd-baseline.r4.json

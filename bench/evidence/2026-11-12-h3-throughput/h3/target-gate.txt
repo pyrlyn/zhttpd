@@ -1,0 +1,5 @@
+PASS h3-large-ka-c4-p16: RPS 1.666x (required 1.500x), p99 0.431x nginx, 0.851x baseline (required <=1.000x)
+FAIL h3-small-ka-c16-p16: RPS 0.686x (required 1.500x), p99 1.723x nginx, 0.967x baseline (required <=1.000x)
+FAIL h3-small-ka-c4-p16: RPS 0.689x (required 1.500x), p99 1.476x nginx, 0.981x baseline (required <=1.000x)
+
+exit_code=1

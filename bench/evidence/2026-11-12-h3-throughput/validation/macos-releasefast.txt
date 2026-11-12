@@ -1,0 +1,54 @@
+zhttpd: the configuration file /var/folders/1q/t_vv3x8x07x3s6b30wdj43kr0000gn/T/zhttpd-protocols-tj_2an9k/nginx.conf syntax is ok
+zhttpd: configuration file /var/folders/1q/t_vv3x8x07x3s6b30wdj43kr0000gn/T/zhttpd-protocols-tj_2an9k/nginx.conf test is successful
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+PASS: 193 HTTP assertions; native API, methods, parsing, cookies, middleware, JWT, CORS, rate, gzip, cache, health, limits, timeout, idempotency
+Build Summary: 37/37 steps succeeded; 76/76 tests passed
+test-features success
++- run /Users/listepo/apps/_worktrees/zhttpd-perf-h3-throughput/.run/venv/bin/python success 3s
+   +- compile exe zhttpd fast native success 21s MaxRSS:857M
+   |  +- options cached
+   +- compile exe http-app fast native success 12s MaxRSS:585M
+      +- options (reused)
+test-protocols success
++- run /Users/listepo/apps/_worktrees/zhttpd-perf-h3-throughput/.run/venv/bin/python success 7s
+   +- compile exe zhttpd fast native (+1 more reused dependencies)
+   +- compile exe h2-keyupdate-test fast native cached 105ms MaxRSS:31M
+test success
++- run test 7 pass (7 total) 194ms MaxRSS:2M
+|  +- compile test fast native success 11s MaxRSS:576M
+|     +- options (reused)
++- run test 3 pass (3 total) 3ms MaxRSS:2M
+|  +- compile test fast native cached 58ms MaxRSS:32M
++- run test 45 pass (45 total) 240ms MaxRSS:23M
+|  +- compile test fast native success 8s MaxRSS:460M
+|     +- options (reused)
++- run test 11 pass (11 total) 190ms MaxRSS:2M
+|  +- compile test fast native success 10s MaxRSS:502M
+|     +- options (reused)
++- run test 1 pass (1 total) 186ms MaxRSS:2M
+|  +- compile test fast native success 5s MaxRSS:367M
+|     +- options (reused)
++- run test 1 pass (1 total) 195ms MaxRSS:2M
+|  +- compile test fast native success 8s MaxRSS:456M
+|     +- options (reused)
++- run test success 182ms MaxRSS:2M
+|  +- compile test fast native success 5s MaxRSS:355M
+|     +- options (reused)
++- run test success 186ms MaxRSS:2M
+|  +- compile test fast native success 5s MaxRSS:357M
+|     +- options (reused)
++- run test 2 pass (2 total) 4ms MaxRSS:2M
+|  +- compile test fast native cached 58ms MaxRSS:31M
++- run test 1 pass (1 total) 3ms MaxRSS:2M
+|  +- compile test fast native cached 57ms MaxRSS:31M
++- run test success 4ms MaxRSS:2M
+|  +- compile test fast native cached 60ms MaxRSS:31M
++- run test 3 pass (3 total) 5ms MaxRSS:2M
+|  +- compile test fast native cached 87ms MaxRSS:31M
++- run test 1 pass (1 total) 4ms MaxRSS:2M
+|  +- compile test fast native cached 60ms MaxRSS:31M
++- run test 1 pass (1 total) 4ms MaxRSS:2M
+   +- compile test fast native cached 59ms MaxRSS:31M
+

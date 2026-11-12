@@ -1,0 +1,84 @@
+--- rep 1 zhttpd-baseline 15:09:56 load=0.45
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.1 fwupd
+ 0.0 rcu_preempt
+ 0.0 kcompactd0
+--- rep 1 nginx 15:10:21 load=1.04
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 1 zhttpd 15:10:46 load=1.49
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 2 zhttpd 15:11:11 load=1.60
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 2 nginx 15:11:36 load=1.74
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 2 zhttpd-baseline 15:12:01 load=1.95
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 bash
+--- rep 3 zhttpd-baseline 15:12:26 load=2.03
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 3 nginx 15:12:51 load=2.15
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 bash
+--- rep 3 zhttpd 15:13:15 load=2.10
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 fwupd
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 4 zhttpd 15:13:40 load=2.05
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt
+--- rep 4 nginx 15:14:05 load=1.95
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 4 zhttpd-baseline 15:14:30 load=1.97
+%CPU COMMAND
+ 0.3 lima-guestagent
+ 0.1 containerd
+ 0.0 bash
+ 0.0 kcompactd0
+ 0.0 rcu_preempt

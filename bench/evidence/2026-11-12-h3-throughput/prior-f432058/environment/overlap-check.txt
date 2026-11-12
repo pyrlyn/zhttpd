@@ -1,0 +1,5 @@
+Runtime f432058. 372 process snapshots, every 2 seconds.
+Interval 2026-11-12T11:27:02Z to 2026-11-12T11:39:26Z.
+Maximum simultaneous oha processes observed: 1.
+Compiler/build/profiler process samples: 0.
+The timeline shows only this measurement suite for zhttpd/nginx/oha and its memory sampler. Standard VM daemons remain present. Sampling cannot rule out sub-two-second activity; the physical host is shared.

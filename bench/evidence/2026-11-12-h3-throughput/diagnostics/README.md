@@ -1,0 +1,5 @@
+Exploratory profiles, collected before the final main integration. The baseline binary SHA is the first line of profile.txt. Sections are HTTP/3 small, HTTP/3 1 MiB, then HTTP/2 1 MiB. Inclusive percentages overlap and must not be added. These profiles motivated batching; they are not final-candidate acceptance measurements. An earlier overlapping profile was discarded and is not used.
+
+Short screens use two 5-second samples per scenario, not the final four 10-second samples. `stream-association-screen` compares the H3 pointer association against runtime `1f029c9`; `h2-association-screen` compares the discarded H2 userdata variant against main `94f5e3d`; `request-format-screen` compares the retained bounded request formatter against main `94f5e3d`. Each directory records exact binary hashes and every sample.
+
+`h2-outline-screen` is the exception: four 10-second repetitions against main only. It tests the intermediate outlined BIO helper before the final once-per-turn budget selection, so it is not evidence for the final binary. Its p99 was 0.13% above baseline.

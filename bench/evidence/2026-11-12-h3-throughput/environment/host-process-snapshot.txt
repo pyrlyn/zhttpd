@@ -1,0 +1,8 @@
+Aggregated macOS process snapshot during the final HTTP/2 series.
+Individual application names, paths and PIDs are omitted.
+Values are ps %CPU snapshot estimates, not a continuous utilization trace.
+
+other host processes: 863 processes, sum %CPU 348.3
+virtual machines: 4 processes, sum %CPU 295.8
+
+The physical host was not exclusively reserved. This snapshot does not establish the cause of any individual latency sample.

@@ -1,0 +1,10 @@
+OpenSSL 3.5.9 29 Sep 2026 (Library: OpenSSL 3.5.9 29 Sep 2026)
+built on: Tue Nov 10 08:52:16 2026 UTC
+platform: linux-aarch64
+options:  bn(64,64)
+compiler: gcc -fPIC -pthread -Wa,--noexecstack -Wall -O3 -DOPENSSL_USE_NODELETE -DOPENSSL_PIC -DOPENSSL_BUILDING_OPENSSL -DNDEBUG
+OPENSSLDIR: "/home/listepo.guest/zhttpd-build/openssl-ktls-install/ssl"
+ENGINESDIR: "/home/listepo.guest/zhttpd-build/openssl-ktls-install/lib/engines-3"
+MODULESDIR: "/home/listepo.guest/zhttpd-build/openssl-ktls-install/lib/ossl-modules"
+Seeding source: os-specific
+CPUINFO: OPENSSL_armcap=0x8fd

@@ -1,0 +1,1 @@
+Superseded runtime `2113509` versus main `94f5e3d`: four 10-second HTTP/2 repetitions. Small H2 median p99 was 1.016228x baseline. The predeclared baseline-p99 guard stopped the sequence before HTTP/3 (exit 3). This is not the final acceptance matrix.

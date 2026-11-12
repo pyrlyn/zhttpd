@@ -1,0 +1,108 @@
+diff --git a/src/server/multiplex.c b/src/server/multiplex.c
+index d0dd42c..9381b59 100644
+--- a/src/server/multiplex.c
++++ b/src/server/multiplex.c
+@@ -396,10 +396,14 @@ static int pump_backend(stream *p) {
+ }
+ 
+ static int h2_begin(nghttp2_session *h, const nghttp2_frame *f, void *user) {
+-    (void)h;
+     if (f->headers.cat != NGHTTP2_HCAT_REQUEST) return 0;
+     session *s = user;
+-    if (s->nstreams >= STREAMS || !new_stream(s, f->hd.stream_id, NULL)) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++    if (s->nstreams >= STREAMS) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++    stream *p = new_stream(s, f->hd.stream_id, NULL);
++    if (!p) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++    if (nghttp2_session_set_stream_user_data(h, f->hd.stream_id, p)) {
++        p->closed = 1; return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++    }
+     return 0;
+ }
+ static int h2_header(nghttp2_session *h, const nghttp2_frame *f, const uint8_t *n, size_t nn,
+@@ -414,7 +418,8 @@ static int h2_invalid_header(nghttp2_session *h, const nghttp2_frame *f, const u
+     return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+ }
+ static int h2_frame(nghttp2_session *h, const nghttp2_frame *f, void *user) {
+-    stream *p = lookup(user, f->hd.stream_id);
++    (void)user;
++    stream *p = nghttp2_session_get_stream_user_data(h, f->hd.stream_id);
+     if (!p) return 0;
+     int rv = 0;
+     if (f->hd.type == NGHTTP2_HEADERS && f->headers.cat == NGHTTP2_HCAT_REQUEST) rv = start_request(p);
+@@ -423,12 +428,14 @@ static int h2_frame(nghttp2_session *h, const nghttp2_frame *f, void *user) {
+     return 0;
+ }
+ static int h2_data(nghttp2_session *h, uint8_t flags, int32_t id, const uint8_t *data, size_t n, void *user) {
+-    (void)h; (void)flags;
+-    return body(lookup(user, id), data, n) ? NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE : 0;
++    (void)flags; (void)user;
++    return body(nghttp2_session_get_stream_user_data(h, id), data, n) ? NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE : 0;
+ }
+ static int h2_close(nghttp2_session *h, int32_t id, uint32_t error, void *user) {
+-    (void)h; (void)error;
+-    stream *p = lookup(user, id); if (p) p->closed = 1;
++    (void)error; (void)user;
++    /* nghttp2 removes the stream after this callback, before sweep can reuse
++     * its bridge object. Avoid scanning all outstanding responses on close. */
++    stream *p = nghttp2_session_get_stream_user_data(h, id); if (p) p->closed = 1;
+     return 0;
+ }
+ static nghttp2_ssize h2_send(nghttp2_session *h, const uint8_t *data, size_t n, int flags, void *user) {
+diff --git a/tests/quic_io.c b/tests/quic_io.c
+index 68f365b..3e4db72 100644
+--- a/tests/quic_io.c
++++ b/tests/quic_io.c
+@@ -133,6 +133,44 @@ static void output_growth_and_cache(void) {
+     }
+     cached_streams = 0; cached_output_bytes = 0;
+ }
++static void h2_transfer(nghttp2_session *from, nghttp2_session *to) {
++    const uint8_t *data; nghttp2_ssize n;
++    while ((n = nghttp2_session_mem_send2(from, &data)) > 0)
++        assert(nghttp2_session_mem_recv2(to, data, (size_t)n) == n);
++    assert(n == 0);
++}
++static void h2_stream_association_lifetime(void) {
++    session *s = calloc(1, sizeof(*s)); assert(s); ++active_sessions;
++    nghttp2_session_callbacks *cb; assert(nghttp2_session_callbacks_new(&cb) == 0);
++    nghttp2_session_callbacks_set_on_begin_headers_callback(cb, h2_begin);
++    nghttp2_session_callbacks_set_on_header_callback(cb, h2_header);
++    nghttp2_session_callbacks_set_on_stream_close_callback(cb, h2_close);
++    assert(nghttp2_session_server_new(&s->h2, cb, s) == 0);
++    nghttp2_session_callbacks_del(cb);
++    assert(nghttp2_session_callbacks_new(&cb) == 0);
++    nghttp2_session *client; assert(nghttp2_session_client_new(&client, cb, NULL) == 0);
++    nghttp2_session_callbacks_del(cb);
++    nghttp2_nv headers[] = {
++        {(uint8_t *)":method", (uint8_t *)"GET", 7, 3, 0},
++        {(uint8_t *)":scheme", (uint8_t *)"https", 7, 5, 0},
++        {(uint8_t *)":authority", (uint8_t *)"localhost", 10, 9, 0},
++        {(uint8_t *)":path", (uint8_t *)"/", 5, 1, 0},
++    };
++    assert(nghttp2_submit_settings(client, 0, NULL, 0) == 0);
++    assert(nghttp2_submit_request2(client, NULL, headers, 4, NULL, NULL) == 1);
++    h2_transfer(client, s->h2);
++    stream *first = s->streams; assert(first && nghttp2_session_get_stream_user_data(s->h2, 1) == first);
++    assert(nghttp2_submit_rst_stream(client, 0, 1, NGHTTP2_CANCEL) == 0);
++    h2_transfer(client, s->h2);
++    assert(first->closed && !nghttp2_session_get_stream_user_data(s->h2, 1));
++    sweep(s);
++    assert(nghttp2_submit_request2(client, NULL, headers, 4, NULL, NULL) == 3);
++    h2_transfer(client, s->h2);
++    assert(s->streams == first && nghttp2_session_get_stream_user_data(s->h2, 3) == first);
++    assert(!nghttp2_session_get_stream_user_data(s->h2, 1));
++    nghttp2_session_del(client); free_session(s);
++    assert(!stream_cache && !cached_streams && !cached_output_bytes && !active_sessions);
++}
+ static void h3_stream_association_lifetime(void) {
+     session *s = calloc(1, sizeof(*s)); assert(s); ++active_sessions;
+     nghttp3_callbacks cb = {0}; nghttp3_settings settings; nghttp3_settings_default(&settings);
+@@ -152,7 +190,7 @@ static void h3_stream_association_lifetime(void) {
+     assert(!stream_cache && !cached_streams && !cached_output_bytes && !active_sessions);
+ }
+ int main(void) {
+-    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache(); h3_stream_association_lifetime();
++    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache(); h2_stream_association_lifetime(); h3_stream_association_lifetime();
+     puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth, bounded cache and stream association lifetime");
+     return 0;
+ }
