@@ -95,8 +95,46 @@ static void input_budget(void) {
     close(tx); close(rx);
     free(quic_input); quic_input = NULL;
 }
+static void output_growth_and_cache(void) {
+    session s = {0};
+    stream *p = new_stream(&s, 0, NULL); assert(p);
+    uint8_t *buf, *original = p->output;
+    memset(p->output, 0x5a, 100); p->output_len = 100;
+    assert(zhttp_stream_writable(p, &buf, 612) == OUTPUT_CAP - 100);
+    assert(p->output == original && p->output_cap == OUTPUT_CAP);
+    p->offered = 100;
+    assert(zhttp_stream_writable(p, &buf, 1024 * 1024) == OUTPUT_CAP - 100);
+    assert(p->output == original); /* a retained vector must never move */
+    p->offered = 0;
+    assert(zhttp_stream_writable(p, &buf, 1024 * 1024) == FILE_OUTPUT_CAP - 100);
+    assert(p->output_cap == FILE_OUTPUT_CAP && p->output_len == 100);
+    for (unsigned i = 0; i < 100; ++i) assert(p->output[i] == 0x5a);
+    assert(buf == p->output + 100);
+    /* Growing the body buffer must not relax the response header limit. */
+    memset(p->output, 'x', OUTPUT_CAP + 4);
+    memcpy(p->output + OUTPUT_CAP, "\r\n\r\n", 4); p->output_len = OUTPUT_CAP + 4;
+    assert(response_headers(p) == -1);
+    for (int i = 1; i < 16; ++i) {
+        p = new_stream(&s, 4 * i, NULL); assert(p);
+        assert(zhttp_stream_writable(p, &buf, 1024 * 1024) == FILE_OUTPUT_CAP);
+    }
+    for (p = s.streams; p; p = p->next) p->closed = 1;
+    sweep(&s);
+    assert(!s.streams && s.nstreams == 0);
+    assert(cached_output_bytes <= OUTPUT_CACHE_CAP);
+    assert(cached_streams == OUTPUT_CACHE_CAP / FILE_OUTPUT_CAP);
+    size_t cached = cached_output_bytes;
+    p = new_stream(&s, 0, NULL); assert(p);
+    assert(p->output_cap == FILE_OUTPUT_CAP && p->output_len == 0);
+    assert(cached_output_bytes == cached - p->output_cap);
+    p->closed = 1; sweep(&s);
+    while (stream_cache) {
+        p = stream_cache; stream_cache = p->next; free_stream(p);
+    }
+    cached_streams = 0; cached_output_bytes = 0;
+}
 int main(void) {
-    output_boundaries(); output_ipv6_fallback(); input_budget();
-    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback and receive budgets");
+    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache();
+    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth and bounded cache");
     return 0;
 }

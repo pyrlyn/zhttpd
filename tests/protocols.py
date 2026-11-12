@@ -27,6 +27,7 @@ from aioquic.quic.events import ConnectionTerminated
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get('ZHTTPD', ROOT / 'zig-out/bin/zhttpd')).resolve()
+KEYUPDATE = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
 LARGE = bytes(range(256)) * 4096
 UPLOAD = b'upload-body-' * 16000
 REUSEPORT = sys.platform == 'linux' and os.environ.get('QUIC_REUSEPORT', '1') == '1'
@@ -502,6 +503,8 @@ http {{
             h1_exchange(port)
             h1_exchange(port, "h1.local", offer_h2=True)
             h2_exchange(port)
+            if KEYUPDATE:
+                subprocess.run([str(KEYUPDATE), str(port), str(temp / "large")], check=True, timeout=30)
             h2_backpressure(port)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
@@ -519,6 +522,8 @@ http {{
             h1_exchange(port)
             h1_exchange(port, "h1.local", offer_h2=True)
             h2_exchange(port)
+            if KEYUPDATE:
+                subprocess.run([str(KEYUPDATE), str(port), str(temp / "large")], check=True, timeout=30)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
             asyncio.run(h3_loss_backpressure(port))

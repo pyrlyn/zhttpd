@@ -184,6 +184,22 @@ pub fn build(b: *std.Build) void {
     const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);
+    if (http) {
+        const keyupdate = b.addExecutable(.{
+            .name = "h2-keyupdate-test",
+            .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+        });
+        keyupdate.root_module.addCSourceFile(.{ .file = b.path("tests/h2-keyupdate.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+        if (openssl) |p| {
+            keyupdate.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            keyupdate.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
+            keyupdate.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
+        } else {
+            keyupdate.root_module.linkSystemLibrary("ssl", .{});
+            keyupdate.root_module.linkSystemLibrary("crypto", .{});
+        }
+        e2e.addArtifactArg(keyupdate);
+    }
     e2e.setCwd(b.path("."));
     b.step("test-protocols", "Run HTTP/1.1, HTTP/2 and HTTP/3 wire tests").dependOn(&e2e.step);
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
@@ -286,7 +302,7 @@ pub fn build(b: *std.Build) void {
             .name = "quic-io-test",
             .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
         });
-        datagrams.root_module.addCSourceFile(.{ .file = b.path("tests/quic_io.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        datagrams.root_module.addCSourceFile(.{ .file = b.path("tests/quic_io.c"), .flags = &.{ "-std=c11", "-UNDEBUG", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
         if (openssl) |p| {
             datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });

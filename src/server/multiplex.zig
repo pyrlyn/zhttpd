@@ -19,7 +19,7 @@ extern "c" fn zhttp_h3_wait_ms(*anyopaque) c_int;
 extern "c" fn zhttp_h3_free(*anyopaque) void;
 extern "c" fn zhttp_stream_read(*anyopaque, [*]u8, usize) isize;
 extern "c" fn zhttp_stream_write(*anyopaque, [*]const u8, usize) isize;
-extern "c" fn zhttp_stream_writable(*anyopaque, *[*]u8) isize;
+extern "c" fn zhttp_stream_writable(*anyopaque, *[*]u8, u64) isize;
 extern "c" fn zhttp_stream_commit(*anyopaque, usize) void;
 extern "c" fn zhttp_stream_finish(*anyopaque) void;
 
@@ -86,7 +86,7 @@ pub fn finishStream(stream: *anyopaque) void {
 pub fn sendFile(stream: *anyopaque, fd: c_int, offset: u64, remaining: u64) net.Io {
     if (!enabled) unreachable;
     var buffer: [*]u8 = undefined;
-    const capacity = zhttp_stream_writable(stream, &buffer);
+    const capacity = zhttp_stream_writable(stream, &buffer, remaining);
     if (capacity == 0) return .again;
     if (capacity < 0) return .{ .err = 0 };
     const len: usize = @intCast(@min(@as(u64, @intCast(capacity)), remaining));

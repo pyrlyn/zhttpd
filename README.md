@@ -134,14 +134,21 @@ mise exec -- zig build -Dtls=true -Dhttp=true \
 ```
 
 The transport feeds existing handlers through bounded memory buffers (64 KiB
-request input and 32 KiB response output per stream), without internal sockets.
+request input and initially 32 KiB response output per stream), without internal
+sockets. Large HTTP/3 file responses grow their output buffer to approximately
+128 KiB, only while no codec vector retains its address. Active large transfers
+therefore use up to 96 KiB more memory per stream; small responses do not grow.
 There are up to 32 concurrent request streams per connection. Stream handlers
 count toward `worker_connections`. Ready codec work continues without a polling
 delay; QUIC deadlines shorten the idle event wait below its 5 ms cap.
 Sub-millisecond deadlines poll without sleeping until serviced. HTTP/2 frames
-are batched into TLS records, and QUIC stream I/O shares explicit event ticks.
+are batched into TLS records. Large HTTP/2 responses also batch encrypted
+records in a 96 KiB buffer, flushed each bounded turn and released once idle.
+QUIC stream I/O shares explicit event ticks.
 Each event-loop thread caches at most 32 reusable stream buffers (under 4 MiB
-total), and releases that cache when its last modern-protocol session closes.
+total), with an additional 1 MiB output-byte budget so enlarged buffers reduce
+the number retained. It releases the cache when its last modern-protocol session
+closes.
 Request handlers use a separate pool of at most 32 storage blocks per worker;
 idle HTTP/1.x keep-alive connections return their request storage to that pool.
 The worker also retains at most 64 closed connection records.
