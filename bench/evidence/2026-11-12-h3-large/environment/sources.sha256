@@ -1,0 +1,6 @@
+8c0bb28563ea2db5aa4ad44947418ac6d5c69f7e845f9f5a5b1c3d71cf52f3fb  src/server/multiplex.c
+af89fb7532100cb99cdfae9e3105903af9cd9006f2d20384803c14d8853d5c90  src/server/multiplex.zig
+815df98feb7ca27668f87dfbc4b39c5251f5c6cf2ee279e8d8f1d508fb3c8c3e  src/server/worker.zig
+b2c6fdb8719834c614f76ccfbdef6d634f9416d5c6ba2c6e9cd395e24bcba733  src/server/quic_output.h
+90090f4ed35bf6e65957da7d24bfba4e30b83ed41de67921ec917c10e9c73fb9  deps/patches/openssl-quic-stream-gc.patch
+bb349f0c01aa8672f25fcafa12f9d25f14a4f1ebc2cd0d1c21fc5748e2703610  tests/quic-stream-gc.c

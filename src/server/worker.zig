@@ -175,7 +175,11 @@ pub const Worker = struct {
             }
             var cn_it = w.active;
             while (cn_it) |cn| : (cn_it = cn.next) modern = modern or cn.multiplex != null;
-            const evs = w.loop.wait(&events, if (pending) 0 else if (modern) 5 else 1000);
+            var wait_ms: i32 = if (pending) 0 else if (modern) 5 else 1000;
+            if (!pending) for (w.listeners) |*l| {
+                if (l.quic != null) wait_ms = @min(wait_ms, multiplex.waitH3(l));
+            };
+            const evs = w.loop.wait(&events, wait_ms);
             w.updateTime();
             w.balancer.update(w.nconns);
             for (evs) |ev| w.dispatch(ev);

@@ -14,6 +14,9 @@ from acme_common import local_ca, configure, peer_cert
 from e2e_common import running
 
 binary=Path(sys.argv[1]).resolve()
+modes = sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')
+if any(mode not in ('self', 'nginx', 'apache', 'litespeed', 'caddy') for mode in modes):
+    raise SystemExit('unknown configuration adapter')
 
 def invalid_config(config, expected):
     result = subprocess.run([binary, '-t', '-c', config], capture_output=True)
@@ -22,7 +25,7 @@ def invalid_config(config, expected):
 with local_ca() as fixture:
     root=fixture.root;port=fixture.port;challenge=fixture.challenge
     ca=fixture.ca;dns=fixture.dns;provider=fixture.provider;env=fixture.env;tls_cert=fixture.tls_cert
-    for mode in ('self', 'nginx', 'apache', 'litespeed', 'caddy'):
+    for mode in modes:
         case = root/mode; case.mkdir()
         ca.fail = False
         issued_before = ca.issued
@@ -83,7 +86,7 @@ with local_ca() as fixture:
     ):
         ca.challenge_type = challenge_type
         hosts = [d.replace('*.', 'www.') for d in domains]
-        for mode in ('self', 'nginx', 'apache', 'litespeed', 'caddy'):
+        for mode in modes:
             case = root/(mode+'-'+challenge_type);case.mkdir()
             ca.fail=False;issued_before=ca.issued
             config=configure(case, mode, port, challenge, ca.url, root/'server.pem', root/'key.pem', domains, dns if challenge_type=='dns-01' else None)

@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const E2eGroup = enum { core, reload, tls, sni, acme, encryption, rotation, acme_reload, acme_auto };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -166,41 +168,87 @@ pub fn build(b: *std.Build) void {
     raft_e2e.setCwd(b.path("."));
     raft_e2e.step.dependOn(&raft_build.step);
     b.step("test-raft-e2e", "Test Raft failover, durable state, membership and load balancing").dependOn(&raft_e2e.step);
+    // The default target keeps the complete sequential suite. CI can fan out
+    // ACME/DNS scripts into isolated processes, one per configuration adapter.
+    const e2e_group = b.option(E2eGroup, "e2e-group", "Run only this E2E group (default: all)");
+    const parallel_adapters = b.option(bool, "e2e-parallel-adapters", "Run ACME/DNS adapters concurrently (bounded by -j)") orelse false;
     const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);
     e2e.setCwd(b.path("."));
     b.step("test-protocols", "Run HTTP/1.1, HTTP/2 and HTTP/3 wire tests").dependOn(&e2e.step);
     const e2e_step = b.step("test-e2e", "Run protocol, configuration, logging, SDK, FastCGI/WSGI and ACME E2E");
-    e2e_step.dependOn(&e2e.step);
     const benchmark_gate = b.addSystemCommand(&.{e2e_command});
     benchmark_gate.addFileArg(b.path("tests/bench-target.py"));
-    e2e_step.dependOn(&benchmark_gate.step);
     const memory_gate = b.addSystemCommand(&.{e2e_command});
     memory_gate.addFileArg(b.path("tests/bench-memory.py"));
-    e2e_step.dependOn(&memory_gate.step);
-    var previous: *std.Build.Step = &e2e.step;
-    for ([_][]const u8{ "tls-io.py", "request-storage.py", "error-pages.py", "config_e2e.py", "auto_reload_e2e.py", "tls_files_e2e.py", "tls_password_e2e.py", "sni_password_e2e.py", "dns_env_reload_e2e.py", "load_balancer_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_encryption_e2e.py", "acme_password_rotation_e2e.py", "acme_migration_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
-        const check = b.addSystemCommand(&.{e2e_command});
-        check.addFileArg(b.path(b.fmt("tests/{s}", .{script})));
-        check.addArtifactArg(exe);
-        check.setCwd(b.path("."));
-        check.step.dependOn(previous);
-        previous = &check.step;
+    var previous: ?*std.Build.Step = null;
+    if (e2e_group == null or e2e_group == .core) {
+        previous = &e2e.step;
+        e2e_step.dependOn(&benchmark_gate.step);
+        e2e_step.dependOn(&memory_gate.step);
     }
-    const acme_auto = b.addSystemCommand(&.{e2e_command});
-    acme_auto.addFileArg(b.path("tests/acme_reload_e2e.py"));
-    acme_auto.addArtifactArg(exe);
-    acme_auto.addArg("--auto");
-    acme_auto.setCwd(b.path("."));
-    acme_auto.step.dependOn(previous);
-    previous = &acme_auto.step;
-    const ws_check = b.addSystemCommand(&.{e2e_command});
-    ws_check.addFileArg(b.path("tests/websocket_e2e.py"));
-    ws_check.addArtifactArg(exe);
-    for (examples) |example| ws_check.addArtifactArg(example);
-    ws_check.step.dependOn(previous);
-    e2e_step.dependOn(&ws_check.step);
+    for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
+        .{ .group = .tls, .script = "tls-io.py" },
+        .{ .group = .core, .script = "request-storage.py" },
+        .{ .group = .core, .script = "error-pages.py" },
+        .{ .group = .core, .script = "config_e2e.py" },
+        .{ .group = .reload, .script = "auto_reload_e2e.py" },
+        .{ .group = .tls, .script = "tls_files_e2e.py" },
+        .{ .group = .tls, .script = "tls_password_e2e.py" },
+        .{ .group = .sni, .script = "sni_password_e2e.py" },
+        .{ .group = .reload, .script = "dns_env_reload_e2e.py" },
+        .{ .group = .core, .script = "load_balancer_e2e.py" },
+        .{ .group = .core, .script = "logging_e2e.py" },
+        .{ .group = .core, .script = "gateway_e2e.py" },
+        .{ .group = .acme, .script = "acme_e2e.py" },
+        .{ .group = .encryption, .script = "acme_encryption_e2e.py" },
+        .{ .group = .rotation, .script = "acme_password_rotation_e2e.py" },
+        .{ .group = .rotation, .script = "acme_migration_e2e.py" },
+        .{ .group = .acme, .script = "acme_sni_e2e.py" },
+        .{ .group = .acme_reload, .script = "acme_reload_e2e.py" },
+        .{ .group = .acme_auto, .script = "acme_reload_e2e.py", .args = &.{"--auto"} },
+    }) |check_spec| {
+        if (e2e_group != null and e2e_group != check_spec.group) continue;
+        const shard_adapters = parallel_adapters and switch (check_spec.group) {
+            .reload, .acme, .encryption, .rotation, .acme_reload, .acme_auto => true,
+            .core, .tls, .sni => false,
+        };
+        const adapters: []const ?[]const u8 = if (shard_adapters)
+            &.{ "self", "nginx", "apache", "litespeed", "caddy" }
+        else
+            &.{null};
+        for (adapters) |adapter| {
+            const check = b.addSystemCommand(&.{e2e_command});
+            check.addFileArg(b.path(b.fmt("tests/{s}", .{check_spec.script})));
+            check.addArtifactArg(exe);
+            check.addArgs(check_spec.args);
+            if (adapter) |name| check.addArg(name);
+            check.setCwd(b.path("."));
+            if (shard_adapters) {
+                // Inherited stdio takes Zig's global lock and serializes runs.
+                // Capture/check the result instead, but never cache execution.
+                check.expectExitCode(0);
+                check.has_side_effects = true;
+                check.step.name = b.fmt("{s} ({s})", .{ check_spec.script, adapter.? });
+                // Each invocation owns its temporary files and local CA/DNS.
+                // Keep every shard as a required dependency, including failures.
+                e2e_step.dependOn(&check.step);
+            } else {
+                if (previous) |step| check.step.dependOn(step);
+                previous = &check.step;
+            }
+        }
+    }
+    if (e2e_group == null or e2e_group == .core) {
+        const ws_check = b.addSystemCommand(&.{e2e_command});
+        ws_check.addFileArg(b.path("tests/websocket_e2e.py"));
+        ws_check.addArtifactArg(exe);
+        for (examples) |example| ws_check.addArtifactArg(example);
+        if (previous) |step| ws_check.step.dependOn(step);
+        previous = &ws_check.step;
+    }
+    if (previous) |step| e2e_step.dependOn(step);
 
     const lb_tests = b.addRunArtifact(b.addTest(.{ .root_module = load_balancer_mod }));
     b.step("test-load-balancer", "Test the independent load balancer module").dependOn(&lb_tests.step);
@@ -218,7 +266,37 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = lib_mod });
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path("."));
+    // Cache compilation, never the result of a unit-test execution.
+    for ([_]*std.Build.Step.Run{ run_tests, lb_tests, http_tests, nginx_tests }) |check| {
+        check.has_side_effects = true;
+    }
     const test_step = b.step("test", "Run all independent module unit tests");
+    if (http and target.result.os.tag == .linux) {
+        const datagrams = b.addExecutable(.{
+            .name = "quic-io-test",
+            .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+        });
+        datagrams.root_module.addCSourceFile(.{ .file = b.path("tests/quic_io.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        if (openssl) |p| {
+            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
+        } else {
+            datagrams.root_module.linkSystemLibrary("ssl", .{});
+            datagrams.root_module.linkSystemLibrary("crypto", .{});
+        }
+        if (http_deps) |p| {
+            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp3.a", .{p}) });
+        } else {
+            datagrams.root_module.linkSystemLibrary("nghttp2", .{});
+            datagrams.root_module.linkSystemLibrary("nghttp3", .{});
+        }
+        const run_datagrams = b.addRunArtifact(datagrams);
+        b.step("test-quic-io", "Test QUIC datagram batching and fallback").dependOn(&run_datagrams.step);
+        test_step.dependOn(&run_datagrams.step);
+    }
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&lb_tests.step);
     test_step.dependOn(&http_tests.step);
@@ -226,6 +304,7 @@ pub fn build(b: *std.Build) void {
     for ([_]*std.Build.Module{ settings_mod, apache_mod, caddy_mod, litespeed_mod, websocket_mod, fastcgi_mod, wsgi_mod, acme_mod, logging_mod, expression_mod }) |mod| {
         const check = b.addRunArtifact(b.addTest(.{ .root_module = mod }));
         check.setCwd(b.path("."));
+        check.has_side_effects = true;
         test_step.dependOn(&check.step);
     }
 }

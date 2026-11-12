@@ -342,6 +342,37 @@ async def h3_loss_and_reordering(port):
         transport.close()
 
 
+async def h3_loss_backpressure(port):
+    class LossyClient(H3Client):
+        discard = False
+        packets = 0
+        dropped = 0
+
+        def datagram_received(self, data, addr):
+            if self.discard:
+                self.packets += 1
+                if self.packets % 19 == 0:
+                    self.dropped += 1
+                    return
+            super().datagram_received(data, addr)
+
+    # Small initial windows force partial writes and stream unblocking; dropped
+    # packets require QUIC retransmission after the application reused buffers.
+    cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'],
+                            verify_mode=ssl.CERT_NONE, max_data=8192,
+                            max_stream_data=2048)
+    async with connect('127.0.0.1', port, configuration=cfg, create_protocol=LossyClient) as client:
+        client.discard = True
+        results = await asyncio.wait_for(asyncio.gather(
+            client.request('/large'), client.request('/large'),
+            client.request('/large', 'HEAD')), 30)
+        assert results[0] == [200, LARGE] and results[1] == [200, LARGE]
+        assert results[2] == [200, b'']
+        assert client.dropped > 0
+        status, body = await asyncio.wait_for(client.request('/'), 5)
+        assert status == 200 and body == b'HTTP/3.0 https 127.0.0.1'
+
+
 async def h3_workers(port):
     async def one():
         cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'], verify_mode=ssl.CERT_NONE)
@@ -474,8 +505,9 @@ http {{
             h2_backpressure(port)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
-            asyncio.run(h3_workers(port))
+            asyncio.run(h3_loss_backpressure(port))
             asyncio.run(h3_loss_and_reordering(port))
+            asyncio.run(h3_workers(port))
             if sys.platform == 'linux':
                 asyncio.run(h3_peer_addresses(port))
             # Two independent QUIC clients exercise connection demultiplexing.
@@ -489,6 +521,7 @@ http {{
             h2_exchange(port)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
+            asyncio.run(h3_loss_backpressure(port))
             asyncio.run(h3_workers(port))
             proc.send_signal(signal.SIGQUIT)
             proc.wait(timeout=10)

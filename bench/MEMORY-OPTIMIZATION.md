@@ -20,6 +20,23 @@ Its performance regression budgets are no more than 5% lower median successful
 RPS and no more than 10% higher median p99 against that baseline. These noise
 budgets are explicit; passing them does not assert identical latency.
 
+## Integration provenance
+
+These measurements describe the recorded pre-integration binary and source
+fingerprints. The later merge with main `fb3f377` also incorporates its QUIC
+datagram batching, output handling and timer changes. Functional integration
+checks are recorded separately; the table below is not a new benchmark of that
+combined version. The 80% target remains unmet.
+
+The combined source passed 61 unit tests on each of Linux and macOS, the Linux
+QUIC datagram batching/fallback test, `test-e2e -De2e-group=core` in ReleaseSafe
+with allocator perturbation, and TLS 1.2/1.3/KeyUpdate wire tests. The core group
+includes the new memory-gate fixtures and request-storage regression.
+[Linux integration log](evidence/2026-11-12-memory/integration/linux-validation.txt)
+and [macOS integration log](evidence/2026-11-12-memory/integration/macos-validation.txt)
+record these functional checks; the performance tables retain their original
+binary identity.
+
 ## Measured result
 
 All 13 listed keep-alive scenarios pass the memory and performance regression

@@ -50,15 +50,25 @@ E2E dependencies.
 
 - Linux and macOS build the release server and Raft companion, run Zig unit
   tests, Go race/mTLS tests, and real load-balancer/Raft cluster E2E tests.
-- A separate Linux job builds the pinned OpenSSL and HTTP codec libraries,
-  compiles the complete server, and runs unit tests plus the full HTTP/1.1,
-  HTTP/2, HTTP/3, configuration/reload, ACME, gateway and WebSocket E2E suite.
+- Nine parallel Linux E2E groups cover the full HTTP/1.1, HTTP/2, HTTP/3,
+  configuration/reload, TLS/password, ACME, gateway and WebSocket suite. Each
+  runner has isolated fixtures. ACME/DNS groups (`reload`, `acme`, `encryption`,
+  `rotation`, `acme_reload`, `acme_auto`) fan out by adapter: `self`, `nginx`,
+  `apache`, `litespeed`, `caddy`. At most five test processes run per runner,
+  sharing the compiled server but using separate temporary directories and local
+  CA/DNS servers. Every shard is required; HTTP-01/DNS-01 and manual/automatic
+  reload scenarios remain intact. The `core` group also builds the release server
+  and runs TLS/HTTP unit tests.
+  `fail-fast: false` lets all groups report failures.
 
 The ACME/DNS and Raft checks use local fixtures and require no production
-credentials. Compiled protocol dependencies and mise toolchains are cached;
-changes to their versions or build scripts invalidate the native dependency
-cache. Job timeouts and per-ref cancellation prevent obsolete runs from piling
-up. Manual and automatic runs use separate concurrency groups so manual checks
+credentials. Mise toolchains, compiled protocol dependencies, Zig's local/global
+compilation caches, and Go's module/build caches are reused. Cache keys separate
+OS, architecture, native/protocol builds and pinned dependency versions. A new
+commit restores the previous compatible compilation cache; compilers validate
+source changes before reuse. Unit tests always execute (including Go's
+`-race -count=1`); cached test results never replace a check. Job timeouts and
+per-ref cancellation prevent obsolete runs from piling up. Manual and automatic runs use separate concurrency groups so manual checks
 do not cancel push/PR checks. The workflow token has read-only repository access.
 
 ## Full protocol and module checks
@@ -72,12 +82,35 @@ multiplexed streams, uploads, cancellation, virtual hosts, reload, configuration
 adapters, automatic config reload, logging, FastCGI/WSGI, local ACME
 issuance/renewal/reload and WebSocket examples.
 ACME tests use a local CA; they do not request public certificates.
+`zig build test-e2e` still runs every E2E check sequentially. To select the same
+subset as a CI runner, add `-De2e-group=core`, `reload`, `tls`, `sni`, `acme`,
+`encryption`, `rotation`, `acme_reload` or `acme_auto`. No group is selected by
+default; an invalid group is rejected. Add `-De2e-parallel-adapters=true -j5`
+to use CI's adapter parallelism; omit it for the original sequential execution.
+The `core`, `tls` and `sni` groups retain their existing execution order.
+
 After preparing dependencies, run just the protocol checks with:
 
 ```bash
 mise exec -- zig build test-protocols -Dtls=true -Dhttp=true \
   -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install \
   -De2e-python=.run/venv/bin/python
+```
+
+The protocol suite also downloads large HTTP/3 responses with small flow-control
+windows and deterministic packet loss, checking exact bodies before and after
+reload. A UDP relay also exercises reordering and late duplicate packets.
+The OpenSSL build applies `deps/patches/openssl-quic-stream-gc.patch` and runs
+`tests/quic-stream-gc.c` against the installed archive, including retention
+before the final ACK. Its cache stamp covers the patch, regression test,
+source/toolchain pins and build recipe. On Linux, `zig build test` with
+`-Dhttp=true` includes UDP GSO boundary,
+peer/source address, IPv6/failure fallback and bounded receive-batch tests.
+Run that adapter check alone with:
+
+```bash
+mise exec -- zig build test-quic-io -Dtls=true -Dhttp=true \
+  -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
 ```
 
 After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:

@@ -1,0 +1,38 @@
+Build Summary: 30/30 steps succeeded; 57/57 tests passed
+test success
++- run test 7 pass (7 total) 225ms MaxRSS:4M
+|  +- compile test debug native success 2s MaxRSS:368M
+|     +- options success
++- run test 3 pass (3 total) 12ms MaxRSS:3M
+|  +- compile test debug native cached 62ms MaxRSS:32M
++- run test 27 pass (27 total) 254ms MaxRSS:29M
+|  +- compile test debug native success 1s MaxRSS:299M
+|     +- options (reused)
++- run test 10 pass (10 total) 231ms MaxRSS:4M
+|  +- compile test debug native success 2s MaxRSS:362M
+|     +- options (reused)
++- run test 1 pass (1 total) 372ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:279M
+|     +- options (reused)
++- run test 1 pass (1 total) 204ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:327M
+|     +- options (reused)
++- run test success 195ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:272M
+|     +- options (reused)
++- run test success 196ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:263M
+|     +- options (reused)
++- run test 2 pass (2 total) 8ms MaxRSS:3M
+|  +- compile test debug native cached 61ms MaxRSS:31M
++- run test 1 pass (1 total) 8ms MaxRSS:3M
+|  +- compile test debug native cached 63ms MaxRSS:31M
++- run test success 11ms MaxRSS:3M
+|  +- compile test debug native cached 75ms MaxRSS:31M
++- run test 3 pass (3 total) 9ms MaxRSS:3M
+|  +- compile test debug native cached 58ms MaxRSS:31M
++- run test 1 pass (1 total) 11ms MaxRSS:3M
+|  +- compile test debug native cached 62ms MaxRSS:31M
++- run test 1 pass (1 total) 11ms MaxRSS:3M
+   +- compile test debug native cached 62ms MaxRSS:31M
+

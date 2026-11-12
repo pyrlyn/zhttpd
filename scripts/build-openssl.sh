@@ -4,8 +4,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 D="$ROOT/deps"
 PATCH="$D/patches/openssl-quic-stream-gc.patch"
 STAMP="$D/openssl-install/.zhttpd-quic-gc"
-INPUT_HASH=$(cat "$D/SHA256SUMS" "$ROOT/mise.toml" "$ROOT/scripts/build-openssl.sh" \
-  "$PATCH" "$ROOT/tests/quic-stream-gc.c" | shasum -a 256 | awk '{print $1}')
+INPUT_HASH=$(cat "$PATCH" "$ROOT/tests/quic-stream-gc.c" "$D/SHA256SUMS" \
+  "$ROOT/mise.toml" "$ROOT/scripts/build-openssl.sh" | shasum -a 256 | awk '{print $1}')
 if [ -f "$D/openssl-install/lib/libssl.a" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$INPUT_HASH" ]; then exit 0; fi
 J=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN)
 cd "$D/openssl-3.5.9"

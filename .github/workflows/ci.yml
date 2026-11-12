@@ -15,6 +15,9 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.run/cache/zig
+  GOCACHE: ${{ github.workspace }}/.run/cache/go-build
+  GOMODCACHE: ${{ github.workspace }}/.run/cache/go-mod
 
 jobs:
   native:
@@ -35,6 +38,24 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           cache_key_prefix: mise-native
+      - name: Cache Zig compilation
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            ${{ env.ZIG_GLOBAL_CACHE_DIR }}
+          key: zig-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ hashFiles('mise.toml', 'build.zig.zon', 'deps/SHA256SUMS', 'scripts/build-*.sh') }}-${{ github.sha }}
+          restore-keys: |
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ hashFiles('mise.toml', 'build.zig.zon', 'deps/SHA256SUMS', 'scripts/build-*.sh') }}-
+      - name: Cache Go modules and compilation
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GOMODCACHE }}
+            ${{ env.GOCACHE }}
+          key: go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'modules/raft/go.mod', 'modules/raft/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'modules/raft/go.mod', 'modules/raft/go.sum') }}-
       - name: Build release server and Raft companion
         run: zig build -j2 -Doptimize=ReleaseFast install raft --summary all
       - name: Zig unit tests
@@ -45,9 +66,13 @@ jobs:
         run: zig build test-load-balancer-e2e test-raft-e2e -j2 --summary all
 
   protocols:
-    name: TLS, HTTP protocols and module E2E (Linux)
+    name: Protocol E2E (${{ matrix.group }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, reload, tls, sni, acme, encryption, rotation, acme_reload, acme_auto]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,7 +88,7 @@ jobs:
           path: |
             deps/openssl-install
             deps/http-install
-          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'deps/patches/**', 'tests/quic-stream-gc.c', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'scripts/build-http-deps.sh') }}
+          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'deps/patches/**', 'tests/quic-stream-gc.c', 'scripts/build-http-deps.sh') }}
       - name: Build pinned OpenSSL and HTTP codecs
         if: steps.native-deps.outputs.cache-hit != 'true'
         run: |
@@ -71,6 +96,16 @@ jobs:
           mise run deps:http
       - name: Install locked Python E2E dependencies
         run: mise run deps:python
+      - name: Restore Zig compilation cache
+        id: zig-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            ${{ env.ZIG_GLOBAL_CACHE_DIR }}
+          key: zig-v1-${{ runner.os }}-${{ runner.arch }}-protocols-${{ hashFiles('mise.toml', 'build.zig.zon', 'deps/SHA256SUMS', 'scripts/build-*.sh') }}-${{ github.sha }}
+          restore-keys: |
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-protocols-${{ hashFiles('mise.toml', 'build.zig.zon', 'deps/SHA256SUMS', 'scripts/build-*.sh') }}-
       - name: Select runner libc for Zig
         # Conda clang's sysroot has linker scripts for /lib64, unlike Ubuntu.
         # Dependency builds above still use the pinned compiler through mise.
@@ -78,15 +113,29 @@ jobs:
           echo "CC=/usr/bin/cc" >> "$GITHUB_ENV"
           CC=/usr/bin/cc zig libc
       - name: Build release server with TLS, HTTP/2 and HTTP/3
+        if: matrix.group == 'core'
         run: >-
           zig build -j2 -Doptimize=ReleaseFast -Dtls=true -Dhttp=true
           -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install --summary all
       - name: Unit tests with TLS and HTTP codecs enabled
+        if: matrix.group == 'core'
         run: >-
           zig build test -j2 -Dtls=true -Dhttp=true
           -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install --summary all
-      - name: Protocol, configuration, reload, ACME, gateway and WebSocket E2E
+      - name: Run E2E group
+        env:
+          E2E_GROUP: ${{ matrix.group }}
         run: >-
-          zig build test-e2e -j2 -Dtls=true -Dhttp=true
+          zig build test-e2e -j5 -De2e-parallel-adapters=true -Dtls=true -Dhttp=true
           -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
-          -De2e-python=.run/venv/bin/python --summary all
+          -De2e-python=.run/venv/bin/python -De2e-group="$E2E_GROUP" --summary all
+      # All groups compile the same debug server. Only core writes the shared
+      # cache, which also includes release builds, unit tests and SDK examples.
+      - name: Save Zig compilation cache
+        if: matrix.group == 'core' && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            ${{ env.ZIG_GLOBAL_CACHE_DIR }}
+          key: ${{ steps.zig-cache.outputs.cache-primary-key }}
