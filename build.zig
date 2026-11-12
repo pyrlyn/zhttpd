@@ -176,8 +176,11 @@ pub fn build(b: *std.Build) void {
     const benchmark_gate = b.addSystemCommand(&.{e2e_command});
     benchmark_gate.addFileArg(b.path("tests/bench-target.py"));
     e2e_step.dependOn(&benchmark_gate.step);
+    const memory_gate = b.addSystemCommand(&.{e2e_command});
+    memory_gate.addFileArg(b.path("tests/bench-memory.py"));
+    e2e_step.dependOn(&memory_gate.step);
     var previous: *std.Build.Step = &e2e.step;
-    for ([_][]const u8{ "tls-io.py", "error-pages.py", "config_e2e.py", "auto_reload_e2e.py", "tls_files_e2e.py", "tls_password_e2e.py", "sni_password_e2e.py", "dns_env_reload_e2e.py", "load_balancer_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_encryption_e2e.py", "acme_password_rotation_e2e.py", "acme_migration_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
+    for ([_][]const u8{ "tls-io.py", "request-storage.py", "error-pages.py", "config_e2e.py", "auto_reload_e2e.py", "tls_files_e2e.py", "tls_password_e2e.py", "sni_password_e2e.py", "dns_env_reload_e2e.py", "load_balancer_e2e.py", "logging_e2e.py", "gateway_e2e.py", "acme_e2e.py", "acme_encryption_e2e.py", "acme_password_rotation_e2e.py", "acme_migration_e2e.py", "acme_sni_e2e.py", "acme_reload_e2e.py" }) |script| {
         const check = b.addSystemCommand(&.{e2e_command});
         check.addFileArg(b.path(b.fmt("tests/{s}", .{script})));
         check.addArtifactArg(exe);

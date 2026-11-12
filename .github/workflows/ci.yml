@@ -63,7 +63,7 @@ jobs:
           path: |
             deps/openssl-install
             deps/http-install
-          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'scripts/build-http-deps.sh') }}
+          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'deps/patches/**', 'tests/quic-stream-gc.c', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'scripts/build-http-deps.sh') }}
       - name: Build pinned OpenSSL and HTTP codecs
         if: steps.native-deps.outputs.cache-hit != 'true'
         run: |

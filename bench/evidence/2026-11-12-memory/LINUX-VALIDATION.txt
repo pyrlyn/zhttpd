@@ -1,0 +1,91 @@
+GC mismatch: recv=4 send=4 deleted=1 stop_acked=0 collected=0
+GC mismatch: recv=6 send=6 deleted=1 stop_acked=0 collected=0
+stream retained after final ACK
+PASS: GC regression rejects original OpenSSL
+PASS: QUIC stream GC retains unread/unacknowledged data and releases drained streams
+Build Summary: 30/30 steps succeeded; 61/61 tests passed
+test success
++- run test 7 pass (7 total) 23ms MaxRSS:8M
+|  +- compile test debug native success 2s MaxRSS:436M
+|     +- options cached
++- run test 3 pass (3 total) 4ms MaxRSS:5M
+|  +- compile test debug native success 1s MaxRSS:315M
++- run test 31 pass (31 total) 63ms MaxRSS:22M
+|  +- compile test debug native success 1s MaxRSS:352M
+|     +- options (reused)
++- run test 10 pass (10 total) 25ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:431M
+|     +- options (reused)
++- run test 1 pass (1 total) 18ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:318M
+|     +- options (reused)
++- run test 1 pass (1 total) 18ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:381M
+|     +- options (reused)
++- run test success 16ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:309M
+|     +- options (reused)
++- run test success 17ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:307M
+|     +- options (reused)
++- run test 2 pass (2 total) 2ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:331M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:319M
++- run test success 2ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:314M
++- run test 3 pass (3 total) 4ms MaxRSS:5M
+|  +- compile test debug native success 1s MaxRSS:308M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+|  +- compile test debug native success 1s MaxRSS:318M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+   +- compile test debug native success 1s MaxRSS:319M
+
+PASS: throughput, p99 vs nginx/baseline, errors, missing repetitions/scenarios, sample path confinement
+PASS: memory budget, throughput/p99 regression, errors, invalid or missing evidence
+== request-storage.py
+PASS: pooled request storage, partial/pipelined headers, original limits, body drain, backpressure
+== protocols.py
+zhttpd: the configuration file /tmp/zhttpd-protocols-7ujx6_cz/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-7ujx6_cz/nginx.conf test is successful
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+== tls-io.py
+PASS: TLSv1_2: fragmented/coalesced records, pipeline, body drain, HEAD/range, backpressure, idle buffers, file freshness, TCP half-close
+PASS: TLSv1_3: fragmented/coalesced records, pipeline, body drain, HEAD/range, backpressure, idle buffers, file freshness, TCP half-close
+PASS: TLS 1.3 KeyUpdate requested/not requested
+== error-pages.py
+PASS: error GET/HEAD, exact lengths, tokens, custom pages, redirects, 204/304
+== config_e2e.py
+zhttpd: the configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-9fkyxm9r/config.toml test is successful
+PASS: native TOML, nginx, Apache, OpenLiteSpeed, Caddy, module gates and compatibility errors
+== auto_reload_e2e.py
+PASS: self automatic reload, debounce, invalid/missing recovery, atomic saves and opt-out
+PASS: nginx automatic reload, debounce, invalid/missing recovery, atomic saves and opt-out
+PASS: nginx direct native file auto reload
+PASS: nginx empty glob, added and deleted include/import
+PASS: apache automatic reload, debounce, invalid/missing recovery, atomic saves and opt-out
+PASS: apache direct native file auto reload
+PASS: apache empty glob, added and deleted include/import
+PASS: litespeed automatic reload, debounce, invalid/missing recovery, atomic saves and opt-out
+PASS: litespeed direct native file auto reload
+PASS: caddy automatic reload, debounce, invalid/missing recovery, atomic saves and opt-out
+PASS: caddy direct native file auto reload
+PASS: caddy empty glob, added and deleted include/import
+== load_balancer_e2e.py
+PASS: aggregate metrics, 307 method/body, one-hop limit, stale peers, backend failure, reload and cleanup
+== logging_e2e.py
+PASS: five logging adapters, JSON/percent escaping, scoped error logs, USR1 reopen, module switch
+== gateway_e2e.py
+PASS: FastCGI records, large upload/stream, invalid upstream, HEAD; real WSGI example and errors
+PASS: WebSocket shared contract: zhttpd
+PASS: WebSocket shared contract: ws-echo-zig
+PASS: WebSocket shared contract: ws-echo-c
+PASS: WebSocket shared contract: ws-echo-cpp
+PASS: Linux regression suite

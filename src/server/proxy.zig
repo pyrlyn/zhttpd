@@ -51,6 +51,7 @@ pub const Upstream = struct {
 };
 
 pub fn release(conn: *Conn) void {
+    if (conn.data == null) return;
     disconnect(conn);
     if (conn.up.request_owned) |bytes| {
         conn.w.gpa.free(bytes);
@@ -58,7 +59,7 @@ pub fn release(conn: *Conn) void {
     }
 }
 fn disconnect(conn: *Conn) void {
-    const up = &conn.up;
+    const up = conn.up;
     if (up.fd >= 0) {
         conn.w.loop.remove(up.fd);
         net.close(up.fd);
@@ -72,7 +73,7 @@ pub fn start(conn: *Conn) void {
     const lc = conn.ctx.conf;
     const p = lc.proxy.?;
     conn.state = .proxy;
-    conn.up = .{};
+    conn.up.* = .{};
     conn.up.ups = p.upstream;
     if (p.dyn_host) |dh| {
         if (!resolveDynamic(conn, dh)) return;
@@ -92,7 +93,7 @@ pub fn start(conn: *Conn) void {
 
 /// `proxy_pass http://$var`: the value must name an upstream block or be IP[:port].
 fn resolveDynamic(conn: *Conn, dh: @import("expression").Expr) bool {
-    const hostport = vars.eval(conn.arena(), &conn.ctx, dh) catch "";
+    const hostport = vars.eval(conn.arena(), conn.ctx, dh) catch "";
     for (conn.w.cfg.upstreams) |u| if (std.mem.eql(u8, u.name, hostport)) {
         conn.up.ups = u;
         conn.ctx.proxy_host = hostport;
@@ -116,7 +117,7 @@ fn resolveDynamic(conn: *Conn, dh: @import("expression").Expr) bool {
 }
 
 fn connectNext(conn: *Conn) void {
-    const up = &conn.up;
+    const up = conn.up;
     const ups = up.ups.?;
     while (up.tries < ups.addrs.len) {
         const a = ups.addrs[(up.first_addr + up.tries) % ups.addrs.len];
@@ -169,7 +170,7 @@ pub fn onUpstreamEvent(conn: *Conn, writable: bool) void {
 }
 
 pub fn onTimeout(conn: *Conn) void {
-    const up = &conn.up;
+    const up = conn.up;
     conn.w.errlog(.err, "upstream timed out (60: Operation timed out) while {s}", .{switch (up.phase) {
         .connecting => "connecting to upstream",
         .sending => "sending request to upstream",
@@ -187,7 +188,7 @@ pub fn onTimeout(conn: *Conn) void {
 
 /// Advance the proxy. Returns true when the connection changed state (caller loops).
 pub fn drive(conn: *Conn) bool {
-    const up = &conn.up;
+    const up = conn.up;
     const lc = conn.ctx.conf;
     while (true) switch (up.phase) {
         .idle => return false,
@@ -320,7 +321,7 @@ fn readUpstream(conn: *Conn, buf: []u8) net.Io {
 
 /// Queue `data` (in wbuf) for the client according to the framing.
 fn forward(conn: *Conn, data_in: []u8) void {
-    const up = &conn.up;
+    const up = conn.up;
     var data = data_in;
     switch (up.framing) {
         .none => {
@@ -358,7 +359,7 @@ fn forward(conn: *Conn, data_in: []u8) void {
 }
 
 fn finishStream(conn: *Conn) void {
-    const up = &conn.up;
+    const up = conn.up;
     up.finished = true;
     if (up.rechunk) conn.setOutput(&.{"0\r\n\r\n"}) else conn.setOutput(&.{});
 }
@@ -366,7 +367,7 @@ fn finishStream(conn: *Conn) void {
 const HeadResult = enum { incomplete, bad, ok, intercepted };
 
 fn parseResponseHead(conn: *Conn) HeadResult {
-    const up = &conn.up;
+    const up = conn.up;
     const buf = conn.wbuf[0..up.rlen];
     const end = blk: {
         if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i| break :blk i + 4;
@@ -491,7 +492,7 @@ fn hidden(name: []const u8, lc: *const config.LocConf) bool {
 
 /// Request line + headers for the upstream.
 fn buildRequest(conn: *Conn, p: config.Proxy) ![]const u8 {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const lc = ctx.conf;
     const a = conn.arena();
     var out: std.ArrayList(u8) = .empty;

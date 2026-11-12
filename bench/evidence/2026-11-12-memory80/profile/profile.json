@@ -1,0 +1,836 @@
+[
+  {
+    "binary": "optimized",
+    "stage": "idle",
+    "rss": 10552,
+    "pss": 6435,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 7264,
+        "pss": 5043,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 4784,
+            "pss": 4282
+          },
+          "[anonymous]": {
+            "rss": 304,
+            "pss": 164
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 418
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 87
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 76,
+            "pss": 70
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 3288,
+        "pss": 1392,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 1000,
+            "pss": 498
+          },
+          "[anonymous]": {
+            "rss": 304,
+            "pss": 164
+          },
+          "[heap]": {
+            "rss": 784,
+            "pss": 450
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 980,
+            "pss": 74
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 200,
+            "pss": 194
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "optimized",
+    "stage": "http64",
+    "rss": 10980,
+    "pss": 6563,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 7264,
+        "pss": 4893,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 4784,
+            "pss": 4122
+          },
+          "[anonymous]": {
+            "rss": 304,
+            "pss": 166
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 426
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 87
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 76,
+            "pss": 70
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 3716,
+        "pss": 1670,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 1384,
+            "pss": 722
+          },
+          "[anonymous]": {
+            "rss": 324,
+            "pss": 186
+          },
+          "[heap]": {
+            "rss": 796,
+            "pss": 470
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 980,
+            "pss": 74
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 212,
+            "pss": 206
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "optimized",
+    "stage": "tls64",
+    "rss": 17272,
+    "pss": 10442,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 7264,
+        "pss": 3716,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 4784,
+            "pss": 2874
+          },
+          "[anonymous]": {
+            "rss": 304,
+            "pss": 166
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 498
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 86
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 76,
+            "pss": 70
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 10008,
+        "pss": 6726,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/gc/bin/zhttpd": {
+            "rss": 4296,
+            "pss": 2386
+          },
+          "[anonymous]": {
+            "rss": 324,
+            "pss": 186
+          },
+          "[heap]": {
+            "rss": 4112,
+            "pss": 3858
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1044,
+            "pss": 78
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 212,
+            "pss": 206
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "nginx",
+    "stage": "idle",
+    "rss": 18428,
+    "pss": 14427,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 8552,
+        "pss": 6241,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 5828,
+            "pss": 5286
+          },
+          "[anonymous]": {
+            "rss": 68,
+            "pss": 52
+          },
+          "[heap]": {
+            "rss": 848,
+            "pss": 456
+          },
+          "/dev/zero (deleted)": {
+            "rss": 312,
+            "pss": 312
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1236,
+            "pss": 92
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 72,
+            "pss": 11
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 12,
+            "pss": 10
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 9876,
+        "pss": 8186,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 1092,
+            "pss": 550
+          },
+          "[anonymous]": {
+            "rss": 7108,
+            "pss": 7092
+          },
+          "[heap]": {
+            "rss": 848,
+            "pss": 456
+          },
+          "/dev/zero (deleted)": {
+            "rss": 0,
+            "pss": 0
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 724,
+            "pss": 58
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 8,
+            "pss": 4
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 80,
+            "pss": 16
+          },
+          "/[aio] (deleted)": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 12,
+            "pss": 10
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "nginx",
+    "stage": "http64",
+    "rss": 18944,
+    "pss": 14502,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 8552,
+        "pss": 6050,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 5828,
+            "pss": 5066
+          },
+          "[anonymous]": {
+            "rss": 68,
+            "pss": 54
+          },
+          "[heap]": {
+            "rss": 848,
+            "pss": 486
+          },
+          "/dev/zero (deleted)": {
+            "rss": 312,
+            "pss": 310
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1236,
+            "pss": 91
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 72,
+            "pss": 11
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 12,
+            "pss": 10
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 10392,
+        "pss": 8452,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 1540,
+            "pss": 778
+          },
+          "[anonymous]": {
+            "rss": 7108,
+            "pss": 7094
+          },
+          "[heap]": {
+            "rss": 848,
+            "pss": 486
+          },
+          "/dev/zero (deleted)": {
+            "rss": 4,
+            "pss": 2
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 788,
+            "pss": 62
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 8,
+            "pss": 4
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 80,
+            "pss": 16
+          },
+          "/[aio] (deleted)": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 12,
+            "pss": 10
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "nginx",
+    "stage": "tls64",
+    "rss": 25844,
+    "pss": 18430,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 8552,
+        "pss": 4624,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 5828,
+            "pss": 3626
+          },
+          "[anonymous]": {
+            "rss": 68,
+            "pss": 54
+          },
+          "[heap]": {
+            "rss": 848,
+            "pss": 556
+          },
+          "/dev/zero (deleted)": {
+            "rss": 312,
+            "pss": 252
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1236,
+            "pss": 91
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 72,
+            "pss": 11
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 12,
+            "pss": 12
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 17292,
+        "pss": 13806,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-perf-h2-h3/nginx/sbin/nginx": {
+            "rss": 4932,
+            "pss": 2730
+          },
+          "[anonymous]": {
+            "rss": 7108,
+            "pss": 7094
+          },
+          "[heap]": {
+            "rss": 4108,
+            "pss": 3816
+          },
+          "/dev/zero (deleted)": {
+            "rss": 120,
+            "pss": 60
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 916,
+            "pss": 70
+          },
+          "/usr/lib/aarch64-linux-gnu/libcrypt.so.1.1.0": {
+            "rss": 8,
+            "pss": 4
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 80,
+            "pss": 16
+          },
+          "/[aio] (deleted)": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 16,
+            "pss": 16
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "release-small",
+    "stage": "idle",
+    "rss": 10020,
+    "pss": 5899,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 6792,
+        "pss": 4569,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 4324,
+            "pss": 3824
+          },
+          "[anonymous]": {
+            "rss": 300,
+            "pss": 162
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 418
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 87
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 68,
+            "pss": 56
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 3228,
+        "pss": 1330,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 996,
+            "pss": 496
+          },
+          "[anonymous]": {
+            "rss": 300,
+            "pss": 162
+          },
+          "[heap]": {
+            "rss": 784,
+            "pss": 450
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 980,
+            "pss": 74
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 148,
+            "pss": 136
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "release-small",
+    "stage": "http64",
+    "rss": 10256,
+    "pss": 5963,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 6792,
+        "pss": 4483,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 4324,
+            "pss": 3728
+          },
+          "[anonymous]": {
+            "rss": 300,
+            "pss": 164
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 426
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 87
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 68,
+            "pss": 56
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 3464,
+        "pss": 1480,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 1188,
+            "pss": 592
+          },
+          "[anonymous]": {
+            "rss": 320,
+            "pss": 184
+          },
+          "[heap]": {
+            "rss": 796,
+            "pss": 470
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 980,
+            "pss": 74
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 160,
+            "pss": 148
+          }
+        }
+      }
+    ]
+  },
+  {
+    "binary": "release-small",
+    "stage": "tls64",
+    "rss": 16588,
+    "pss": 9754,
+    "processes": [
+      {
+        "role": "master",
+        "rss": 6792,
+        "pss": 3242,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 4324,
+            "pss": 2416
+          },
+          "[anonymous]": {
+            "rss": 300,
+            "pss": 164
+          },
+          "[heap]": {
+            "rss": 752,
+            "pss": 498
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1172,
+            "pss": 86
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 172,
+            "pss": 22
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 68,
+            "pss": 56
+          }
+        }
+      },
+      {
+        "role": "worker",
+        "rss": 9796,
+        "pss": 6512,
+        "mappings": {
+          "/home/listepo.guest/zhttpd-memory-nginx-10/candidate/.run/small80/bin/zhttpd": {
+            "rss": 4132,
+            "pss": 2224
+          },
+          "[anonymous]": {
+            "rss": 320,
+            "pss": 184
+          },
+          "[heap]": {
+            "rss": 4116,
+            "pss": 3862
+          },
+          "/usr/lib/aarch64-linux-gnu/libc.so.6": {
+            "rss": 1044,
+            "pss": 78
+          },
+          "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": {
+            "rss": 16,
+            "pss": 12
+          },
+          "[vvar]": {
+            "rss": 0,
+            "pss": 0
+          },
+          "[vdso]": {
+            "rss": 4,
+            "pss": 0
+          },
+          "[stack]": {
+            "rss": 164,
+            "pss": 152
+          }
+        }
+      }
+    ]
+  }
+]

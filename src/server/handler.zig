@@ -25,7 +25,7 @@ fn eql(a: []const u8, b: []const u8) bool {
 // ------------------------------------------------------------------ entry points
 
 pub fn process(conn: *Conn) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     if (eql(ctx.uri, "*")) return finalize(conn, 400);
     if (conn.w.cfg.load_balancer.enabled) {
         const lb = @import("load_balancer");
@@ -53,7 +53,7 @@ pub fn process(conn: *Conn) void {
 const StmtResult = enum { cont, brk, last, done };
 
 fn findAndRun(conn: *Conn) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     while (true) {
         ctx.redirects += 1;
         if (ctx.redirects > max_redirects) {
@@ -76,7 +76,7 @@ fn findAndRun(conn: *Conn) void {
 }
 
 fn setLocation(conn: *Conn, loc: ?*config.Location, caps: Regex.Captures, subject: []const u8) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     ctx.loc = loc;
     ctx.conf = if (loc) |l| l.conf else ctx.srv.conf;
     if (loc) |l| if (l.re) |re| {
@@ -100,7 +100,7 @@ fn checkBodySize(conn: *Conn) bool {
 
 /// Jump to a named location (`@name`) from try_files or error_page.
 fn runNamed(conn: *Conn, name: []const u8) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const loc = router.findNamed(ctx.srv, name) orelse {
         conn.w.errlog(.err, "could not find named location \"{s}\"", .{name});
         return finalize(conn, 500);
@@ -119,7 +119,7 @@ fn runNamed(conn: *Conn, name: []const u8) void {
 
 /// Internal redirect to `target` (may carry `?args`).
 fn internalRedirect(conn: *Conn, target: []const u8) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     if (target.len > 0 and target[0] == '@') return runNamed(conn, target);
     if (std.mem.indexOfScalar(u8, target, '?')) |q| {
         ctx.uri = target[0..q];
@@ -134,7 +134,7 @@ fn internalRedirect(conn: *Conn, target: []const u8) void {
 // ------------------------------------------------------------------ rewrite module
 
 fn runStmts(conn: *Conn, stmts: []const config.Stmt) !StmtResult {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const a = conn.arena();
     for (stmts) |*st| switch (st.*) {
         .ret => |r| {
@@ -188,7 +188,7 @@ fn runStmts(conn: *Conn, stmts: []const config.Stmt) !StmtResult {
 }
 
 fn evalCond(conn: *Conn, cond: *const config.Cond) !bool {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const a = conn.arena();
     const v = try vars.eval(a, ctx, cond.a);
     const res: bool = switch (cond.kind) {
@@ -242,7 +242,7 @@ fn doReturn(conn: *Conn, code: u16, text: ?[]const u8) void {
 // ------------------------------------------------------------------ content phase
 
 fn content(conn: *Conn) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const lc = ctx.conf;
     if (lc.internal and !ctx.internal) return finalize(conn, 404);
     if (!accessAllowed(conn, lc.access)) return finalize(conn, 403);
@@ -284,7 +284,7 @@ fn accessAllowed(conn: *Conn, rules: []const config.AccessRule) bool {
 
 /// Filesystem path for `uri` under `root` or `alias` (no trailing NUL).
 fn mapUri(conn: *Conn, uri: []const u8) ![:0]u8 {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const a = conn.arena();
     const lc = ctx.conf;
     if (lc.alias) |al| {
@@ -305,7 +305,7 @@ fn mapUri(conn: *Conn, uri: []const u8) ![:0]u8 {
 }
 
 fn tryFiles(conn: *Conn, tf: []const expr.Expr) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const a = conn.arena();
     for (tf[0 .. tf.len - 1]) |e| {
         const v = vars.eval(a, ctx, e) catch return finalize(conn, 500);
@@ -330,7 +330,7 @@ fn tryFiles(conn: *Conn, tf: []const expr.Expr) void {
 }
 
 fn staticFile(conn: *Conn) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const a = conn.arena();
     const lc = ctx.conf;
     const method = conn.req.method;
@@ -389,7 +389,7 @@ fn staticFile(conn: *Conn) void {
 }
 
 fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const lc = ctx.conf;
     var status: u16 = 200;
     if (ctx.status != 0 and ctx.error_page_done) status = ctx.status; // error_page target keeps the error status
@@ -544,7 +544,7 @@ pub fn finalize(conn: *Conn, status: u16) void {
 }
 
 fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     conn.closeFile();
     conn.after_body = .respond;
     if (status == 444) {
@@ -580,7 +580,7 @@ fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
 
 /// Redirect with nginx's absolute_redirect / port_in_redirect handling.
 pub fn sendRedirect(conn: *Conn, code: u16, target: []const u8) void {
-    const ctx = &conn.ctx;
+    const ctx = conn.ctx;
     const lc = ctx.conf;
     var loc = target;
     if (target.len > 0 and target[0] == '/' and lc.absolute_redirect) {
@@ -635,10 +635,10 @@ pub fn decideKeepAlive(conn: *Conn) bool {
 pub fn writeHead(conn: *Conn, status: u16, o: HeadOpts) void {
     conn.keep_alive = decideKeepAlive(conn);
     conn.ctx.status = status;
-    var w: std.Io.Writer = .fixed(&conn.wbuf);
+    var w: std.Io.Writer = .fixed(conn.wbuf);
     writeHeadTo(conn, &w, status, o) catch {
         // headers do not fit: fall back to a bare 500
-        w = .fixed(&conn.wbuf);
+        w = .fixed(conn.wbuf);
         conn.keep_alive = false;
         conn.ctx.status = 500;
         w.print("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{}) catch {};
@@ -707,7 +707,7 @@ fn writeAddHeaders(conn: *Conn, w: *std.Io.Writer, status: u16) !void {
     };
     for (conn.ctx.conf.add_headers) |h| {
         if (!ok_status and !h.always) continue;
-        const v = vars.eval(conn.arena(), &conn.ctx, h.value) catch continue;
+        const v = vars.eval(conn.arena(), conn.ctx, h.value) catch continue;
         if (v.len == 0) continue;
         try w.print("{s}: {s}\r\n", .{ h.name, v });
     }
