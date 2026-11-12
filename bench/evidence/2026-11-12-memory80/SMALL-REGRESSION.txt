@@ -1,0 +1,4 @@
+zhttpd: the configuration file /tmp/zhttpd-protocols-bo4dcdkj/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-bo4dcdkj/nginx.conf test is successful
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+PASS: pooled request storage, partial/pipelined headers, original limits, body drain, backpressure

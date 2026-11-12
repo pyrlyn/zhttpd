@@ -1,0 +1,5 @@
+zhttpd: [warn] "accept_mutex" directive is not implemented by zhttpd, ignored in /home/listepo.guest/zhttpd-memory-nginx-10/memory80-profile/nginx.conf:13
+zhttpd: [warn] "tcp_nopush" directive is not implemented by zhttpd, ignored: headers and first body bytes are already coalesced in /home/listepo.guest/zhttpd-memory-nginx-10/memory80-profile/nginx.conf:24
+zhttpd: listening on 0.0.0.0:49890
+zhttpd: listening on 0.0.0.0:49891 (ssl)
+zhttpd: master 162586 started 1 worker(s), event method epoll

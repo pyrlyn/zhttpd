@@ -3,8 +3,9 @@
 //! Caches, per path: the open descriptor, file metadata, and (with
 //! open_file_cache_errors on) open() errors. Entries are revalidated with
 //! stat() after open_file_cache_valid and dropped after open_file_cache's
-//! inactive= time without use. The table is a fixed 4-way set-associative
-//! array allocated once at worker start, so lookups never allocate.
+//! inactive= time without use. The table is fixed-capacity and 4-way
+//! set-associative. Four-entry buckets are allocated on first insertion, so a large
+//! configured limit does not commit memory for files that are never opened.
 //! Paths longer than `path_cap` are not cached.
 const std = @import("std");
 const c = std.c;
@@ -42,7 +43,8 @@ pub const Result = union(enum) {
 };
 
 pub const Cache = struct {
-    sets: []Entry = &.{},
+    sets: []?*[ways]Entry = &.{},
+    allocator: std.mem.Allocator = undefined,
     nsets: usize = 0,
     hits: u64 = 0,
     misses: u64 = 0,
@@ -50,13 +52,18 @@ pub const Cache = struct {
     pub fn init(gpa: std.mem.Allocator, max: u32) !Cache {
         if (max == 0) return .{};
         const nsets = std.math.ceilPowerOfTwo(usize, @max(1, (max + ways - 1) / ways)) catch return error.OutOfMemory;
-        const sets = try gpa.alloc(Entry, nsets * ways);
-        for (sets) |*e| e.* = .{};
-        return .{ .sets = sets, .nsets = nsets };
+        const sets = try gpa.alloc(?*[ways]Entry, nsets);
+        @memset(sets, null);
+        return .{ .sets = sets, .nsets = nsets, .allocator = gpa };
     }
 
     pub fn deinit(cache: *Cache, gpa: std.mem.Allocator) void {
-        for (cache.sets) |*e| if (e.used) e.drop();
+        for (cache.sets) |bucket| {
+            if (bucket) |entries| {
+                for (entries) |*e| if (e.used) e.drop();
+                gpa.destroy(entries);
+            }
+        }
         if (cache.sets.len > 0) gpa.free(cache.sets);
         cache.* = .{};
     }
@@ -65,7 +72,13 @@ pub const Cache = struct {
     pub fn open(cache: *Cache, ofc: config.OpenFileCache, path: [:0]const u8, now: u64) Result {
         if (ofc.max == 0 or cache.nsets == 0 or path.len > path_cap) return openUncached(path);
         const h = std.hash.Wyhash.hash(0x2f, path);
-        const set = cache.sets[(h & (cache.nsets - 1)) * ways ..][0..ways];
+        const slot = &cache.sets[h & (cache.nsets - 1)];
+        const set = slot.* orelse blk: {
+            const entries = cache.allocator.create([ways]Entry) catch return openUncached(path);
+            entries.* = @splat(.{});
+            slot.* = entries;
+            break :blk entries;
+        };
         var victim: *Entry = &set[0];
         for (set) |*e| {
             if (e.used and e.hash == h and e.path_len == path.len and std.mem.eql(u8, e.path[0..e.path_len], path)) {
@@ -130,7 +143,7 @@ pub const Cache = struct {
     pub fn stat(cache: *Cache, ofc: config.OpenFileCache, path: [:0]const u8, now: u64) ?os.Meta {
         if (ofc.max == 0 or cache.nsets == 0 or path.len > path_cap) return os.statZ(path);
         const h = std.hash.Wyhash.hash(0x2f, path);
-        const set = cache.sets[(h & (cache.nsets - 1)) * ways ..][0..ways];
+        const set = cache.sets[h & (cache.nsets - 1)] orelse return os.statZ(path);
         for (set) |*e| {
             if (e.used and e.hash == h and e.path_len == path.len and std.mem.eql(u8, e.path[0..e.path_len], path)) {
                 if (now -| e.last_ms > ofc.inactive_ms) break;
@@ -206,4 +219,35 @@ test "file cache keeps the descriptor and revalidates" {
     try t.expect(cache.stat(ofc, "build.zig", 5000).?.kind == .file); // revalidated, unchanged
     const r3 = cache.open(ofc, "build.zig", 5001);
     try t.expectEqual(r1.file.fd, r3.file.fd);
+}
+
+test "file cache allocates buckets only for opened paths" {
+    const t = std.testing;
+    var cache = try Cache.init(t.allocator, 10000);
+    defer cache.deinit(t.allocator);
+    for (cache.sets) |bucket| try t.expect(bucket == null);
+    const ofc: config.OpenFileCache = .{ .max = 10000 };
+    try t.expect(cache.stat(ofc, "build.zig", 0) != null);
+    for (cache.sets) |bucket| try t.expect(bucket == null);
+    const result = cache.open(ofc, "build.zig", 0);
+    try t.expect(result == .file and !result.file.owned);
+    var allocated: usize = 0;
+    for (cache.sets) |bucket| if (bucket != null) {
+        allocated += 1;
+    };
+    try t.expectEqual(@as(usize, 1), allocated);
+    try t.expectEqual(result.file.fd, cache.open(ofc, "build.zig", 1).file.fd);
+}
+
+test "file cache falls back to an owned descriptor when a bucket cannot be allocated" {
+    const t = std.testing;
+    var cache = try Cache.init(t.allocator, 4);
+    defer cache.deinit(t.allocator);
+    var storage: [0]u8 = .{};
+    var failing: std.heap.FixedBufferAllocator = .init(&storage);
+    cache.allocator = failing.allocator();
+    const result = cache.open(.{ .max = 4 }, "build.zig", 0);
+    try t.expect(result == .file and result.file.owned);
+    net.close(result.file.fd);
+    try t.expect(cache.sets[0] == null);
 }

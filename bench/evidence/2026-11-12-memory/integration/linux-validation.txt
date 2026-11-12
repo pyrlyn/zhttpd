@@ -1,0 +1,105 @@
+PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback and receive budgets
+Build Summary: 32/32 steps succeeded; 61/61 tests passed
+test success
++- run exe quic-io-test success 1ms
+|  +- compile exe quic-io-test debug native cached 10ms MaxRSS:36M
++- run test 7 pass (7 total) 24ms MaxRSS:8M
+|  +- compile test debug native cached 11ms MaxRSS:39M
+|     +- options cached
++- run test 3 pass (3 total) 5ms MaxRSS:5M
+|  +- compile test debug native cached 10ms MaxRSS:36M
++- run test 31 pass (31 total) 66ms MaxRSS:22M
+|  +- compile test debug native cached 11ms MaxRSS:38M
+|     +- options (reused)
++- run test 10 pass (10 total) 24ms MaxRSS:7M
+|  +- compile test debug native cached 10ms MaxRSS:33M
+|     +- options (reused)
++- run test 1 pass (1 total) 17ms MaxRSS:6M
+|  +- compile test debug native cached 10ms MaxRSS:34M
+|     +- options (reused)
++- run test 1 pass (1 total) 17ms MaxRSS:7M
+|  +- compile test debug native cached 11ms MaxRSS:35M
+|     +- options (reused)
++- run test success 17ms MaxRSS:6M
+|  +- compile test debug native cached 11ms MaxRSS:34M
+|     +- options (reused)
++- run test success 16ms MaxRSS:6M
+|  +- compile test debug native cached 11ms MaxRSS:35M
+|     +- options (reused)
++- run test 2 pass (2 total) 2ms MaxRSS:3M
+|  +- compile test debug native cached 4ms MaxRSS:36M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+|  +- compile test debug native cached 3ms MaxRSS:36M
++- run test success 2ms MaxRSS:3M
+|  +- compile test debug native cached 4ms MaxRSS:38M
++- run test 3 pass (3 total) 5ms MaxRSS:5M
+|  +- compile test debug native cached 11ms MaxRSS:37M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+|  +- compile test debug native cached 4ms MaxRSS:38M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+   +- compile test debug native cached 4ms MaxRSS:38M
+
+PASS: memory budget, throughput/p99 regression, errors, invalid or missing evidence
+PASS: throughput, p99 vs nginx/baseline, errors, missing repetitions/scenarios, sample path confinement
+zhttpd: the configuration file /tmp/zhttpd-protocols-qxvtr4nr/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-qxvtr4nr/nginx.conf test is successful
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+PASS: pooled request storage, partial/pipelined headers, original limits, body drain, backpressure
+PASS: error GET/HEAD, exact lengths, tokens, custom pages, redirects, 204/304
+zhttpd: the configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml test is successful
+zhttpd: the configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml syntax is ok
+zhttpd: configuration file /tmp/zhttpd-config-m1vaz5e8/config.toml test is successful
+PASS: native TOML, nginx, Apache, OpenLiteSpeed, Caddy, module gates and compatibility errors
+PASS: aggregate metrics, 307 method/body, one-hop limit, stale peers, backend failure, reload and cleanup
+PASS: five logging adapters, JSON/percent escaping, scoped error logs, USR1 reopen, module switch
+PASS: FastCGI records, large upload/stream, invalid upstream, HEAD; real WSGI example and errors
+PASS: WebSocket shared contract: zhttpd
+PASS: WebSocket shared contract: ws-echo-zig
+PASS: WebSocket shared contract: ws-echo-c
+PASS: WebSocket shared contract: ws-echo-cpp
+Build Summary: 21/21 steps succeeded
+test-e2e success
++- run python3 success 236ms
++- run python3 success 406ms
++- run python3 success 342ms
+   +- compile exe zhttpd safe native cached 10ms MaxRSS:36M
+   |  +- options cached
+   +- compile exe ws-echo-zig safe native success 12s MaxRSS:621M
+   |  +- options (reused)
+   +- compile exe ws-echo-c safe native success 78ms MaxRSS:98M
+   |  +- WriteFile zhttpd_websocket.h cached
+   |  +- compile lib zhttpd_websocket safe native success 12s MaxRSS:597M
+   |  |  +- options (reused)
+   |  +- compile lib zhttpd_websocket safe native (+1 more reused dependencies)
+   +- compile exe ws-echo-cpp safe native success 578ms MaxRSS:126M
+   |  +- WriteFile zhttpd_websocket.h (reused)
+   |  +- compile lib zhttpd_websocket safe native (+1 more reused dependencies)
+   |  +- compile lib zhttpd_websocket safe native (+1 more reused dependencies)
+   +- run python3 success 640ms
+      +- compile exe zhttpd safe native (+1 more reused dependencies)
+      +- run python3 success 418ms
+         +- compile exe zhttpd safe native (+1 more reused dependencies)
+         +- run python3 success 5s
+            +- compile exe zhttpd safe native (+1 more reused dependencies)
+            +- run python3 success 183ms
+               +- compile exe zhttpd safe native (+1 more reused dependencies)
+               +- run python3 success 33ms
+                  +- compile exe zhttpd safe native (+1 more reused dependencies)
+                  +- run python3 success 110ms
+                     +- compile exe zhttpd safe native (+1 more reused dependencies)
+                     +- run python3 success 7s
+                        +- compile exe zhttpd safe native (+1 more reused dependencies)
+install success
++- install zhttpd_websocket success
+|  +- compile lib zhttpd_websocket safe native (+1 more reused dependencies)
++- install zhttpd success
+   +- compile exe zhttpd safe native (+1 more reused dependencies)
+
+PASS: TLSv1_2: fragmented/coalesced records, pipeline, body drain, HEAD/range, backpressure, idle buffers, file freshness, TCP half-close
+PASS: TLSv1_3: fragmented/coalesced records, pipeline, body drain, HEAD/range, backpressure, idle buffers, file freshness, TCP half-close
+PASS: TLS 1.3 KeyUpdate requested/not requested

@@ -1,0 +1,3 @@
+http-small-ka-c64|http|1|64|/static/small.html
+https-small-ka-c64|https|1|64|/static/small.html
+https-large-ka-c64|https|1|64|/static/large.bin

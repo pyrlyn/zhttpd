@@ -1,6 +1,4 @@
-//! TLS via OpenSSL (libssl/libcrypto 3.x), driven non-blockingly from the event loop.
-//! Built only with `-Dtls=true`; zhttpd links the same OpenSSL 3.5 LTS that the
-//! benchmark's nginx is built against (deps/openssl-install, sha256-verified tarball).
+//! Nonblocking TLS. OpenSSL 3.x is the default; AWS-LC is an opt-in build backend.
 const std = @import("std");
 const build_options = @import("build_options");
 const config = @import("../http/config.zig");
@@ -10,13 +8,26 @@ const PasswordFile = @import("password_file.zig").PasswordFile;
 const builtin = @import("builtin");
 
 pub const enabled = build_options.tls;
+const aws_lc = build_options.aws_lc;
+pub const backend_name = if (!enabled) "disabled" else if (aws_lc) "AWS-LC" else "OpenSSL";
 pub const track_read_ready = builtin.os.tag == .linux;
 pub const ReadState = struct { ready: bool = true, eof: bool = false, want_write: bool = false };
 
 pub const SSL_CTX = opaque {};
 pub const SSL = opaque {};
 const SSL_METHOD = opaque {};
-const BIO = opaque {};
+pub const BIO = opaque {};
+const BIO_METHOD = opaque {};
+extern "c" fn BIO_f_buffer() *const BIO_METHOD;
+extern "c" fn BIO_new(method: *const BIO_METHOD) ?*BIO;
+extern "c" fn BIO_free(bio: *BIO) c_int;
+extern "c" fn BIO_up_ref(bio: *BIO) c_int;
+extern "c" fn BIO_push(bio: *BIO, next: *BIO) ?*BIO;
+extern "c" fn BIO_pop(bio: *BIO) ?*BIO;
+extern "c" fn BIO_ctrl(bio: *BIO, cmd: c_int, arg: c_long, ptr: ?*anyopaque) c_long;
+extern "c" fn BIO_test_flags(bio: *const BIO, flags: c_int) c_int;
+extern "c" fn SSL_get_wbio(ssl: *const SSL) ?*BIO;
+extern "c" fn SSL_set0_wbio(ssl: *SSL, bio: *BIO) void;
 const BioCallback = *const fn (*BIO, c_int, ?[*]const u8, usize, c_int, c_long, c_int, ?*usize) callconv(.c) c_long;
 extern "c" fn SSL_get_rbio(ssl: *const SSL) ?*BIO;
 extern "c" fn SSL_has_pending(ssl: *const SSL) c_int;
@@ -35,16 +46,11 @@ extern "c" fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *SSL_CTX, userdata: ?*
 extern "c" fn SSL_CTX_use_certificate_chain_file(ctx: *SSL_CTX, file: [*:0]const u8) c_int;
 extern "c" fn SSL_CTX_use_PrivateKey_file(ctx: *SSL_CTX, file: [*:0]const u8, typ: c_int) c_int;
 extern "c" fn SSL_CTX_check_private_key(ctx: *const SSL_CTX) c_int;
-extern "c" fn SSL_CTX_set_options(ctx: *SSL_CTX, op: u64) u64;
-extern "c" fn SSL_CTX_ctrl(ctx: *SSL_CTX, cmd: c_int, larg: c_long, parg: ?*anyopaque) c_long;
-extern "c" fn SSL_CTX_callback_ctrl(ctx: *SSL_CTX, cmd: c_int, cb: ?*const fn () callconv(.c) void) c_long;
 extern "c" fn SSL_CTX_set_cipher_list(ctx: *SSL_CTX, s: [*:0]const u8) c_int;
 extern "c" fn SSL_CTX_set_ciphersuites(ctx: *SSL_CTX, s: [*:0]const u8) c_int;
-extern "c" fn SSL_CTX_set_timeout(ctx: *SSL_CTX, t: c_long) c_long;
 extern "c" fn SSL_CTX_set_session_id_context(ctx: *SSL_CTX, sid: [*]const u8, len: c_uint) c_int;
 extern "c" fn SSL_new(ctx: *SSL_CTX) ?*SSL;
 extern "c" fn SSL_free(ssl: *SSL) void;
-extern "c" fn SSL_set_fd(ssl: *SSL, fd: c_int) c_int;
 extern "c" fn SSL_accept(ssl: *SSL) c_int;
 extern "c" fn SSL_read(ssl: *SSL, buf: [*]u8, num: c_int) c_int;
 extern "c" fn SSL_write(ssl: *SSL, buf: [*]const u8, num: c_int) c_int;
@@ -61,9 +67,41 @@ extern "c" fn SSL_get_ex_data(ssl: *const SSL, idx: c_int) ?*anyopaque;
 extern "c" fn SSL_set_ex_data(ssl: *SSL, idx: c_int, data: ?*anyopaque) c_int;
 extern "c" fn SSL_get_version(ssl: *const SSL) [*:0]const u8;
 extern "c" fn SSL_session_reused(ssl: *const SSL) c_int;
-extern "c" fn ERR_get_error() c_ulong;
-extern "c" fn ERR_error_string_n(e: c_ulong, buf: [*]u8, len: usize) void;
 extern "c" fn ERR_clear_error() void;
+
+// Backend-specific ABI and legacy-control adaptation.
+const OpenSsl = struct {
+    extern "c" fn SSL_set_fd(ssl: *SSL, fd: c_int) c_int;
+    extern "c" fn SSL_CTX_set_options(ctx: *SSL_CTX, op: u64) u64;
+    extern "c" fn SSL_CTX_ctrl(ctx: *SSL_CTX, cmd: c_int, larg: c_long, parg: ?*anyopaque) c_long;
+    extern "c" fn SSL_CTX_callback_ctrl(ctx: *SSL_CTX, cmd: c_int, cb: ?*const fn () callconv(.c) void) c_long;
+    extern "c" fn SSL_CTX_set_timeout(ctx: *SSL_CTX, t: c_long) c_long;
+    extern "c" fn ERR_get_error() c_ulong;
+    extern "c" fn ERR_error_string_n(e: c_ulong, buf: [*]u8, len: usize) void;
+};
+const AwsLc = struct {
+    extern "c" fn zhttpd_aws_prepare_tickets(ctx: *SSL_CTX) c_int;
+    extern "c" fn zhttpd_aws_set_fd(ssl: *SSL, fd: c_int) c_int;
+    extern "c" fn zhttpd_aws_ctx_options(ctx: *SSL_CTX, op: u64) u64;
+    extern "c" fn zhttpd_aws_ctx_ctrl(ctx: *SSL_CTX, cmd: c_int, larg: c_long, parg: ?*anyopaque) c_long;
+    extern "c" fn zhttpd_aws_ctx_callback_ctrl(ctx: *SSL_CTX, cmd: c_int, cb: ?*const fn () callconv(.c) void) c_long;
+    extern "c" fn zhttpd_aws_ctx_timeout(ctx: *SSL_CTX, t: c_long) c_long;
+    extern "c" fn zhttpd_aws_error() c_ulong;
+    extern "c" fn zhttpd_aws_error_string(e: c_ulong, buf: [*]u8, len: usize) void;
+};
+const SSL_CTX_ctrl = if (aws_lc) AwsLc.zhttpd_aws_ctx_ctrl else OpenSsl.SSL_CTX_ctrl;
+const SSL_set_fd = if (aws_lc) AwsLc.zhttpd_aws_set_fd else OpenSsl.SSL_set_fd;
+const SSL_CTX_callback_ctrl = if (aws_lc) AwsLc.zhttpd_aws_ctx_callback_ctrl else OpenSsl.SSL_CTX_callback_ctrl;
+const SSL_CTX_set_options = if (aws_lc) AwsLc.zhttpd_aws_ctx_options else OpenSsl.SSL_CTX_set_options;
+const SSL_CTX_set_timeout = if (aws_lc) AwsLc.zhttpd_aws_ctx_timeout else OpenSsl.SSL_CTX_set_timeout;
+const ERR_get_error = if (aws_lc) AwsLc.zhttpd_aws_error else OpenSsl.ERR_get_error;
+const ERR_error_string_n = if (aws_lc) AwsLc.zhttpd_aws_error_string else OpenSsl.ERR_error_string_n;
+extern "c" fn zhttpd_aws_buffer_new(capacity: usize) ?*BIO;
+extern "c" fn zhttpd_aws_buffer_cache_clear() void;
+
+pub fn clearWriteBufferCache() void {
+    if (enabled and aws_lc) zhttpd_aws_buffer_cache_clear();
+}
 
 extern "c" fn SSL_CTX_set_alpn_select_cb(ctx: *SSL_CTX, cb: *const fn (*SSL, *[*]const u8, *u8, [*]const u8, c_uint, ?*anyopaque) callconv(.c) c_int, arg: ?*anyopaque) void;
 extern "c" fn SSL_get0_alpn_selected(ssl: *const SSL, data: *[*]const u8, len: *c_uint) void;
@@ -117,6 +155,7 @@ const SSL_CTRL_SET_MIN_PROTO_VERSION = 123;
 const SSL_CTRL_SET_MAX_PROTO_VERSION = 124;
 const SSL_MODE_ENABLE_PARTIAL_WRITE = 0x1;
 const SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER = 0x2;
+const SSL_MODE_NO_AUTO_CHAIN = 0x8;
 const SSL_MODE_RELEASE_BUFFERS = 0x10;
 const SSL_SESS_CACHE_OFF = 0x0;
 const SSL_SESS_CACHE_SERVER = 0x2;
@@ -276,7 +315,9 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
     if (!t.session_tickets) opts |= SSL_OP_NO_TICKET;
     if (t.prefer_server_ciphers) opts |= SSL_OP_CIPHER_SERVER_PREFERENCE;
     _ = SSL_CTX_set_options(ctx, opts);
-    _ = SSL_CTX_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_RELEASE_BUFFERS, null);
+    // The configured certificate file already supplies the chain. Like nginx,
+    // avoid attempting to reconstruct it from a trust store on every handshake.
+    _ = SSL_CTX_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_NO_AUTO_CHAIN | SSL_MODE_RELEASE_BUFFERS, null);
     // Read the record header and payload in one socket read when available.
     // Keep OpenSSL's default AUTO_RETRY mode: the edge-triggered connection loop
     // drains SSL_read until WANT_READ, including records buffered by read-ahead.
@@ -322,6 +363,7 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
         },
     }
     _ = SSL_CTX_set_timeout(ctx, @intCast(t.session_timeout_s));
+    if (aws_lc and t.session_tickets and AwsLc.zhttpd_aws_prepare_tickets(ctx) != 1) return error.TlsInit;
     return ctx;
 }
 
@@ -329,7 +371,7 @@ const router = @import("router.zig");
 const Regex = @import("../regex.zig").Regex;
 
 fn selectContext(ssl: *SSL, ctx: *SSL_CTX, quic: bool) bool {
-    if (!quic) return SSL_set_SSL_CTX(ssl, ctx) != null;
+    if (!@import("multiplex.zig").enabled or !quic) return SSL_set_SSL_CTX(ssl, ctx) != null;
     // OpenSSL 3.5 does not support SSL_set_SSL_CTX on a QUIC SSL object.
     // Install the already-loaded certificate/key/chain on this connection;
     // SSL_use_cert_and_key supports QUIC and takes its own references.
@@ -476,22 +518,64 @@ fn socketReadCallback(bio: *BIO, operation: c_int, _: ?[*]const u8, requested: u
 
 pub const IoResult = union(enum) { ok: usize, want_read, want_write, eof, err };
 
-pub fn handshake(ssl: *SSL) IoResult {
+/// Batch encrypted records only during a large response. The read BIO stays
+/// untouched, and handshake/internal buffering is never wrapped a second time.
+pub fn bufferWrites(ssl: *SSL, capacity: usize) ?*BIO {
+    const socket = SSL_get_wbio(ssl) orelse return null;
+    if (socket != SSL_get_rbio(ssl)) return null;
+    const buffer = newWriteBuffer(capacity) orelse return null;
+    // SSL_set0_wbio releases its old reference; the chain needs its own.
+    if (BIO_up_ref(socket) != 1) {
+        _ = BIO_free(buffer);
+        return null;
+    }
+    _ = BIO_push(buffer, socket);
+    SSL_set0_wbio(ssl, buffer);
+    return buffer;
+}
+
+fn newWriteBuffer(capacity: usize) ?*BIO {
+    const buffer = (if (aws_lc) zhttpd_aws_buffer_new(capacity) else BIO_new(BIO_f_buffer())) orelse return null;
+    var write_only: c_int = 1;
+    if (BIO_ctrl(buffer, 117, @intCast(capacity), &write_only) <= 0) { // BIO_C_SET_BUFF_SIZE
+        _ = BIO_free(buffer);
+        return null;
+    }
+    return buffer;
+}
+
+/// A response is not complete until its ciphertext reached the socket BIO.
+pub fn flushWrites(buffer: *BIO) IoResult {
     ERR_clear_error();
+    if (BIO_ctrl(buffer, 11, 0, null) > 0) return .{ .ok = 0 }; // BIO_CTRL_FLUSH
+    return if (BIO_test_flags(buffer, 8) != 0) .want_write else .err;
+}
+
+/// Called only after a successful flush. BIO_pop transfers the chain's socket
+/// reference back to SSL; replacing wbio frees the now-detached buffer BIO.
+pub fn unbufferWrites(ssl: *SSL, buffer: *BIO) void {
+    const socket = BIO_pop(buffer) orelse unreachable;
+    SSL_set0_wbio(ssl, socket);
+}
+
+pub fn handshake(ssl: *SSL) IoResult {
+    // AWS-LC resets its error queue and I/O state on entry to SSL_accept,
+    // SSL_read and SSL_write. OpenSSL still requires the caller's clear.
+    if (!aws_lc) ERR_clear_error();
     const r = SSL_accept(ssl);
     if (r == 1) return .{ .ok = 0 };
     return classify(ssl, r);
 }
 
 pub fn read(ssl: *SSL, buf: []u8) IoResult {
-    ERR_clear_error();
+    if (!aws_lc) ERR_clear_error();
     const r = SSL_read(ssl, buf.ptr, @intCast(@min(buf.len, std.math.maxInt(c_int))));
     if (r > 0) return .{ .ok = @intCast(r) };
     return classify(ssl, r);
 }
 
 pub fn write(ssl: *SSL, buf: []const u8) IoResult {
-    ERR_clear_error();
+    if (!aws_lc) ERR_clear_error();
     const r = SSL_write(ssl, buf.ptr, @intCast(@min(buf.len, std.math.maxInt(c_int))));
     if (r > 0) return .{ .ok = @intCast(r) };
     return classify(ssl, r);
@@ -513,6 +597,91 @@ pub fn free(ssl: *SSL) void {
 
 pub fn protocol(ssl: *SSL) []const u8 {
     return std.mem.span(SSL_get_version(ssl));
+}
+
+test "ciphertext batching preserves bytes through short writes and repeated backpressure" {
+    if (!enabled) return error.SkipZigTest;
+    defer clearWriteBufferCache();
+    const api = struct {
+        extern "c" fn BIO_new_bio_pair(*?*BIO, usize, *?*BIO, usize) c_int;
+        extern "c" fn BIO_write(*BIO, [*]const u8, c_int) c_int;
+        extern "c" fn BIO_read(*BIO, [*]u8, c_int) c_int;
+    };
+    var socket: ?*BIO = null;
+    var peer: ?*BIO = null;
+    try std.testing.expectEqual(@as(c_int, 1), api.BIO_new_bio_pair(&socket, 37, &peer, 37));
+    defer _ = BIO_free(peer.?);
+    defer _ = BIO_free(socket.?);
+    const buffer = newWriteBuffer(64 * 1024) orelse return error.OutOfMemory;
+    defer _ = BIO_free(buffer);
+    _ = BIO_push(buffer, socket.?);
+    defer _ = BIO_pop(buffer);
+
+    var expected: [200003]u8 = undefined;
+    for (&expected, 0..) |*byte, i| byte.* = @intCast(i % 251);
+    var actual: [expected.len]u8 = undefined;
+    var sent: usize = 0;
+    var received: usize = 0;
+    var blocked: usize = 0;
+    var flushed = false;
+    for (0..20000) |_| {
+        if (sent < expected.len) {
+            const n = api.BIO_write(buffer, expected[sent..].ptr, @intCast(@min(17011, expected.len - sent)));
+            if (n > 0) {
+                sent += @intCast(n);
+            } else {
+                try std.testing.expect(BIO_test_flags(buffer, 8) != 0);
+                blocked += 1;
+            }
+        } else {
+            switch (flushWrites(buffer)) {
+                .ok => flushed = true,
+                .want_write => blocked += 1,
+                else => return error.UnexpectedFlushResult,
+            }
+        }
+        if (received < actual.len) {
+            const n = api.BIO_read(peer.?, actual[received..].ptr, @intCast(actual.len - received));
+            if (n > 0) received += @intCast(n);
+        }
+        if (flushed and received == expected.len) break;
+    }
+    try std.testing.expect(flushed);
+    try std.testing.expect(blocked > 100);
+    try std.testing.expectEqual(expected.len, received);
+    try std.testing.expectEqualSlices(u8, &expected, &actual);
+}
+
+test "TLS operations discard stale errors before nonblocking handshake retries" {
+    if (!enabled) return error.SkipZigTest;
+    const api = struct {
+        extern "c" fn BIO_new_bio_pair(*?*BIO, usize, *?*BIO, usize) c_int;
+        extern "c" fn SSL_set_bio(*SSL, *BIO, *BIO) void;
+        extern "c" fn SSL_set_accept_state(*SSL) void;
+    };
+    const ctx = SSL_CTX_new(TLS_server_method()) orelse return error.TlsInit;
+    defer SSL_CTX_free(ctx);
+    const ssl = SSL_new(ctx) orelse return error.TlsInit;
+    defer SSL_free(ssl);
+    var socket: ?*BIO = null;
+    var peer: ?*BIO = null;
+    try std.testing.expectEqual(@as(c_int, 1), api.BIO_new_bio_pair(&socket, 1024, &peer, 1024));
+    defer _ = BIO_free(peer.?);
+    api.SSL_set_bio(ssl, socket.?, socket.?);
+    api.SSL_set_accept_state(ssl);
+    var buf: [32]u8 = undefined;
+    for (0..3) |operation| {
+        // The invalid configuration populates the thread's error queue. The
+        // following I/O must classify its own retry, not this unrelated error.
+        try std.testing.expectEqual(@as(c_int, 0), SSL_CTX_set_cipher_list(ctx, "not-a-cipher"));
+        const result = switch (operation) {
+            0 => handshake(ssl),
+            1 => read(ssl, &buf),
+            else => write(ssl, "hello"),
+        };
+        try std.testing.expect(result == .want_read);
+        try std.testing.expectEqual(@as(c_ulong, 0), ERR_get_error());
+    }
 }
 
 test {

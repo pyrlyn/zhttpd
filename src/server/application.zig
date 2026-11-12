@@ -151,7 +151,7 @@ fn invoke(ctx: *app.Context, runtime_data: ?*anyopaque) anyerror!void {
     }
 }
 pub fn run(cn: *Conn) void {
-    var ctx: app.Context = .{ .allocator = cn.appAllocator(), .request = &cn.req, .body = cn.body.items, .now = cn.w.wall_sec, .identity = cn.identity };
+    var ctx: app.Context = .{ .allocator = cn.appAllocator(), .request = cn.req, .body = cn.body.items, .now = cn.w.wall_sec, .identity = cn.identity };
     var next: app.Next = .{ .app = cn.ctx.conf.application.?, .terminal = .{ .call = invoke, .data = cn } };
     next.run(&ctx) catch |err| {
         errorResponse(&ctx, app.errorStatus(err)) catch return handler.finalize(cn, 500);

@@ -1,0 +1,6 @@
+Commands: bash scripts/build-openssl.sh (build + archive regression, then cache hit); zig build test -j4; ReleaseSafe TLS/HTTP build; tests/protocols.py; tests/request-storage.py
+
+PASS: QUIC stream GC retains unread/unacknowledged data and releases drained streams
+Build Summary: 30/30 steps succeeded; 50/50 tests passed
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown
+PASS: pooled request storage, partial/pipelined headers, original limits, body drain, backpressure

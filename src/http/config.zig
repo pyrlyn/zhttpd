@@ -107,6 +107,7 @@ pub const LocConf = struct {
     client_body_timeout_ms: u32 = 60_000,
     send_timeout_ms: u32 = 60_000,
     sendfile: bool = false,
+    sendfile_max_chunk: u64 = 2 * 1024 * 1024,
     tcp_nodelay: bool = true,
     server_tokens: ServerTokens = .on,
     autoindex: bool = false,

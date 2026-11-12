@@ -80,10 +80,13 @@ random.seed(42)
 small = ("<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome</title>\n</head>\n<body>\n"
          + "<p>" + "zhttpd benchmark page. " * 22 + "</p>\n</body>\n</html>\n")
 open(os.path.join(d, "small.html"), "w").write(small[:612].ljust(612))
-for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024)):
+for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024),
+                   ("huge.bin", 100 * 1024 * 1024)):
     p = os.path.join(d, name)
     if not os.path.exists(p) or os.path.getsize(p) != size:
-        open(p, "wb").write(random.randbytes(size))
+        with open(p, "wb") as f:
+            for offset in range(0, size, 1024 * 1024):
+                f.write(random.randbytes(min(1024 * 1024, size - offset)))
 PY
 EVENTS=kqueue; [ "$(uname)" = Linux ] && EVENTS=epoll
 HTTP_DIRECTIVES='http2 off;'
@@ -117,6 +120,7 @@ http-baseline-ka-c256|http|1|256|/baseline11?a=1&b=2
 https-small-ka-c64|https|1|64|/static/small.html
 https-small-ka-c256|https|1|256|/static/small.html
 https-large-ka-c64|https|1|64|/static/large.bin
+https-huge-ka-c64|https|1|64|/static/huge.bin
 https-small-noka-c64|https|0|64|/static/small.html"
 fi
 
@@ -261,36 +265,7 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   case "$5" in n*) deadline=120 ;; *) deadline=$(( ${5%.*} + 30 )) ;; esac
   # Bound the process as well as each request: a stalled HTTP/3 driver must
   # invalidate a sample instead of hanging forever while oha drains requests.
-  python3 - "${LOAD_TIMEOUT:-$deadline}" "$SERVER_PID" "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$error_file" <<'PY'
-import json, os, resource, subprocess, sys, time
-from pathlib import Path
-
-def server_cpu(pid):
-    if not Path('/proc').is_dir():
-        return None
-    try:
-        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-        own = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
-        children = Path(f'/proc/{pid}/task/{pid}/children').read_text().split()
-        return own + sum(server_cpu(child) or 0 for child in children)
-    except FileNotFoundError:
-        return 0
-
-before = server_cpu(sys.argv[2])
-started = time.monotonic()
-try:
-    result = subprocess.run(sys.argv[3:], timeout=float(sys.argv[1]))
-    elapsed = time.monotonic() - started
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-    after = server_cpu(sys.argv[2])
-    print(json.dumps({'elapsed': elapsed,
-                      'client_cpu_cores': (usage.ru_utime + usage.ru_stime) / elapsed,
-                      'server_cpu_cores': (after - before) / elapsed if before is not None else None}), file=sys.stderr)
-    sys.exit(result.returncode)
-except subprocess.TimeoutExpired:
-    print('load process exceeded its deadline', file=sys.stderr)
-    sys.exit(124)
-PY
+  python3 "$BENCH/measure.py" "${LOAD_TIMEOUT:-$deadline}" "$SERVER_PID" "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$error_file"
 }
 
 # ---------------------------------------------------------------- run
@@ -298,6 +273,11 @@ PY
   echo "date: $(date)"
   echo "host: $(uname -a)"
   echo "cpus: $(ncpu)"
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemTotal:/ { print "memory_total_kib: " $2 }' /proc/meminfo
+  else
+    echo "memory_total_bytes: $(sysctl -n hw.memsize)"
+  fi
   [ "$(uname)" = Darwin ] && echo "model: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / $(sysctl -n hw.memsize | awk '{printf "%.0f GiB", $1/1073741824}')"
   echo "oha: $("$OHA" --version)"
   echo "zhttpd: $("$ZHTTPD" -V 2>&1 | tr '\n' ' ')"
@@ -336,7 +316,9 @@ for rep in $(seq 1 "$REPS"); do
     start_server "$srv" || exit 1
     while IFS='|' read -r name scheme ka conns path; do
       [ -z "$name" ] && continue
-      wait_time_wait
+      # Fresh-connection loads can exhaust ephemeral ports. Keep-alive loads
+      # reuse their bounded connection set and need no TIME_WAIT drain.
+      [ "$ka" = 1 ] || wait_time_wait
       if [ "$ka" = 1 ]; then w="$WARMUP"; d="$DURATION"; else w="n500"; d="n$NOKA_N"; fi
       oha_run "$scheme" "$ka" "$conns" "$path" "$w" /dev/null >/dev/null 2>&1 || exit 1
       [ "$ka" = 0 ] && wait_time_wait

@@ -6,14 +6,14 @@ const vars = @import("vars.zig");
 const net = @import("net.zig");
 pub fn request(c: *Conn) ![]u8 {
     const a = c.arena();
-    c.ctx.document_root = try vars.eval(a, &c.ctx, c.ctx.conf.root);
+    c.ctx.document_root = try vars.eval(a, c.ctx, c.ctx.conf.root);
     const script = if (std.mem.endsWith(u8, c.ctx.uri, "/")) try std.fmt.allocPrint(a, "{s}{s}", .{ c.ctx.uri, c.ctx.conf.fastcgi_index }) else c.ctx.uri;
     c.ctx.request_filename = try std.fmt.allocPrint(a, "{s}{s}", .{ std.mem.trimEnd(u8, c.ctx.document_root, "/"), script });
     var params: std.ArrayList(fcgi.Param) = .empty;
     const fields = .{ .{ "REQUEST_METHOD", .request_method }, .{ "REQUEST_URI", .request_uri }, .{ "QUERY_STRING", .args }, .{ "SERVER_PROTOCOL", .server_protocol }, .{ "SERVER_NAME", .host }, .{ "SERVER_PORT", .server_port }, .{ "REMOTE_ADDR", .remote_addr }, .{ "REMOTE_PORT", .remote_port }, .{ "DOCUMENT_ROOT", .document_root }, .{ "SCRIPT_FILENAME", .request_filename }, .{ "CONTENT_TYPE", .content_type } };
     inline for (fields) |field| {
         var value: std.ArrayList(u8) = .empty;
-        try vars.appendVar(a, &c.ctx, field[1], &value, 0);
+        try vars.appendVar(a, c.ctx, field[1], &value, 0);
         try params.append(a, .{ .name = field[0], .value = value.items });
     }
     try params.appendSlice(a, &.{
@@ -31,7 +31,7 @@ pub fn request(c: *Conn) ![]u8 {
         try params.append(a, .{ .name = key, .value = h.value });
     }
     for (c.ctx.conf.fastcgi_params) |p| {
-        const value = try vars.eval(a, &c.ctx, p.value);
+        const value = try vars.eval(a, c.ctx, p.value);
         if (p.if_not_empty and value.len == 0) continue;
         var replaced = false;
         for (params.items) |*entry| if (std.mem.eql(u8, entry.name, p.name)) {
@@ -43,7 +43,7 @@ pub fn request(c: *Conn) ![]u8 {
     return fcgi.encode(c.w.gpa, params.items, c.body.items);
 }
 pub fn read(c: *Conn, output: []u8) net.Io {
-    const up = &c.up;
+    const up = c.up;
     while (true) {
         if (up.fcgi_pos < up.fcgi_len) {
             const r = up.fcgi_decoder.feed(up.fcgi_buffer[up.fcgi_pos..up.fcgi_len], output) catch return .{ .err = 71 };

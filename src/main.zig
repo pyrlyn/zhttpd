@@ -91,7 +91,7 @@ pub fn main(init: std.process.Init) u8 {
             eprint("zhttpd version: zhttpd/{s}\n", .{z.server.vars.version});
             return 0;
         } else if (std.mem.eql(u8, a, "-V")) {
-            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}, HTTP/2+HTTP/3 {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, if (tls.enabled) "OpenSSL" else "disabled", if (multiplex.enabled) "enabled" else "disabled" });
+            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}, HTTP/2+HTTP/3 {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, tls.backend_name, if (multiplex.enabled) "enabled" else "disabled" });
             return 0;
         } else if (std.mem.eql(u8, a, "-t")) {
             o.test_only = true;

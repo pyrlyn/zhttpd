@@ -526,7 +526,7 @@ http {{
             proc.send_signal(signal.SIGQUIT)
             proc.wait(timeout=10)
             assert proc.returncode == 0
-            print('PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, reload, shutdown')
+            print('PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown')
         except BaseException:
             log.flush(); log.seek(0); print(log.read())
             raise

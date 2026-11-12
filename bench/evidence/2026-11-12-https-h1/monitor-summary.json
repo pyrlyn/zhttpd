@@ -1,0 +1,7 @@
+{
+  "monitor_samples": 225,
+  "competing_job_samples": 0,
+  "memory_samples": 1254,
+  "minimum_available_gib": 7.927402496337891,
+  "peak_oha_rss_gib": 2.977466583251953
+}
