@@ -400,7 +400,8 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
     const lc = ctx.conf;
     var status: u16 = 200;
     if (ctx.status != 0 and ctx.error_page_done) status = ctx.status; // error_page target keeps the error status
-    const gzip_variant = compressible(conn, status, contentType(conn, ctx.uri), @intCast(meta.size));
+    const ctype = contentType(conn, ctx.uri);
+    const gzip_variant = compressible(conn, status, ctype, @intCast(meta.size));
     const vary: []const u8 = if (gzip_variant) "Vary: Accept-Encoding\r\n" else "";
     var etag_buf: [48]u8 = undefined;
     const etag: ?[]const u8 = if (lc.etag and !gzip_variant) conn.w.fileEtag(meta.mtime, meta.size) else if (lc.etag) std.fmt.bufPrint(&etag_buf, "{s}\"{x}-{x}\"", .{ if (gzip_variant) "W/" else "", meta.mtime, meta.size }) catch null else null;
@@ -432,7 +433,6 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
         };
     }
     ctx.status = status;
-    const ctype = contentType(conn, ctx.uri);
     if (compressible(conn, status, ctype, @intCast(size)) and @import("compression.zig").accepts(conn.req.header("accept-encoding") orelse "")) {
         const bytes = conn.appAllocator().alloc(u8, @intCast(size)) catch return finalize(conn, 500);
         if (net.pread(conn.file_fd, bytes, 0) != @as(isize, @intCast(size))) return finalize(conn, 500);

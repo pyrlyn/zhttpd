@@ -265,30 +265,21 @@ fn eqlAny(name: []const u8, comptime list: []const []const u8) bool {
     return false;
 }
 
-const V16 = @Vector(16, u8);
+const request = @import("../http/request.zig");
 
 /// No NUL, CR or LF: a value copied into the HTTP/1.1 text cannot split a line.
 fn safeValue(v: []const u8) bool {
-    var i: usize = 0;
-    while (i + 16 <= v.len) : (i += 16) {
-        const x: V16 = v[i..][0..16].*;
-        const bad = (x == @as(V16, @splat(0))) | (x == @as(V16, @splat('\r'))) | (x == @as(V16, @splat('\n')));
-        if (@reduce(.Or, bad)) return false;
-    }
-    for (v[i..]) |ch| if (ch == 0 or ch == '\r' or ch == '\n') return false;
-    return true;
+    return !request.anyByte(v, isLineBreak);
+}
+
+fn isLineBreak(x: anytype) @TypeOf(x == x) {
+    const T = @TypeOf(x);
+    return request.isNulOrCr(x) | (x == @as(T, @splat('\n')));
 }
 
 /// No control characters, space or DEL in the request target.
 fn safePath(v: []const u8) bool {
-    var i: usize = 0;
-    while (i + 16 <= v.len) : (i += 16) {
-        const x: V16 = v[i..][0..16].*;
-        const bad = (x <= @as(V16, @splat(32))) | (x == @as(V16, @splat(127)));
-        if (@reduce(.Or, bad)) return false;
-    }
-    for (v[i..]) |ch| if (ch <= 32 or ch == 127) return false;
-    return true;
+    return !request.anyByte(v, request.isCtlOrSpace);
 }
 
 /// Converts the decoded request into HTTP/1.1 text. False: malformed.
@@ -429,7 +420,9 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     const old = st.head.items.len;
     const take = @min(data.len, response_head_cap - old);
     if (take == 0) return .{ .err = 0 };
-    st.head.appendSlice(a, data[0..take]) catch return .{ .err = 0 };
+    if (st.head.capacity - old >= take) {
+        st.head.appendSliceAssumeCapacity(data[0..take]);
+    } else st.head.appendSlice(a, data[0..take]) catch return .{ .err = 0 };
     const end = headEnd(st.head.items, old -| 3) orelse return .{ .ok = take };
     st.head.shrinkRetainingCapacity(end);
     const accepted = end - old;
@@ -448,10 +441,13 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     return .{ .ok = accepted };
 }
 
+const ByteIter = request.ByteIter;
+
 /// Offset just past the first "\r\n\r\n" at or after `from`.
 fn headEnd(h: []const u8, from: usize) ?usize {
+    var nl: ByteIter = .{ .h = h, .c = '\n' };
     var i = from;
-    while (std.mem.indexOfScalarPos(u8, h, i, '\n')) |j| {
+    while (nl.next(i)) |j| {
         if (j >= 3 and h[j - 1] == '\r' and h[j - 2] == '\n' and h[j - 3] == '\r' and j - 3 >= from) return j + 1;
         i = j + 1;
     }
@@ -487,13 +483,19 @@ fn submit(st: *Stream, r: *Request) enum { sent, informational, blocked, invalid
     if (status < 200) return .informational;
     var fields: [100]zh3.Field = undefined;
     var count: usize = 0;
-    var pos = (std.mem.indexOfScalar(u8, h, '\n') orelse return .invalid) + 1;
+    // Lowercasing names below changes no '\n' or ':' byte, so the iterators'
+    // cached masks stay valid.
+    var nls: ByteIter = .{ .h = h, .c = '\n' };
+    var colons: ByteIter = .{ .h = h, .c = ':' };
+    var pos = (nls.next(0) orelse return .invalid) + 1;
     while (pos + 2 < h.len) {
-        const nl = std.mem.indexOfScalarPos(u8, h, pos, '\n') orelse return .invalid;
+        const nl = nls.next(pos) orelse return .invalid;
         if (nl == pos or h[nl - 1] != '\r') return .invalid;
         const line = h[pos .. nl - 1];
+        const at = colons.next(pos) orelse return .invalid;
+        if (at >= nl - 1) return .invalid;
+        const colon = at - pos;
         pos = nl + 1;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return .invalid;
         const name = line[0..colon];
         lower(h, nl - 1 - line.len, colon);
         var v = colon + 1;

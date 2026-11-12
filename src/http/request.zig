@@ -163,16 +163,96 @@ const tchar_table: [256]bool = blk: {
     break :blk table;
 };
 
-/// True when `v` contains NUL or CR; checks 16 bytes at a time.
-fn hasNulOrCr(v: []const u8) bool {
-    const V = @Vector(16, u8);
+/// Positions of one byte value in `h`, in increasing order. Compares 16
+/// bytes at a time and keeps the current block's match mask, so walking a
+/// short-line head costs about one vector compare per 16 bytes instead of a
+/// search call per line.
+pub const ByteIter = struct {
+    h: []const u8,
+    c: u8,
+    base: usize = 0,
+    bits: u16 = 0,
+    loaded: bool = false,
+
+    fn mask(it: *const ByteIter, base: usize) u16 {
+        const V = @Vector(16, u8);
+        var tail: [16]u8 = @splat(~it.c);
+        const x: V = if (base + 16 <= it.h.len) it.h[base..][0..16].* else blk: {
+            @memcpy(tail[0 .. it.h.len - base], it.h[base..]);
+            break :blk tail;
+        };
+        return @bitCast(x == @as(V, @splat(it.c)));
+    }
+
+    /// First position at or after `from`.
+    pub fn next(it: *ByteIter, from: usize) ?usize {
+        if (from >= it.h.len) return null;
+        var base = from & ~@as(usize, 15);
+        if (!it.loaded or base != it.base) {
+            it.base = base;
+            it.bits = it.mask(base);
+            it.loaded = true;
+        }
+        var m = it.bits & (@as(u16, 0xffff) << @intCast(from - base));
+        while (m == 0) {
+            base += 16;
+            if (base >= it.h.len) return null;
+            it.base = base;
+            it.bits = it.mask(base);
+            m = it.bits;
+        }
+        return base + @ctz(m);
+    }
+};
+
+/// True when any byte of `v` matches `pred`, a function from a byte vector to
+/// a bool vector. Checks 16 bytes at a time, then the tail with one or two
+/// (overlapping) 8-byte vectors; only strings shorter than 8 go byte by byte.
+pub fn anyByte(v: []const u8, comptime pred: anytype) bool {
     var i: usize = 0;
     while (i + 16 <= v.len) : (i += 16) {
-        const x: V = v[i..][0..16].*;
-        if (@reduce(.Or, x == @as(V, @splat(0))) or @reduce(.Or, x == @as(V, @splat('\r')))) return true;
+        const x: @Vector(16, u8) = v[i..][0..16].*;
+        if (@reduce(.Or, pred(x))) return true;
     }
-    for (v[i..]) |ch| if (ch == 0 or ch == '\r') return true;
+    const rest = v.len - i;
+    if (rest == 0) return false;
+    if (v.len >= 8) {
+        if (rest > 8) {
+            const x: @Vector(8, u8) = v[i..][0..8].*;
+            if (@reduce(.Or, pred(x))) return true;
+        }
+        const x: @Vector(8, u8) = v[v.len - 8 ..][0..8].*;
+        return @reduce(.Or, pred(x));
+    }
+    for (v[i..]) |ch| {
+        const x: @Vector(1, u8) = .{ch};
+        if (pred(x)[0]) return true;
+    }
     return false;
+}
+
+fn splat(comptime T: type, c: u8) T {
+    return @splat(c);
+}
+
+pub fn isNulOrCr(x: anytype) @TypeOf(x == x) {
+    const T = @TypeOf(x);
+    return (x == splat(T, 0)) | (x == splat(T, '\r'));
+}
+
+/// Control characters, space and DEL: never valid in a request target.
+pub fn isCtlOrSpace(x: anytype) @TypeOf(x == x) {
+    const T = @TypeOf(x);
+    return (x <= splat(T, 0x20)) | (x == splat(T, 0x7f));
+}
+
+fn isHostSeparator(x: anytype) @TypeOf(x == x) {
+    const T = @TypeOf(x);
+    return (x == splat(T, '/')) | (x == splat(T, '\\')) | (x == splat(T, ' '));
+}
+
+fn hasNulOrCr(v: []const u8) bool {
+    return anyByte(v, isNulOrCr);
 }
 
 fn isTchar(ch: u8) bool {
@@ -187,7 +267,7 @@ fn interpretHeader(req: *Request, name: []const u8, value: []const u8) ParseErro
         4 => if (std.ascii.eqlIgnoreCase(name, "host")) {
             if (req.host != null) return error.BadRequest;
             if (value.len == 0 and req.version == .http11) return error.BadRequest;
-            for (value) |ch| if (ch == '/' or ch == '\\' or ch == ' ') return error.BadRequest;
+            if (anyByte(value, isHostSeparator)) return error.BadRequest;
             req.host = value;
         },
         6 => if (std.ascii.eqlIgnoreCase(name, "expect")) {
@@ -251,7 +331,7 @@ fn parseRequestLine(line: []const u8, req: *Request, path_buf: []u8, limits: Lim
             req.version = .http11; // HTTP/1.x minor > 1: treat as 1.1
         } else return error.VersionNotSupported;
     } else return error.BadRequest;
-    for (target) |ch| if (ch <= 0x20 or ch == 0x7f) return error.BadRequest;
+    if (anyByte(target, isCtlOrSpace)) return error.BadRequest;
     req.target = target;
     var path_part = target;
     if (std.mem.startsWith(u8, target, "http://") or std.mem.startsWith(u8, target, "https://")) {
@@ -566,4 +646,36 @@ test "chunked decoder rejects garbage" {
     d = .{};
     var b2 = "3\r\nabcX".*;
     try t.expectError(error.BadChunk, d.feed(&b2));
+}
+
+test "anyByte covers every length and position" {
+    var buf: [40]u8 = undefined;
+    for (0..buf.len + 1) |len| {
+        @memset(buf[0..len], 'a');
+        try std.testing.expect(!anyByte(buf[0..len], isNulOrCr));
+        for (0..len) |pos| {
+            buf[pos] = '\r';
+            try std.testing.expect(anyByte(buf[0..len], isNulOrCr));
+            buf[pos] = 0x7f;
+            try std.testing.expect(anyByte(buf[0..len], isCtlOrSpace));
+            try std.testing.expect(!anyByte(buf[0..len], isNulOrCr));
+            buf[pos] = '\\';
+            try std.testing.expect(anyByte(buf[0..len], isHostSeparator));
+            buf[pos] = 'a';
+        }
+    }
+}
+
+test "ByteIter matches a linear scan" {
+    var buf: [70]u8 = undefined;
+    for (&buf, 0..) |*b, i| b.* = if (i % 7 == 3 or i == 69) '\n' else 'x';
+    for (0..buf.len + 1) |len| {
+        var it: ByteIter = .{ .h = buf[0..len], .c = '\n' };
+        var from: usize = 0;
+        while (true) {
+            const want = std.mem.indexOfScalarPos(u8, buf[0..len], from, '\n');
+            try std.testing.expectEqual(want, it.next(from));
+            from = (want orelse break) + 1;
+        }
+    }
 }
