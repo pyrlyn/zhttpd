@@ -66,6 +66,8 @@ pub const Worker = struct {
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs
     current: ?*Conn = null,
     files: filecache.Cache = .{},
+    rates: @import("policy.zig").Rates = .{},
+    replays: @import("application.zig").ReplayCache = .{},
     tokens_on: []const u8 = "zhttpd/" ++ vars.version,
 
     pub fn init(gpa: std.mem.Allocator, cfg: *config.Config, listeners: []Listener, error_fd: c_int, worker_index: u32) !Worker {
@@ -91,6 +93,7 @@ pub const Worker = struct {
     /// Release an embedded worker after run() returns.
     pub fn deinit(w: *Worker) void {
         w.balancer.deinit();
+        w.replays.deinit();
         while (w.active) |cn| cn.close();
         w.bury();
         while (w.pool) |cn| {

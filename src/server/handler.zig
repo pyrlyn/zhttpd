@@ -26,7 +26,7 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 pub fn process(conn: *Conn) void {
     const ctx = &conn.ctx;
-    if (eql(ctx.uri, "*")) return finalize(conn, 400);
+    if (eql(ctx.uri, "*")) return writeSimple(conn, 204, null, "", "Allow: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS\r\n");
     if (conn.w.cfg.load_balancer.enabled) {
         const lb = @import("load_balancer");
         if (lb.redirectedTarget(conn.req.target)) |clean| {
@@ -61,9 +61,10 @@ fn findAndRun(conn: *Conn) void {
             ctx.error_page_done = true;
             return finalize(conn, 500);
         }
-        const m = router.findLocation(ctx.srv.locations, ctx.uri);
+        const m = router.findLocationMethod(ctx.srv.locations, ctx.uri, conn.req.method_raw);
         setLocation(conn, m.loc, m.caps, ctx.uri);
         if (!checkBodySize(conn)) return;
+        if (!@import("policy.zig").check(conn)) return;
         if (m.loc) |loc| {
             switch (runStmts(conn, loc.stmts) catch return finalize(conn, 500)) {
                 .done => return,
@@ -109,6 +110,7 @@ fn runNamed(conn: *Conn, name: []const u8) void {
     if (ctx.redirects > max_redirects) return finalize(conn, 500);
     ctx.internal = true;
     setLocation(conn, loc, .{}, ctx.uri);
+    if (!checkBodySize(conn) or !@import("policy.zig").check(conn)) return;
     switch (runStmts(conn, loc.stmts) catch return finalize(conn, 500)) {
         .done => return,
         .last => return findAndRun(conn),
@@ -259,6 +261,11 @@ fn content(conn: *Conn) void {
 
 fn contentHandler(conn: *Conn) void {
     const lc = conn.ctx.conf;
+    if (lc.application != null) {
+        conn.after_body = .application;
+        conn.body_store = true;
+        return;
+    }
     if (lc.websocket) |callbacks| return @import("websocket.zig").upgrade(conn, callbacks);
     if (lc.unsupported_handler) |h| {
         conn.w.errlog(.err, "\"{s}\" is not supported by zhttpd", .{h});
@@ -336,7 +343,7 @@ fn staticFile(conn: *Conn) void {
     const method = conn.req.method;
     const is_head = method == .HEAD and !ctx.method_override_get;
     if (!(method == .GET or method == .HEAD or ctx.method_override_get)) {
-        return finalize(conn, 405);
+        return finalizeExtra(conn, 405, "Allow: GET, HEAD\r\n");
     }
     const uri = ctx.uri;
     if (uri.len > 0 and uri[uri.len - 1] == '/') {
@@ -393,8 +400,10 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
     const lc = ctx.conf;
     var status: u16 = 200;
     if (ctx.status != 0 and ctx.error_page_done) status = ctx.status; // error_page target keeps the error status
+    const gzip_variant = compressible(conn, status, contentType(conn, ctx.uri), @intCast(meta.size));
+    const vary: []const u8 = if (gzip_variant) "Vary: Accept-Encoding\r\n" else "";
     var etag_buf: [48]u8 = undefined;
-    const etag: ?[]const u8 = if (lc.etag) std.fmt.bufPrint(&etag_buf, "\"{x}-{x}\"", .{ meta.mtime, meta.size }) catch null else null;
+    const etag: ?[]const u8 = if (lc.etag) std.fmt.bufPrint(&etag_buf, "{s}\"{x}-{x}\"", .{ if (gzip_variant) "W/" else "", meta.mtime, meta.size }) catch null else null;
     var size = meta.size;
     var start: u64 = 0;
     var range_hdr: []const u8 = "";
@@ -403,7 +412,7 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
         if (notModified(conn, meta, etag)) {
             conn.closeFile();
             ctx.status = 304;
-            writeHead(conn, 304, .{ .last_modified = meta.mtime, .etag = etag, .no_length = true });
+            writeHead(conn, 304, .{ .last_modified = meta.mtime, .etag = etag, .no_length = true, .extra = vary });
             conn.setOutput(&.{conn.headSlice()});
             return;
         }
@@ -424,13 +433,22 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
     }
     ctx.status = status;
     const ctype = contentType(conn, ctx.uri);
+    if (compressible(conn, status, ctype, @intCast(size)) and @import("compression.zig").accepts(conn.req.header("accept-encoding") orelse "")) {
+        const bytes = conn.appAllocator().alloc(u8, @intCast(size)) catch return finalize(conn, 500);
+        if (net.pread(conn.file_fd, bytes, 0) != @as(isize, @intCast(size))) return finalize(conn, 500);
+        conn.closeFile();
+        var out: std.Io.Writer.Allocating = .init(conn.appAllocator());
+        if (etag) |value| out.writer.print("ETag: {s}\r\n", .{value}) catch return finalize(conn, 500);
+        out.writer.print("Last-Modified: {s}\r\n", .{conn.w.lastModified(meta.mtime)}) catch return finalize(conn, 500);
+        return writeSimple(conn, status, ctype, bytes, out.written());
+    }
     writeHead(conn, status, .{
         .ctype = ctype,
         .length = size,
         .last_modified = meta.mtime,
         .etag = etag,
         .accept_ranges = status == 200,
-        .extra = range_hdr,
+        .extra = if (range_hdr.len > 0) range_hdr else vary,
     });
     const head = conn.headSlice();
     if (is_head or size == 0) {
@@ -472,7 +490,8 @@ fn notModified(conn: *Conn, meta: os.Meta, etag: ?[]const u8) bool {
             var it = std.mem.tokenizeAny(u8, inm, ", ");
             while (it.next()) |tok| {
                 const t = if (std.mem.startsWith(u8, tok, "W/")) tok[2..] else tok;
-                if (eql(t, et)) return true;
+                const validator = if (std.mem.startsWith(u8, et, "W/")) et[2..] else et;
+                if (eql(t, validator)) return true;
             }
         }
         return false;
@@ -543,7 +562,7 @@ pub fn finalize(conn: *Conn, status: u16) void {
     finalizeExtra(conn, status, "");
 }
 
-fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
+pub fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
     const ctx = &conn.ctx;
     conn.closeFile();
     conn.after_body = .respond;
@@ -571,6 +590,10 @@ fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
     }
     ctx.status = status;
     if (status == 413 or status == 400 or status == 414 or status == 408 or status == 500 or status == 501 or status == 505) conn.close_after = true;
+    if (ctx.conf.json_errors and status >= 400) {
+        const body = std.fmt.allocPrint(conn.arena(), "{{\"error\":{{\"status\":{d},\"message\":\"{s}\"}}}}\n", .{ status, response.reason(status) }) catch "";
+        return writeSimple(conn, status, "application/json", body, extra);
+    }
     const tokens = conn.w.tokens(ctx.conf.server_tokens);
     var body_w: std.Io.Writer = .fixed(&conn.w.page_buf);
     if (response.hasDefaultPage(status)) response.writeDefaultPage(&body_w, status, tokens) catch {};
@@ -674,6 +697,7 @@ pub fn writeHeadTo(conn: *Conn, w: *std.Io.Writer, status: u16, o: HeadOpts) !vo
     try w.writeAll(o.extra);
     try writeExpires(conn, w, status, o.last_modified);
     try writeAddHeaders(conn, w, status);
+    try @import("policy.zig").headers(conn, w);
     try w.writeAll("\r\n");
 }
 
@@ -713,15 +737,60 @@ fn writeAddHeaders(conn: *Conn, w: *std.Io.Writer, status: u16) !void {
     }
 }
 
+fn hasHeader(raw: []const u8, name: []const u8) bool {
+    var it = std.mem.splitSequence(u8, raw, "\r\n");
+    while (it.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (std.ascii.eqlIgnoreCase(line[0..colon], name)) return true;
+    }
+    return false;
+}
+
+fn strongEtag(raw: []const u8) bool {
+    var it = std.mem.splitSequence(u8, raw, "\r\n");
+    while (it.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (std.ascii.eqlIgnoreCase(line[0..colon], "ETag") and !std.mem.startsWith(u8, std.mem.trim(u8, line[colon + 1 ..], " \t"), "W/")) return true;
+    }
+    return false;
+}
+
+fn configuredHeader(conn: *Conn, name: []const u8) bool {
+    for (conn.ctx.conf.add_headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return true;
+    return false;
+}
+
+fn compressible(conn: *Conn, status: u16, ctype: ?[]const u8, size: usize) bool {
+    if (!conn.ctx.conf.gzip or status != 200 or size < 256 or size > @import("compression.zig").max_bytes or conn.req.header("authorization") != null or conn.req.header("cookie") != null) return false;
+    const ct = ctype orelse return false;
+    return std.mem.startsWith(u8, ct, "text/") or eql(ct, "application/json") or eql(ct, "application/javascript") or eql(ct, "image/svg+xml");
+}
+
 /// Head + small in-memory body. Body is copied after the head when it fits.
 pub fn writeSimple(conn: *Conn, status: u16, ctype: ?[]const u8, body: []const u8, extra: []const u8) void {
     writeSimpleLoc(conn, status, ctype, body, extra, null);
 }
 
-fn writeSimpleLoc(conn: *Conn, status: u16, ctype: ?[]const u8, body: []const u8, extra: []const u8, location: ?[]const u8) void {
+fn writeSimpleLoc(conn: *Conn, status: u16, ctype: ?[]const u8, original: []const u8, extra: []const u8, location: ?[]const u8) void {
+    var body = original;
+    var extras = extra;
+    if (compressible(conn, status, ctype, body.len) and !hasHeader(extra, "Content-Encoding") and !hasHeader(extra, "Set-Cookie") and !hasHeader(extra, "Cache-Control") and !strongEtag(extra) and !configuredHeader(conn, "Set-Cookie") and !configuredHeader(conn, "Content-Encoding") and !configuredHeader(conn, "ETag") and !configuredHeader(conn, "Cache-Control")) {
+        extras = std.fmt.allocPrint(conn.appAllocator(), "{s}Vary: Accept-Encoding\r\n", .{extra}) catch extra;
+        if (@import("compression.zig").accepts(conn.req.header("accept-encoding") orelse "")) {
+            if (@import("compression.zig").encode(conn.appAllocator(), body)) |encoded| {
+                const compressed_headers = std.fmt.allocPrint(conn.appAllocator(), "{s}Content-Encoding: gzip\r\n", .{extras}) catch return finalize(conn, 500);
+                body = encoded;
+                extras = compressed_headers;
+            } else |_| {}
+        }
+    }
     const no_body = status == 204 or status == 304 or (status >= 100 and status < 200);
-    writeHead(conn, status, .{ .ctype = ctype, .length = if (no_body) null else body.len, .location = location, .extra = extra });
+    writeHead(conn, status, .{ .ctype = ctype, .length = if (no_body) null else body.len, .location = location, .extra = extras });
     const head = conn.headSlice();
+    if (conn.ctx.status != status) {
+        conn.setOutput(&.{head});
+        return;
+    }
     const send_body = !(conn.req.method == .HEAD and !conn.ctx.method_override_get) and !no_body;
     if (!send_body) {
         conn.setOutput(&.{head});

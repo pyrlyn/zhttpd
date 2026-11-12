@@ -14,9 +14,14 @@ pub const logging = @import("logging");
 pub const websocket = @import("websocket");
 pub const config = @import("http/config.zig");
 pub const request = @import("http/request.zig");
+pub const application = @import("http/application.zig");
 pub const response = @import("http/response.zig");
 
 pub const server = struct {
+    pub const password_file = @import("server/password_file.zig");
+    pub const application = @import("server/application.zig");
+    pub const policy = @import("server/policy.zig");
+    pub const compression = @import("server/compression.zig");
     pub const router = @import("server/router.zig");
     pub const loop = @import("server/loop.zig");
     pub const net = @import("server/net.zig");

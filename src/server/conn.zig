@@ -30,7 +30,7 @@ pub const Tag = struct { kind: Kind };
 
 pub const State = enum { handshake, multiplexed, websocket, read_head, read_body, sending, proxy, lingering, closed };
 pub const BodyMode = enum { none, length, chunked };
-pub const AfterBody = enum { respond, proxy };
+pub const AfterBody = enum { respond, proxy, application };
 
 pub const Flush = enum { done, again, err };
 
@@ -69,6 +69,7 @@ pub const Conn = struct {
     // request body
     body_mode: BodyMode align(8) = .none,
     body_left: u64 = 0,
+    body_received: u64 = 0,
     chunk: request.ChunkedDecoder = .{},
     body_store: bool align(8) = false,
     body_limit: u64 = 0,
@@ -93,6 +94,9 @@ pub const Conn = struct {
 
     // request
     req: Request = .{},
+    app_arena: ?std.heap.ArenaAllocator = null,
+    identity: ?@import("../http/auth.zig").Identity = null,
+    rate_conf: ?*const config.LocConf = null,
     path_buf: [path_size]u8 = undefined,
     arena_mem: [arena_size]u8 = undefined,
     fba: std.heap.FixedBufferAllocator = undefined,
@@ -108,6 +112,11 @@ pub const Conn = struct {
 
     pub fn arena(conn: *Conn) std.mem.Allocator {
         return conn.fba.allocator();
+    }
+
+    pub fn appAllocator(conn: *Conn) std.mem.Allocator {
+        if (conn.app_arena == null) conn.app_arena = std.heap.ArenaAllocator.init(conn.w.gpa);
+        return conn.app_arena.?.allocator();
     }
 
     /// Reset per-connection state after accept (the struct is pooled).
@@ -392,6 +401,10 @@ pub const Conn = struct {
         conn.file_end = 0;
         conn.after_body = .respond;
         conn.body_store = false;
+        conn.body_received = 0;
+        conn.body_limit = srv.conf.client_max_body_size;
+        conn.identity = null;
+        conn.rate_conf = null;
         conn.body.clearRetainingCapacity();
         conn.body_pos = conn.req.head_len;
         conn.ctx = .{
@@ -464,6 +477,7 @@ pub const Conn = struct {
         if (conn.after_body == .proxy and !conn.close_after) {
             proxy.start(conn);
         } else {
+            if (conn.after_body == .application and !conn.close_after) @import("application.zig").run(conn);
             conn.state = .sending;
         }
     }
@@ -524,11 +538,12 @@ pub const Conn = struct {
     }
 
     fn storeBody(conn: *Conn, data: []const u8) bool {
-        if (!conn.body_store or data.len == 0) return true;
-        if (conn.body_limit != 0 and conn.body.items.len + data.len > conn.body_limit) {
+        conn.body_received +|= data.len;
+        if (conn.body_limit != 0 and conn.body_received > conn.body_limit) {
             conn.bodyError(413);
             return false;
         }
+        if (!conn.body_store or data.len == 0) return true;
         conn.body.appendSlice(conn.w.gpa, data) catch {
             conn.bodyError(500);
             return false;
@@ -586,6 +601,8 @@ pub const Conn = struct {
         if (!conn.drop or true) conn.w.accessLog(conn);
         conn.closeFile();
         proxy.release(conn);
+        if (conn.app_arena) |*a| a.deinit();
+        conn.app_arena = null;
         conn.in_request = false;
         conn.start_ms = 0;
         if (conn.body.capacity > 256 * 1024) conn.body.clearAndFree(conn.w.gpa);
@@ -663,6 +680,8 @@ pub const Conn = struct {
 
     pub fn close(conn: *Conn) void {
         if (conn.state == .closed) return;
+        if (conn.app_arena) |*a| a.deinit();
+        conn.app_arena = null;
         conn.w.unpost(conn);
         conn.closeFile();
         proxy.release(conn);

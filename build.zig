@@ -96,6 +96,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{ .{ .name = "http", .module = http_mod }, .{ .name = "settings", .module = settings_mod } },
     });
+    const http_sdk = b.addModule("http_sdk", .{ .root_source_file = b.path("src/http_sdk.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "http", .module = http_mod }, .{ .name = "settings", .module = settings_mod } } });
+    const app_example = b.addExecutable(.{ .name = "http-app", .root_module = b.createModule(.{ .root_source_file = b.path("examples/http/app.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "http_sdk", .module = http_sdk }} }) });
+    b.step("http-example", "Build native HTTP application example").dependOn(&b.addInstallArtifact(app_example, .{}).step);
     const sdk_mod = b.addModule("websocket_sdk", .{ .root_source_file = b.path("src/websocket_sdk.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "http", .module = http_mod }, .{ .name = "settings", .module = settings_mod }, .{ .name = "websocket", .module = websocket_mod } } });
     const sdk_c = b.addLibrary(.{ .name = "zhttpd_websocket", .linkage = .static, .root_module = b.createModule(.{ .root_source_file = b.path("src/websocket_c.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "websocket_sdk", .module = sdk_mod }} }) });
     b.installArtifact(sdk_c);
@@ -161,6 +164,12 @@ pub fn build(b: *std.Build) void {
 
     const e2e_python = b.option([]const u8, "e2e-python", "Python with tests/requirements-e2e.txt installed") orelse "python3";
     const e2e_command = if (std.mem.indexOfScalar(u8, e2e_python, '/') != null) (b.root.joinString(b.allocator, e2e_python) catch @panic("OOM")) else e2e_python;
+    const features = b.addSystemCommand(&.{e2e_command});
+    features.addFileArg(b.path("tests/http_features_e2e.py"));
+    features.addArtifactArg(exe);
+    features.addArtifactArg(app_example);
+    features.setCwd(b.path("."));
+    b.step("test-features", "Test native application API and server policies over HTTP").dependOn(&features.step);
     const raft_e2e = b.addSystemCommand(&.{e2e_command});
     raft_e2e.addFileArg(b.path("tests/raft_e2e.py"));
     raft_e2e.addArtifactArg(exe);
@@ -184,6 +193,7 @@ pub fn build(b: *std.Build) void {
     if (e2e_group == null or e2e_group == .core) {
         previous = &e2e.step;
         e2e_step.dependOn(&benchmark_gate.step);
+        e2e_step.dependOn(&features.step);
     }
     for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
         .{ .group = .tls, .script = "tls-io.py" },
