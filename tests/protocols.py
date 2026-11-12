@@ -192,6 +192,52 @@ def h2_backpressure(port):
         assert all(body == LARGE for body in bodies.values())
 
 
+def h2_truncated_file(port, path):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(['h2'])
+    with ctx.wrap_socket(socket.create_connection(('127.0.0.1', port), timeout=5), server_hostname='localhost') as sock:
+        h = h2.connection.H2Connection()
+        h.initiate_connection()
+        h.update_settings({h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 0})
+        h.send_headers(1, headers('/truncated'), end_stream=True)
+        sock.sendall(h.data_to_send())
+        # The headers prove the server opened the file; a zero stream window
+        # keeps DATA pending until after we truncate that same inode.
+        while True:
+            data = sock.recv(65536)
+            assert data, 'HTTP/2 closed before file headers'
+            events = h.receive_data(data)
+            sock.sendall(h.data_to_send())
+            if any(isinstance(e, h2.events.ResponseReceived) and e.stream_id == 1 for e in events):
+                break
+        path.write_bytes(b'')
+        h.increment_flow_control_window(65535, stream_id=1)
+        h.send_headers(3, headers('/'), end_stream=True)
+        h.increment_flow_control_window(1024, stream_id=3)
+        sock.sendall(h.data_to_send())
+        reset, finished, body = False, False, bytearray()
+        while not (reset and finished):
+            data = sock.recv(65536)
+            assert data, 'truncated file closed a sibling HTTP/2 stream'
+            for event in h.receive_data(data):
+                if isinstance(event, h2.events.StreamReset):
+                    assert event.stream_id == 1 and event.error_code == 2, event
+                    reset = True
+                elif isinstance(event, h2.events.DataReceived):
+                    assert event.stream_id == 3, 'read bytes from truncated file'
+                    body.extend(event.data)
+                    h.acknowledge_received_data(event.flow_controlled_length, 3)
+                elif isinstance(event, h2.events.StreamEnded):
+                    assert event.stream_id == 3, 'truncated response ended without reset'
+                    finished = True
+                elif isinstance(event, h2.events.ConnectionTerminated):
+                    raise AssertionError(event)
+            sock.sendall(h.data_to_send())
+        assert body == b'HTTP/2.0 https 127.0.0.1'
+
+
 def h2_invalid_streams(port):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
@@ -430,6 +476,7 @@ def run():
         subprocess.run([os.environ.get('OPENSSL_BIN', str(ROOT / 'deps/openssl-install/bin/openssl')), 'req', '-config', '/dev/null', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-subj', '/CN=localhost', '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
         (temp / 'large').write_bytes(LARGE)
+        (temp / 'truncated').write_bytes(LARGE)
         with socket.socket() as reserve:
             reserve.bind(('127.0.0.1', 0))
             port = reserve.getsockname()[1]
@@ -506,6 +553,7 @@ http {{
             if KEYUPDATE:
                 subprocess.run([str(KEYUPDATE), str(port), str(temp / "large")], check=True, timeout=30)
             h2_backpressure(port)
+            h2_truncated_file(port, temp / 'truncated')
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
             asyncio.run(h3_loss_backpressure(port))
