@@ -297,6 +297,82 @@ async def h3_exchange(port):
         assert client.close_code == 0x100, client.close_code
 
 
+async def h3_loss_and_reordering(port):
+    """Completed stream GC must preserve retransmissions and tolerate late duplicates."""
+    loop = asyncio.get_running_loop()
+
+    class Relay(asyncio.DatagramProtocol):
+        def __init__(self):
+            self.client = None
+            self.count = self.dropped = self.delayed = self.duplicated = 0
+
+        def connection_made(self, transport):
+            self.transport = transport
+
+        def forward(self, data, target):
+            if not self.transport.is_closing():
+                self.transport.sendto(data, target)
+
+        def datagram_received(self, data, addr):
+            if addr == ('127.0.0.1', port):
+                target = self.client
+            else:
+                self.client = addr
+                target = ('127.0.0.1', port)
+            if target is None:
+                return
+            self.count += 1
+            if self.count % 113 == 0:
+                self.dropped += 1
+                return
+            if self.count % 97 == 0:
+                self.delayed += 1
+                loop.call_later(.02, self.forward, data, target)
+            else:
+                self.forward(data, target)
+            if self.count % 71 == 0:
+                self.duplicated += 1
+                loop.call_later(.1, self.forward, data, target)
+
+    transport, relay = await loop.create_datagram_endpoint(Relay, local_addr=('127.0.0.1', 0))
+    try:
+        await h3_exchange(transport.get_extra_info('sockname')[1])
+        assert relay.dropped and relay.delayed and relay.duplicated
+    finally:
+        transport.close()
+
+
+async def h3_loss_backpressure(port):
+    class LossyClient(H3Client):
+        discard = False
+        packets = 0
+        dropped = 0
+
+        def datagram_received(self, data, addr):
+            if self.discard:
+                self.packets += 1
+                if self.packets % 19 == 0:
+                    self.dropped += 1
+                    return
+            super().datagram_received(data, addr)
+
+    # Small initial windows force partial writes and stream unblocking; dropped
+    # packets require QUIC retransmission after the application reused buffers.
+    cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'],
+                            verify_mode=ssl.CERT_NONE, max_data=8192,
+                            max_stream_data=2048)
+    async with connect('127.0.0.1', port, configuration=cfg, create_protocol=LossyClient) as client:
+        client.discard = True
+        results = await asyncio.wait_for(asyncio.gather(
+            client.request('/large'), client.request('/large'),
+            client.request('/large', 'HEAD')), 30)
+        assert results[0] == [200, LARGE] and results[1] == [200, LARGE]
+        assert results[2] == [200, b'']
+        assert client.dropped > 0
+        status, body = await asyncio.wait_for(client.request('/'), 5)
+        assert status == 200 and body == b'HTTP/3.0 https 127.0.0.1'
+
+
 async def h3_workers(port):
     async def one():
         cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'], verify_mode=ssl.CERT_NONE)
@@ -429,6 +505,8 @@ http {{
             h2_backpressure(port)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
+            asyncio.run(h3_loss_backpressure(port))
+            asyncio.run(h3_loss_and_reordering(port))
             asyncio.run(h3_workers(port))
             if sys.platform == 'linux':
                 asyncio.run(h3_peer_addresses(port))
@@ -443,6 +521,7 @@ http {{
             h2_exchange(port)
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
+            asyncio.run(h3_loss_backpressure(port))
             asyncio.run(h3_workers(port))
             proc.send_signal(signal.SIGQUIT)
             proc.wait(timeout=10)

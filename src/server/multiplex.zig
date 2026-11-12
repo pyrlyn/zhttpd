@@ -15,6 +15,7 @@ extern "c" fn zhttp_h2_drive(*anyopaque) c_int;
 extern "c" fn zhttp_h2_free(*anyopaque) void;
 extern "c" fn zhttp_h3_new(*tls.SSL_CTX, c_int, *anyopaque, Open, Drive, Drive, c_uint) ?*anyopaque;
 extern "c" fn zhttp_h3_drive(*anyopaque) c_int;
+extern "c" fn zhttp_h3_wait_ms(*anyopaque) c_int;
 extern "c" fn zhttp_h3_free(*anyopaque) void;
 extern "c" fn zhttp_stream_read(*anyopaque, [*]u8, usize) isize;
 extern "c" fn zhttp_stream_write(*anyopaque, [*]const u8, usize) isize;
@@ -126,6 +127,10 @@ pub fn driveH3(l: *Listener) void {
     if (enabled) if (l.quic) |p| {
         l.pending = zhttp_h3_drive(p) != 0;
     };
+}
+pub fn waitH3(l: *const Listener) i32 {
+    if (enabled) if (l.quic) |p| return zhttp_h3_wait_ms(p);
+    return 5;
 }
 pub fn freeH3(l: *Listener) void {
     if (enabled) if (l.quic) |p| zhttp_h3_free(p);

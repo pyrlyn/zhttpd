@@ -123,6 +123,22 @@ mise exec -- zig build test-protocols -Dtls=true -Dhttp=true \
   -De2e-python=.run/venv/bin/python
 ```
 
+The protocol suite also downloads large HTTP/3 responses with small flow-control
+windows and deterministic packet loss, checking exact bodies before and after
+reload. A UDP relay also exercises reordering and late duplicate packets.
+The OpenSSL build applies `deps/patches/openssl-quic-stream-gc.patch` and runs
+`tests/quic-stream-gc.c` against the installed archive, including retention
+before the final ACK. Its cache stamp covers the patch, regression test,
+source/toolchain pins and build recipe. On Linux, `zig build test` with
+`-Dhttp=true` includes UDP GSO boundary,
+peer/source address, IPv6/failure fallback and bounded receive-batch tests.
+Run that adapter check alone with:
+
+```bash
+mise exec -- zig build test-quic-io -Dtls=true -Dhttp=true \
+  -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
+```
+
 After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:
 
 ```bash
