@@ -380,6 +380,20 @@ pub const Request = struct {
         defer if (heap.len > 0) r.session.server.alloc.free(heap);
         var size: usize = 64;
         for (fields) |f| size += f.name.len + f.value.len + 12;
+        // Encode straight into contiguous ring space when there is room, with
+        // a 4-byte frame length (varints need not be minimal, RFC 9000 §16).
+        if (size + 5 <= s.writable()) direct: {
+            const b = try s.reserve(size + 5);
+            if (b.len < size + 5 or size >= 1 << 30) break :direct;
+            var e = qpack.Encoder.init(b[5..]) catch break :direct;
+            e.status(status) catch break :direct;
+            for (fields) |f| e.field(f.name, f.value) catch break :direct;
+            b[0] = frame_headers;
+            wire.putVarintWidth(b[1..], e.pos, 4);
+            s.commit(5 + e.pos);
+            if (end) s.finish();
+            return;
+        }
         const buf = if (size + 9 <= stack.len) stack[0..] else blk: {
             heap = try r.session.server.alloc.alloc(u8, size + 9);
             break :blk heap;

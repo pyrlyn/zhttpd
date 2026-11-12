@@ -437,6 +437,23 @@ fn headEnd(h: []const u8, from: usize) ?usize {
     return null;
 }
 
+/// ASCII-lowercases `h[at..][0..len]`, 16 bytes at a time; whole vectors
+/// may cover bytes past the name (written back unchanged).
+fn lower(h: []u8, at: usize, len: usize) void {
+    const V = @Vector(16, u8);
+    var i = at;
+    const end = at + len;
+    while (i < end and i + 16 <= h.len) : (i += 16) {
+        const v: V = h[i..][0..16].*;
+        const idx = std.simd.iota(u8, 16);
+        const room: V = @splat(@intCast(@min(end - i, 16)));
+        const up = (v -% @as(V, @splat('A'))) < @as(V, @splat(26));
+        const lowered = @select(u8, up, v | @as(V, @splat(0x20)), v);
+        h[i..][0..16].* = @select(u8, idx < room, lowered, v);
+    }
+    while (i < end) : (i += 1) h[i] = std.ascii.toLower(h[i]);
+}
+
 fn hopHeader(name: []const u8) bool {
     return eqlAny(name, &.{ "connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "trailer" });
 }
@@ -457,7 +474,7 @@ fn submit(st: *Stream, r: *Request) enum { sent, informational, blocked, invalid
         pos = nl + 1;
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return .invalid;
         const name = line[0..colon];
-        for (name) |*ch| ch.* = std.ascii.toLower(ch.*);
+        lower(h, nl - 1 - line.len, colon);
         var v = colon + 1;
         while (v < line.len and (line[v] == ' ' or line[v] == '\t')) v += 1;
         if (hopHeader(name)) continue;

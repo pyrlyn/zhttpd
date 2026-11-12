@@ -57,7 +57,7 @@ pub fn writeInt(out: []u8, pos: *usize, comptime prefix: u4, flags: u8, v: u64) 
 // ---------------------------------------------------------------------------
 // Huffman decoding (RFC 7541 Appendix B; the code is canonical)
 
-const fast_bits = 11;
+const fast_bits = 12;
 const fast_mask: u64 = (1 << fast_bits) - 1;
 
 /// Fast-table entry: up to two whole symbols in the next `fast_bits` bits.
@@ -263,9 +263,9 @@ const ValueEntry = struct { []const u8, u8 };
 
 /// Static-table entries of one field name: the first index (for name
 /// references) and every (value, index) pair with that name.
-const NameInfo = struct { first: u8, values: []const ValueEntry };
+const NameInfo = struct { name: []const u8, first: u8, values: []const ValueEntry };
 
-const name_index = blk: {
+const name_infos = blk: {
     @setEvalBranchQuota(200_000);
     var names: [static_table.len][]const u8 = undefined;
     var n: usize = 0;
@@ -279,7 +279,7 @@ const name_index = blk: {
             n += 1;
         }
     }
-    var list: [n]struct { []const u8, NameInfo } = undefined;
+    var list: [n]NameInfo = undefined;
     for (names[0..n], 0..) |name, k| {
         var vals: [static_table.len]ValueEntry = undefined;
         var m: usize = 0;
@@ -290,20 +290,60 @@ const name_index = blk: {
             m += 1;
         };
         const final = vals[0..m].*;
-        list[k] = .{ name, .{ .first = first.?, .values = &final } };
+        list[k] = .{ .name = name, .first = first.?, .values = &final };
     }
-    const all = list;
-    break :blk std.StaticStringMap(NameInfo).initComptime(all);
+    break :blk list;
 };
 
-fn exactIn(info: NameInfo, value: []const u8) ?u8 {
-    for (info.values) |v| if (v[0].len == value.len and std.mem.eql(u8, v[0], value)) return v[1];
-    return null;
+const max_name_len = blk: {
+    var m: usize = 0;
+    for (name_infos) |ni| m = @max(m, ni.name.len);
+    break :blk m;
+};
+
+/// `a.len == b.len`; compares 8 bytes at a time against a constant.
+inline fn eqlConst(a: []const u8, comptime b: []const u8) bool {
+    if (b.len < 8) {
+        inline for (b, 0..) |ch, i| if (a[i] != ch) return false;
+        return true;
+    }
+    comptime var i = 0;
+    inline while (i + 8 <= b.len) : (i += 8) {
+        if (std.mem.readInt(u64, a[i..][0..8], .little) != comptime std.mem.readInt(u64, b[i..][0..8], .little)) return false;
+    }
+    if (b.len % 8 != 0) {
+        const t = b.len - 8;
+        if (std.mem.readInt(u64, a[t..][0..8], .little) != comptime std.mem.readInt(u64, b[t..][0..8], .little)) return false;
+    }
+    return true;
+}
+
+const Lookup = struct { first: u8, exact: ?u8 };
+
+/// Static-table name index of `name` and, if present, the exact entry for
+/// (`name`, `value`).
+fn lookup(name: []const u8, value: []const u8) ?Lookup {
+    @setEvalBranchQuota(100_000);
+    switch (name.len) {
+        inline 1...max_name_len => |len| {
+            inline for (name_infos) |ni| {
+                if (ni.name.len == len and eqlConst(name, ni.name)) {
+                    var exact: ?u8 = null;
+                    inline for (ni.values) |v| {
+                        if (exact == null and value.len == v[0].len and eqlConst(value, v[0])) exact = v[1];
+                    }
+                    return .{ .first = ni.first, .exact = exact };
+                }
+            }
+            return null;
+        },
+        else => return null,
+    }
 }
 
 fn exactIndex(name: []const u8, value: []const u8) ?u8 {
-    const info = name_index.get(name) orelse return null;
-    return exactIn(info, value);
+    const l = lookup(name, value) orelse return null;
+    return l.exact;
 }
 
 pub const Encoder = struct {
@@ -326,9 +366,9 @@ pub const Encoder = struct {
 
     /// `name` must be lowercase.
     pub fn field(e: *Encoder, name: []const u8, value: []const u8) Error!void {
-        if (name_index.get(name)) |info| {
-            if (exactIn(info, value)) |idx| return writeInt(e.out, &e.pos, 6, 0xc0, idx);
-            try writeInt(e.out, &e.pos, 4, 0x50, info.first);
+        if (lookup(name, value)) |l| {
+            if (l.exact) |idx| return writeInt(e.out, &e.pos, 6, 0xc0, idx);
+            try writeInt(e.out, &e.pos, 4, 0x50, l.first);
             return e.raw(7, 0, value);
         }
         try e.raw(3, 0x20, name);

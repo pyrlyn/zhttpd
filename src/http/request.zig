@@ -137,9 +137,9 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.BadRequest;
         const name = line[0..colon];
         if (name.len == 0) return error.BadRequest;
-        for (name) |ch| if (!isTchar(ch)) return error.BadRequest;
+        for (name) |ch| if (!tchar_table[ch]) return error.BadRequest;
         const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        for (value) |ch| if (ch == 0 or ch == '\r') return error.BadRequest;
+        if (hasNulOrCr(value)) return error.BadRequest;
         if (req.nheaders == max_headers) return error.HeadersTooLarge;
         req.headers[req.nheaders] = .{ .name = name, .value = value };
         req.nheaders += 1;
@@ -155,6 +155,24 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
 
 fn trimCr(s: []const u8) []const u8 {
     return if (s.len > 0 and s[s.len - 1] == '\r') s[0 .. s.len - 1] else s;
+}
+
+const tchar_table: [256]bool = blk: {
+    var table: [256]bool = @splat(false);
+    for (0..256) |c| table[c] = isTchar(c);
+    break :blk table;
+};
+
+/// True when `v` contains NUL or CR; checks 16 bytes at a time.
+fn hasNulOrCr(v: []const u8) bool {
+    const V = @Vector(16, u8);
+    var i: usize = 0;
+    while (i + 16 <= v.len) : (i += 16) {
+        const x: V = v[i..][0..16].*;
+        if (@reduce(.Or, x == @as(V, @splat(0))) or @reduce(.Or, x == @as(V, @splat('\r')))) return true;
+    }
+    for (v[i..]) |ch| if (ch == 0 or ch == '\r') return true;
+    return false;
 }
 
 fn isTchar(ch: u8) bool {

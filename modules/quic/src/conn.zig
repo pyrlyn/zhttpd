@@ -103,6 +103,26 @@ pub const Callbacks = struct {
     fn noopReset(_: ?*anyopaque, _: *Stream, _: u64) void {}
 };
 
+/// Sets every defaulted field of `p` (recursing into plain structs) except
+/// range storage arrays, which default to `undefined` and are read only below
+/// their count. Assigning a whole default `Stream` copies about 1 KiB per
+/// new stream, mostly that storage.
+fn initDefaults(comptime T: type, p: *T) void {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, FT, attrs| {
+        const dv = comptime attrs.defaultValue(FT);
+        switch (@typeInfo(FT)) {
+            .array => comptime std.debug.assert(std.mem.eql(u8, name, "r")),
+            .@"struct" => |si| if (si.layout == .auto) initDefaults(FT, &@field(p, name)) else {
+                @field(p, name) = dv.?;
+            },
+            else => if (dv) |v| {
+                @field(p, name) = v;
+            },
+        }
+    }
+}
+
 pub const Level = enum(u2) { initial = 0, handshake = 1, app = 2 };
 
 pub const Stream = struct {
@@ -513,6 +533,8 @@ pub const Conn = struct {
         c.streams.deinit(a);
         while (c.free_list) |s| {
             c.free_list = s.next;
+            s.send.deinit(a);
+            s.recv.deinit(a);
             a.destroy(s);
         }
         for (&c.spaces) |*sp| sp.deinit(a);
@@ -1102,11 +1124,19 @@ pub const Conn = struct {
     }
 
     fn newStream(c: *Conn, id: u64) ProcError!*Stream {
+        var send_buf: []u8 = &.{};
+        var recv_buf: []u8 = &.{};
         const s = if (c.free_list) |f| blk: {
             c.free_list = f.next;
+            send_buf = f.send.buf;
+            recv_buf = f.recv.buf;
             break :blk f;
         } else try c.alloc.create(Stream);
-        s.* = .{ .id = id, .conn = c };
+        s.id = id;
+        s.conn = c;
+        initDefaults(Stream, s);
+        s.send.buf = send_buf;
+        s.recv.buf = recv_buf;
         // Stream ids only grow and every stream is removed again, so the
         // open-addressing map fills with tombstones that lengthen each probe
         // (every new id is a miss). Compact it once they reach half its size;
@@ -1116,7 +1146,7 @@ pub const Conn = struct {
             c.stream_removals = 0;
         }
         c.streams.put(c.alloc, id, s) catch |e| {
-            c.alloc.destroy(s);
+            c.freeStream(s);
             return e;
         };
         return s;
@@ -1601,9 +1631,13 @@ pub const Conn = struct {
         if (c.drain_close != null) c.markDirty();
     }
 
+    /// Rings up to this size stay with a recycled stream, saving an
+    /// allocation pair per short request.
+    const keep_ring = 2048;
+
     fn freeStream(c: *Conn, s: *Stream) void {
-        s.send.deinit(c.alloc);
-        s.recv.deinit(c.alloc);
+        if (s.send.buf.len > keep_ring) s.send.deinit(c.alloc);
+        if (s.recv.buf.len > keep_ring) s.recv.deinit(c.alloc);
         s.next = c.free_list;
         c.free_list = s;
     }
