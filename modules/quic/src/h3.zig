@@ -128,6 +128,8 @@ pub const Request = struct {
     protocol: []const u8 = "",
     /// Reserved send slice for zero-copy DATA (header space included).
     reserved: []u8 = &.{},
+    /// `reserved` points into the server bounce buffer, not the stream ring.
+    bounced: bool = false,
     next_free: ?*Request = null,
 
     pub fn id(r: *const Request) u64 {
@@ -425,28 +427,46 @@ pub const Request = struct {
     /// `commitData`.
     pub fn reserveData(r: *Request, max: usize) ![]u8 {
         const s = r.stream orelse return error.Closed;
+        r.reserved = &.{};
+        r.bounced = false;
+        if (max == 0) return &.{};
         const room = s.writable();
-        if (room < 5 + 64) {
+        const min_chunk: usize = @min(max, 64);
+        if (room < 5 + min_chunk) {
             s.want_write = true;
             return &.{};
         }
         const want = @min(max, room - 5, (1 << 30) - 1);
         const b = try s.reserve(5 + want);
-        if (b.len < 5 + 64) {
-            r.reserved = &.{};
-            return &.{};
+        if (b.len >= 5 + @min(want, min_chunk)) {
+            r.reserved = b;
+            return b[5..];
         }
-        r.reserved = b;
-        return b[5..];
+        // The ring wraps within a few bytes. Its data may already be fully
+        // acknowledged, so waiting for an ACK could stall forever: fill the
+        // server bounce buffer instead and copy it in on commit.
+        const bounce = &r.session.server.bounce;
+        const k: usize = @min(want, bounce.len - 5);
+        r.reserved = bounce[0 .. 5 + k];
+        r.bounced = true;
+        return r.reserved[5..];
     }
 
+    /// Commits `n` bytes written into the slice from `reserveData`. Call it
+    /// before any other request reserves (the bounce buffer is shared).
     pub fn commitData(r: *Request, n: usize) void {
         const s = r.stream orelse return;
-        if (n == 0 or r.reserved.len < 5 + n) return;
-        r.reserved[0] = frame_data;
-        wire.putVarintWidth(r.reserved[1..], n, 4);
-        s.commit(5 + n);
+        const res = r.reserved;
+        const bounced = r.bounced;
         r.reserved = &.{};
+        r.bounced = false;
+        if (n == 0 or res.len < 5 + n) return;
+        res[0] = frame_data;
+        wire.putVarintWidth(res[1..], n, 4);
+        if (!bounced) return s.commit(5 + n);
+        // reserveData checked the room and grew the ring, so this copies all.
+        const w = s.write(res[0 .. 5 + n]) catch 0;
+        if (w != 5 + n) s.reset(Error.internal);
     }
 
     /// Ends the response (FIN).
@@ -639,6 +659,8 @@ pub const Server = struct {
     free_reqs: ?*Request = null,
     nfree: usize = 0,
     shutting_down: bool = false,
+    /// Staging for `Request.reserveData` when a send ring wraps.
+    bounce: [4096]u8 = undefined,
 
     pub fn init(a: std.mem.Allocator, ssl_ctx: *tls.SSL_CTX, cfg: conn_mod.Config, handler: Handler) !*Server {
         const sv = try a.create(Server);

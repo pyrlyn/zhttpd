@@ -131,9 +131,10 @@ checks that the response completes on the validated new path.
 The OpenSSL build still applies `deps/patches/openssl-quic-stream-gc.patch` and
 runs `tests/quic-stream-gc.c` against the installed archive; zhttpd no longer
 uses OpenSSL's QUIC stack, but nginx comparison builds do. With `-Dhttp=true`,
-`zig build test` also runs the zquic unit tests (packet protection, loss
-recovery, flow control, QPACK, HTTP/3 framing and loopback handshakes) and the
-HTTP/2 codec test. Run them alone with:
+`zig build test` also runs the zquic unit tests (varints, packet protection
+and RFC 9001 test vectors, ACK ranges, RTT/NewReno, stream buffers, transport
+parameters and QPACK) and the HTTP/2 codec test; connection behaviour is
+covered by the protocol suite. Run them alone with:
 
 ```bash
 mise exec -- zig build test-quic test-h2-codec -Dtls=true -Dhttp=true \
