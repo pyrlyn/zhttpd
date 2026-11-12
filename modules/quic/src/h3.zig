@@ -38,6 +38,8 @@ const frame_cancel_push = 0x03;
 const frame_settings = 0x04;
 const frame_push_promise = 0x05;
 const frame_goaway = 0x07;
+/// Largest client bidirectional stream id: first-phase GOAWAY value.
+const max_goaway_id: u64 = (1 << 62) - 4;
 const frame_max_push_id = 0x0d;
 
 const setting_qpack_capacity = 0x01;
@@ -524,16 +526,19 @@ pub const Session = struct {
         };
     }
 
-    /// Sends GOAWAY and closes the connection once in-flight requests end.
+    /// Graceful shutdown (RFC 9114 §5.2): GOAWAY with the largest stream id
+    /// first, so requests already in flight are still accepted; the transport
+    /// closes once idle after a grace period, and requests arriving past it are
+    /// refused with H3_REQUEST_REJECTED.
     pub fn shutdown(se: *Session) void {
         if (se.goaway_id != null) return;
-        se.goaway_id = se.next_request_id;
+        se.goaway_id = max_goaway_id;
         if (se.control) |s| {
             var buf: [16]u8 = undefined;
             var w = wire.Writer{ .buf = &buf };
             w.byte(frame_goaway);
-            w.varint(wire.varintLen(se.next_request_id));
-            w.varint(se.next_request_id);
+            w.varint(wire.varintLen(max_goaway_id));
+            w.varint(max_goaway_id);
             _ = s.write(buf[0..w.pos]) catch {};
         }
         se.conn.closeWhenIdle(Error.no_error);
@@ -753,7 +758,7 @@ pub const Server = struct {
         };
         if (s.isUni()) return;
         if (s.id + 4 > se.next_request_id) se.next_request_id = s.id + 4;
-        if (se.goaway_id) |g| if (s.id >= g) {
+        if (se.goaway_id) |g| if (s.id >= g or se.conn.drainGraceOver()) {
             s.stopSending(Error.request_rejected);
             s.reset(Error.request_rejected);
             s.release();

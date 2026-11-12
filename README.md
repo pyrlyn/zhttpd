@@ -3,7 +3,9 @@
 # zhttpd
 
 A Zig HTTP/1.0, HTTP/1.1, HTTP/2 and HTTP/3 server with native TOML settings and nginx, Apache, OpenLiteSpeed and Caddy adapters.
-TLS and QUIC use OpenSSL 3.5+, with nghttp2/nghttp3 for framing and HPACK/QPACK.
+TLS uses OpenSSL 3.5+. HTTP/2 uses nghttp2; QUIC v1 and HTTP/3/QPACK come from the
+in-tree Zig package [`modules/quic`](modules/quic/README.md) (zquic), whose TLS 1.3
+handshake runs through OpenSSL's QUIC TLS callbacks.
 Event backends: kqueue (macOS) and epoll (Linux).
 The HTTP/1.1-only build also supports the optional AWS-LC TLS backend.
 
@@ -134,18 +136,16 @@ mise exec -- zig build -Dtls=true -Dhttp=true \
   -Dopenssl="$PWD/deps/openssl-install" -Dhttp-deps="$PWD/deps/http-install"
 ```
 
-The transport feeds existing handlers through bounded memory buffers (64 KiB
-request input and initially 32 KiB response output per stream), without internal
-sockets. Large HTTP/3 file responses grow their output buffer to approximately
-128 KiB, only while no codec vector retains its address. Active large transfers
-therefore use up to 96 KiB more memory per stream; small responses do not grow.
-There are up to 32 concurrent request streams per connection. Stream handlers
-count toward `worker_connections`. Ready codec work continues without a polling
-delay; QUIC deadlines shorten the idle event wait below its 5 ms cap.
-Sub-millisecond deadlines poll without sleeping until serviced. HTTP/2 frames
+The transport feeds existing handlers through bounded memory buffers, without
+internal sockets. HTTP/2 uses 64 KiB request input and 32 KiB response output per
+stream, with up to 32 concurrent request streams per connection. HTTP/3 request
+bodies are read straight from QUIC stream buffers; response bodies and file
+ranges (via `pread`) are written straight into them, bounded by a 64 KiB send
+buffer per stream and up to 128 concurrent request streams per connection.
+Stream handlers count toward `worker_connections`. Ready codec work continues
+without a polling delay; the event wait ends at the next QUIC timer. HTTP/2 frames
 are batched into TLS records. Large HTTP/2 responses also batch encrypted
 records in a 96 KiB buffer, flushed each bounded turn and released once idle.
-QUIC stream I/O shares explicit event ticks.
 Each event-loop thread caches at most 32 reusable stream buffers (under 4 MiB
 total), with an additional 1 MiB output-byte budget so enlarged buffers reduce
 the number retained. It releases the cache when its last modern-protocol session
@@ -154,25 +154,24 @@ Request handlers use a separate pool of at most 32 storage blocks per worker;
 idle HTTP/1.x keep-alive connections return their request storage to that pool.
 The worker also retains at most 64 closed connection records.
 
-Small HTTP/3 frame fragments share a stream write, with FIN attached to the last
-payload. Linux batches up to eight received UDP datagrams and uses UDP GSO for
-compatible IPv4 output batches. Packet boundaries and peer/source addresses are
-preserved; IPv6 and unsupported GSO sockets use the ordinary datagram BIO.
-Receive buffers are allocated only for QUIC, shared by a thread's listeners,
-and freed when its last QUIC listener closes. Other platforms keep recvmsg.
-The pinned OpenSSL build includes a small QUIC stream-retirement fix: fully
-consumed streams are collected once the application releases them and the peer
-acknowledges outgoing data. Retransmission data remains live until that ACK.
+On Linux, zquic receives UDP datagrams in `recvmmsg` batches, keeping each
+packet's destination address (`IP_PKTINFO`), and sends coalesced packets with
+UDP GSO via `sendmmsg`, falling back to one datagram per send when the path does
+not support GSO. Other platforms use `recvmsg`/`sendmsg`. Packet protection,
+loss recovery (RFC 9002, NewReno), flow control and path validation run in Zig;
+OpenSSL only performs the TLS 1.3 handshake. Streams are released once the
+application is done and the peer has acknowledged all outgoing data.
 
 On Linux, `listen ... quic reuseport` creates one UDP socket per worker; the
 kernel distributes connections by their UDP address/port tuple. Without this
 option, or on other platforms, each QUIC listener belongs to the first worker.
-Cross-worker QUIC connection migration is not implemented. Current HTTP/2 and
+Connection migration is validated and served by the worker that owns the
+connection; cross-worker migration (nginx `quic_bpf`) is not implemented. Current HTTP/2 and
 HTTP/3 connections are closed on
 reload/graceful shutdown; clients reconnect to the new generation. Request
 trailers are validated by the codecs but are not exposed to handlers. Server
-push and extended CONNECT are not implemented. QUIC address validation uses
-OpenSSL's default retry policy; `quic_retry` remains an ignored directive.
+push and extended CONNECT are not implemented. QUIC address validation relies on
+the RFC 9000 anti-amplification limit; `quic_retry` remains an ignored directive.
 
 ## Tests
 

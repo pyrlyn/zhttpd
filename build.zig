@@ -12,8 +12,8 @@ pub fn build(b: *std.Build) void {
     if (backend == .aws_lc and (!tls or openssl == null))
         @panic("-Dtls-backend=aws_lc requires -Dtls=true and -Dopenssl=<AWS-LC install prefix>");
 
-    const http = b.option(bool, "http", "Build HTTP/2 and HTTP/3 (requires TLS, nghttp2, nghttp3 and OpenSSL 3.5+)") orelse false;
-    const http_deps = b.option([]const u8, "http-deps", "nghttp2/nghttp3 installation prefix");
+    const http = b.option(bool, "http", "Build HTTP/2 and HTTP/3 (requires TLS, nghttp2 and OpenSSL 3.5+)") orelse false;
+    const http_deps = b.option([]const u8, "http-deps", "nghttp2 installation prefix");
     if (http and backend == .aws_lc) @panic("-Dhttp=true requires the OpenSSL backend (QUIC server API)");
     if (http and !tls) @panic("-Dhttp=true requires -Dtls=true");
     const opts = b.addOptions();
@@ -79,10 +79,8 @@ pub fn build(b: *std.Build) void {
         if (http_deps) |p| {
             http_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             http_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
-            http_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp3.a", .{p}) });
         } else {
             http_mod.linkSystemLibrary("nghttp2", .{});
-            http_mod.linkSystemLibrary("nghttp3", .{});
         }
     }
 
@@ -145,10 +143,8 @@ pub fn build(b: *std.Build) void {
         if (http) {
             if (http_deps) |p| {
                 mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
-                mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp3.a", .{p}) });
             } else {
                 mod.linkSystemLibrary("nghttp2", .{});
-                mod.linkSystemLibrary("nghttp3", .{});
             }
         }
         examples[i] = b.addExecutable(.{ .name = "ws-echo-" ++ lang, .root_module = mod });
@@ -318,31 +314,45 @@ pub fn build(b: *std.Build) void {
         check.has_side_effects = true;
     }
     const test_step = b.step("test", "Run all independent module unit tests");
+    if (tls and backend == .openssl) {
+        // zquic drives OpenSSL's third-party QUIC TLS API (OpenSSL 3.5+).
+        const zquic_test_mod = b.createModule(.{ .root_source_file = b.path("modules/quic/src/root.zig"), .target = target, .optimize = optimize, .link_libc = true });
+        zquic_test_mod.addOptions("zquic_options", zquic_opts);
+        if (openssl) |p| {
+            zquic_test_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
+            zquic_test_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
+        } else {
+            zquic_test_mod.linkSystemLibrary("ssl", .{});
+            zquic_test_mod.linkSystemLibrary("crypto", .{});
+        }
+        const zquic_tests = b.addRunArtifact(b.addTest(.{ .root_module = zquic_test_mod }));
+        zquic_tests.has_side_effects = true;
+        b.step("test-quic", "Run zquic transport unit tests").dependOn(&zquic_tests.step);
+        test_step.dependOn(&zquic_tests.step);
+    }
     if (http and target.result.os.tag == .linux) {
-        const datagrams = b.addExecutable(.{
-            .name = "quic-io-test",
+        const h2_codec = b.addExecutable(.{
+            .name = "h2-codec-test",
             .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
         });
-        datagrams.root_module.addCSourceFile(.{ .file = b.path("tests/quic_io.c"), .flags = &.{ "-std=c11", "-UNDEBUG", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        h2_codec.root_module.addCSourceFile(.{ .file = b.path("tests/h2_codec.c"), .flags = &.{ "-std=c11", "-UNDEBUG", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
         if (openssl) |p| {
-            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
-            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
-            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
+            h2_codec.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            h2_codec.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
+            h2_codec.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
         } else {
-            datagrams.root_module.linkSystemLibrary("ssl", .{});
-            datagrams.root_module.linkSystemLibrary("crypto", .{});
+            h2_codec.root_module.linkSystemLibrary("ssl", .{});
+            h2_codec.root_module.linkSystemLibrary("crypto", .{});
         }
         if (http_deps) |p| {
-            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
-            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
-            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp3.a", .{p}) });
+            h2_codec.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            h2_codec.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
         } else {
-            datagrams.root_module.linkSystemLibrary("nghttp2", .{});
-            datagrams.root_module.linkSystemLibrary("nghttp3", .{});
+            h2_codec.root_module.linkSystemLibrary("nghttp2", .{});
         }
-        const run_datagrams = b.addRunArtifact(datagrams);
-        b.step("test-quic-io", "Test QUIC datagram batching and fallback").dependOn(&run_datagrams.step);
-        test_step.dependOn(&run_datagrams.step);
+        const run_h2_codec = b.addRunArtifact(h2_codec);
+        b.step("test-h2-codec", "Test the HTTP/2 request bridge buffers").dependOn(&run_h2_codec.step);
+        test_step.dependOn(&run_h2_codec.step);
     }
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&lb_tests.step);

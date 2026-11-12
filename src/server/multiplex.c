@@ -1,15 +1,10 @@
-/* HTTP/2 and HTTP/3 codecs. Each request uses bounded memory buffers
- * to the existing Zig request engine. No internal socket or listener is needed.
- * OpenSSL owns QUIC retransmission/congestion control; nghttp owns HPACK/QPACK.
+/* HTTP/2 codec. Each request uses bounded memory buffers to the existing
+ * Zig request engine; nghttp2 owns HPACK and flow control. HTTP/3 runs on the
+ * Zig zquic transport (src/server/h3.zig).
  */
-#ifdef __APPLE__
-#define __APPLE_USE_RFC_3542
-#endif
 #include <nghttp2/nghttp2.h>
-#include <nghttp3/nghttp3.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <openssl/rand.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -22,7 +17,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
-#include "quic_output.h"
 
 #define STREAMS 32
 #define INPUT_CAP (64 * 1024)
@@ -32,7 +26,6 @@
 #define H2_OUTPUT_CAP (16 * 1024)
 /* Two DATA payloads plus their 9-byte frame headers fill two TLS records. */
 #define OUTPUT_CAP (2 * (H2_OUTPUT_CAP - 9))
-#define FILE_OUTPUT_CAP (8 * (H2_OUTPUT_CAP - 9))
 #define OUTPUT_CACHE_CAP (STREAMS * OUTPUT_CAP)
 #define HEAD_CAP (14 * 1024)
 typedef void *(*open_request)(void *, void *, const struct sockaddr *, const struct sockaddr *, int);
@@ -44,7 +37,6 @@ struct stream {
     stream *next;
     session *owner;
     int64_t id;
-    SSL *quic;
     void *request;
     int started, request_end, chunked, eof, submitted, closed, read_fin, write_fin;
     char *headers;
@@ -61,48 +53,25 @@ struct session {
     session *next;
     SSL *ssl;
     nghttp2_session *h2;
-    nghttp3_conn *h3;
     uint8_t *h2_output;
     size_t h2_output_len, h2_output_pos;
     int h2_write_blocked;
     BIO *h2_buffer;
     stream *streams;
     unsigned nstreams;
-    uint64_t completed_bidi;
     void *user;
     open_request open;
     drive_request drive;
     close_request close;
     struct sockaddr_storage peer, local;
-    int activity, shutting_down;
+    int activity;
 };
-typedef struct listener {
-    SSL *ssl;
-    session *sessions;
-    void *user;
-    open_request open;
-    drive_request drive;
-    close_request close;
-    int fd;
-    unsigned limit, admitted;
-    struct sockaddr_storage peer, local, bound;
-    BIO_ADDR *peer_addr, *local_addr;
-    quic_output output;
-} listener;
-typedef struct peer_info {
-    struct sockaddr_storage peer, local;
-    listener *owner;
-} peer_info;
-static int peer_index = -1;
 /* One bounded cache per event-loop thread, shared across its connections.
  * Release it when the final session closes; idle connections cannot retain a
  * separate cache each. Active stream buffers still follow STREAMS limits. */
 static _Thread_local stream *stream_cache;
 static _Thread_local unsigned cached_streams, active_sessions;
 static _Thread_local size_t cached_output_bytes;
-#ifdef __linux__
-static _Thread_local unsigned quic_listeners;
-#endif
 
 static void free_stream(stream *p) {
     free(p->headers); free(p->input); free(p->output); free(p);
@@ -116,20 +85,12 @@ static stream *lookup(session *s, int64_t id) {
     for (stream *p = s->streams; p; p = p->next) if (p->id == id) return p;
     return NULL;
 }
-static stream *h3_stream(void *user, int64_t id, void *stream_user) {
-    return stream_user ? stream_user : lookup(user, id);
-}
-static stream *new_stream(session *s, int64_t id, SSL *quic) {
-    if (s->nstreams >= STREAMS + 6) return NULL;
-    /* Account for each accepted byte immediately. All-or-nothing QUIC writes
-     * retain a buffer address across WANT_WRITE, but drive_h3 batches small
-     * vectors on its stack and can be entered through different event paths. */
-    if (quic) SSL_set_mode(quic, SSL_MODE_ENABLE_PARTIAL_WRITE);
-    int request_stream = !quic || (id & 3) == 0;
+static stream *new_stream(session *s, int64_t id) {
+    if (s->nstreams >= STREAMS) return NULL;
     stream *p;
     char *headers = NULL; uint8_t *input = NULL, *output = NULL;
     size_t output_cap = OUTPUT_INITIAL_CAP, input_cap = INPUT_INITIAL_CAP, headers_cap = HEAD_INITIAL_CAP;
-    if (request_stream && stream_cache) {
+    if (stream_cache) {
         p = stream_cache; stream_cache = p->next; --cached_streams;
         headers = p->headers; input = p->input; output = p->output;
         output_cap = p->output_cap; cached_output_bytes -= output_cap;
@@ -144,8 +105,7 @@ static stream *new_stream(session *s, int64_t id, SSL *quic) {
     p->input_cap = input_cap;
     p->headers_cap = headers_cap;
     p->method[0] = p->path[0] = p->authority[0] = p->content_length[0] = 0;
-    // Control/QPACK streams carry no HTTP request and need no bridge buffers.
-    if (request_stream && !p->headers) {
+    if (!p->headers) {
         p->headers = malloc(headers_cap);
         p->input = malloc(input_cap);
         p->output = malloc(output_cap + 1);
@@ -153,7 +113,7 @@ static stream *new_stream(session *s, int64_t id, SSL *quic) {
             free_stream(p); return NULL;
         }
     }
-    p->owner = s; p->id = id; p->quic = quic;
+    p->owner = s; p->id = id;
     p->next = s->streams; s->streams = p; ++s->nstreams;
     return p;
 }
@@ -164,14 +124,6 @@ static void sweep(session *s) {
         if (!p->closed) { pp = &p->next; continue; }
         *pp = p->next;
         if (p->request) s->close(p->request);
-        if (s->h3 && (p->id & 3) == 0) {
-            /* A reset/write failure may leave the nghttp3 stream alive. Drop
-             * its association before this object can enter the reuse cache. */
-            nghttp3_conn_set_stream_user_data(s->h3, p->id, NULL);
-            ++s->completed_bidi;
-            nghttp3_conn_set_max_client_streams_bidi(s->h3, STREAMS + s->completed_bidi);
-        }
-        SSL_free(p->quic);
         if (p->headers && cached_streams < STREAMS && p->output_cap <= OUTPUT_CACHE_CAP - cached_output_bytes) {
             p->next = stream_cache; stream_cache = p; ++cached_streams;
             cached_output_bytes += p->output_cap;
@@ -265,7 +217,7 @@ static int start_request(stream *p) {
     out = request_part(out, "\r\n", 2);
     p->input_len = (size_t)(out - p->input);
     session *s = p->owner;
-    p->request = s->open(s->user, p, (struct sockaddr *)&s->peer, (struct sockaddr *)&s->local, s->h3 ? 3 : 2);
+    p->request = s->open(s->user, p, (struct sockaddr *)&s->peer, (struct sockaddr *)&s->local, 2);
     if (!p->request) return -1;
     p->started = 1;
     return 0;
@@ -303,13 +255,12 @@ ssize_t zhttp_stream_write(void *ptr, const uint8_t *buf, size_t len) {
 ssize_t zhttp_stream_writable(void *ptr, uint8_t **buf, uint64_t remaining) {
     stream *p = ptr;
     if (p->closed || p->eof) return -1;
-    /* Batch large QUIC file reads. Never relocate a vector retained by the
-     * codec, and leave small responses at the original allocation size.
-     * Allocation failure simply retains the smaller, correct path. */
-    size_t capacity = !p->owner->h2 && remaining > OUTPUT_CAP ? FILE_OUTPUT_CAP : OUTPUT_CAP;
-    if (remaining > p->output_cap - p->output_len && !p->offered && p->output_cap < capacity) {
-        uint8_t *larger = realloc(p->output, capacity + 1);
-        if (larger) { p->output = larger; p->output_cap = capacity; }
+    /* Never relocate a vector retained by the codec, and leave small
+     * responses at the original allocation size. Allocation failure simply
+     * retains the smaller, correct path. */
+    if (remaining > p->output_cap - p->output_len && !p->offered && p->output_cap < OUTPUT_CAP) {
+        uint8_t *larger = realloc(p->output, OUTPUT_CAP + 1);
+        if (larger) { p->output = larger; p->output_cap = OUTPUT_CAP; }
     }
     *buf = p->output + p->output_len;
     return (ssize_t)(p->output_cap - p->output_len);
@@ -340,7 +291,7 @@ ssize_t zhttp_stream_file(void *ptr, int fd, uint64_t offset, uint64_t remaining
         if (!p->file_left && !p->offered) p->file_active = 0;
         return n ? (ssize_t)n : -1;
     }
-    if (!p->owner->h2 || remaining <= OUTPUT_CAP) {
+    if (remaining <= OUTPUT_CAP) {
         uint8_t *buf;
         ssize_t capacity = zhttp_stream_writable(p, &buf, remaining);
         if (capacity <= 0) return capacity ? -2 : -1;
@@ -393,24 +344,6 @@ static nghttp2_ssize h2_read(nghttp2_session *h, int32_t id, uint8_t *buf, size_
     if (p->eof && p->output_pos == p->output_len) *flags |= NGHTTP2_DATA_FLAG_EOF;
     return (nghttp2_ssize)n;
 }
-static nghttp3_ssize h3_read(nghttp3_conn *h, int64_t id, nghttp3_vec *vec, size_t nvec,
-                           uint32_t *flags, void *user, void *stream_user) {
-    (void)h; (void)nvec;
-    stream *p = h3_stream(user, id, stream_user);
-    if (!p) return NGHTTP3_ERR_CALLBACK_FAILURE;
-    size_t n = p->output_len - p->output_pos;
-    if (!n && !p->eof) return NGHTTP3_ERR_WOULDBLOCK;
-    vec[0].base = p->output + p->output_pos; vec[0].len = n;
-    p->output_pos += n; p->offered += n;
-    if (p->eof) *flags |= NGHTTP3_DATA_FLAG_EOF;
-    return n ? 1 : 0;
-}
-static int h3_acked(nghttp3_conn *h, int64_t id, uint64_t n, void *user, void *su) {
-    (void)h;
-    stream *p = h3_stream(user, id, su);
-    if (p) { if (n > p->offered) return NGHTTP3_ERR_CALLBACK_FAILURE; p->offered -= (size_t)n; }
-    return 0;
-}
 static int hop_header(const char *name, size_t len) {
     return eq_literal(name, len, "connection") || eq_literal(name, len, "keep-alive") ||
         eq_literal(name, len, "transfer-encoding") || eq_literal(name, len, "upgrade") ||
@@ -431,9 +364,8 @@ static int response_headers(stream *p) {
         memmove(p->output, end, p->output_len - head); p->output_len -= head;
         return response_headers(p);
     }
-    nghttp2_nv n2[100]; nghttp3_nv n3[100]; size_t count = 1;
+    nghttp2_nv n2[100]; size_t count = 1;
     n2[0] = (nghttp2_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
-    n3[0] = (nghttp3_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
     char *line = strstr((char *)p->output, "\r\n");
     if (!line) return -1;
     line += 2;
@@ -449,20 +381,12 @@ static int response_headers(stream *p) {
         if (!hop_header(line, name_len)) {
             if (count == 100) return -1;
             n2[count] = (nghttp2_nv){(uint8_t *)line, (uint8_t *)v, name_len, value_len, 0};
-            n3[count] = (nghttp3_nv){(uint8_t *)line, (uint8_t *)v, name_len, value_len, 0};
             ++count;
         }
         line = nl + 2;
     }
-    int rv;
-    if (p->owner->h2) {
-        nghttp2_data_provider2 dr = {{.ptr = p}, h2_read};
-        rv = nghttp2_submit_response2(p->owner->h2, (int32_t)p->id, n2, count, &dr);
-    } else {
-        nghttp3_data_reader dr = {h3_read};
-        rv = nghttp3_conn_submit_response(p->owner->h3, p->id, n3, count, &dr);
-    }
-    if (rv) return -1;
+    nghttp2_data_provider2 dr = {{.ptr = p}, h2_read};
+    if (nghttp2_submit_response2(p->owner->h2, (int32_t)p->id, n2, count, &dr)) return -1;
     p->submitted = 1;
     memmove(p->output, end, p->output_len - head); p->output_len -= head;
     return 0;
@@ -487,10 +411,7 @@ static int pump_backend(stream *p) {
     }
     if (!p->submitted && response_headers(p)) return -1;
     if (p->eof && !p->submitted) return -1;
-    if (p->submitted) {
-        if (p->owner->h2) nghttp2_session_resume_data(p->owner->h2, (int32_t)p->id);
-        else nghttp3_conn_resume_stream(p->owner->h3, p->id);
-    }
+    if (p->submitted) nghttp2_session_resume_data(p->owner->h2, (int32_t)p->id);
     return 0;
 }
 
@@ -498,7 +419,7 @@ static int h2_begin(nghttp2_session *h, const nghttp2_frame *f, void *user) {
     (void)h;
     if (f->headers.cat != NGHTTP2_HCAT_REQUEST) return 0;
     session *s = user;
-    if (s->nstreams >= STREAMS || !new_stream(s, f->hd.stream_id, NULL)) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+    if (s->nstreams >= STREAMS || !new_stream(s, f->hd.stream_id)) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
     return 0;
 }
 static int h2_header(nghttp2_session *h, const nghttp2_frame *f, const uint8_t *n, size_t nn,
@@ -671,8 +592,8 @@ int zhttp_h2_drive(void *ptr) {
     return s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
 }
 static void free_session(session *s) {
-    nghttp2_session_del(s->h2); nghttp3_conn_del(s->h3);
-    s->h2 = NULL; s->h3 = NULL;
+    nghttp2_session_del(s->h2);
+    s->h2 = NULL;
     for (stream *p = s->streams; p; p = p->next) p->closed = 1;
     sweep(s); free(s->h2_output); free(s);
     if (--active_sessions == 0) {
@@ -683,364 +604,3 @@ static void free_session(session *s) {
     }
 }
 void zhttp_h2_free(void *ptr) { if (ptr) free_session(ptr); }
-
-static int h3_headers_begin(nghttp3_conn *h, int64_t id, void *user, void *su) {
-    stream *p = h3_stream(user, id, su);
-    /* sweep clears this association before it can recycle the object. Keep
-     * the pointer instead of searching the list for every header/data
-     * callback. Streams reset before headers still use the lookup fallback. */
-    return !p || nghttp3_conn_set_stream_user_data(h, id, p) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int h3_header(nghttp3_conn *h, int64_t id, int32_t token, nghttp3_rcbuf *n, nghttp3_rcbuf *v,
-                     uint8_t flags, void *user, void *su) {
-    (void)h; (void)token; (void)flags;
-    nghttp3_vec name = nghttp3_rcbuf_get_buf(n), value = nghttp3_rcbuf_get_buf(v);
-    return header(h3_stream(user, id, su), name.base, name.len, value.base, value.len) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int h3_headers_done(nghttp3_conn *h, int64_t id, int fin, void *user, void *su) {
-    (void)h; (void)fin;
-    return start_request(h3_stream(user, id, su)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int h3_data(nghttp3_conn *h, int64_t id, const uint8_t *data, size_t n, void *user, void *su) {
-    (void)h;
-    return body(h3_stream(user, id, su), data, n) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int h3_end(nghttp3_conn *h, int64_t id, void *user, void *su) {
-    (void)h;
-    return end_request(h3_stream(user, id, su)) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int h3_reset(nghttp3_conn *h, int64_t id, uint64_t code, void *user, void *su) {
-    (void)h;
-    stream *p = h3_stream(user, id, su);
-    if (p) { SSL_STREAM_RESET_ARGS args = {code}; SSL_stream_reset(p->quic, &args, sizeof(args)); }
-    return 0;
-}
-static void h3_rand(uint8_t *dest, size_t n) { if (RAND_bytes(dest, (int)n) != 1) abort(); }
-static int h3_shutdown(nghttp3_conn *h, int64_t id, void *user) {
-    (void)id;
-    ((session *)user)->shutting_down = 1;
-    /* Reply with GOAWAY while existing requests continue to drain. Clients
-     * waiting for graceful HTTP/3 shutdown must not wait for QUIC idle expiry. */
-    return nghttp3_conn_shutdown(h) ? NGHTTP3_ERR_CALLBACK_FAILURE : 0;
-}
-static int init_h3(session *s) {
-    nghttp3_callbacks cb = {0};
-    cb.begin_headers = h3_headers_begin; cb.recv_header = h3_header; cb.end_headers = h3_headers_done;
-    cb.recv_data = h3_data; cb.end_stream = h3_end; cb.acked_stream_data = h3_acked;
-    cb.stop_sending = h3_reset; cb.reset_stream = h3_reset; cb.rand = h3_rand;
-    cb.shutdown = h3_shutdown;
-    nghttp3_settings settings; nghttp3_settings_default(&settings);
-    settings.max_field_section_size = HEAD_CAP;
-    settings.qpack_max_dtable_capacity = 0; settings.qpack_blocked_streams = 0;
-    if (nghttp3_conn_server_new(&s->h3, &cb, &settings, NULL, s)) return -1;
-    nghttp3_conn_set_max_client_streams_bidi(s->h3, STREAMS);
-    nghttp3_conn_set_max_concurrent_streams(s->h3, STREAMS);
-    int64_t ids[3];
-    for (int i = 0; i < 3; ++i) {
-        SSL *q = SSL_new_stream(s->ssl, SSL_STREAM_FLAG_UNI | SSL_STREAM_FLAG_NO_BLOCK);
-        if (!q) return -1;
-        ids[i] = (int64_t)SSL_get_stream_id(q);
-        if (!new_stream(s, ids[i], q)) { SSL_free(q); return -1; }
-    }
-    return nghttp3_conn_bind_control_stream(s->h3, ids[0]) || nghttp3_conn_bind_qpack_streams(s->h3, ids[1], ids[2]) ? -1 : 0;
-}
-static int drain_h3(session *s) {
-    /* Continue only transport shutdown once it starts. Application reads then
-     * fail with PROTOCOL_IS_SHUTDOWN; treating that as a stream reset would
-     * prematurely stop HTTP/3 control streams while responses are draining. */
-    SSL_SHUTDOWN_EX_ARGS args = {0};
-    args.quic_error_code = NGHTTP3_H3_NO_ERROR;
-    ERR_clear_error();
-    int r = SSL_shutdown_ex(s->ssl, 0, &args, sizeof(args));
-    return r == 1 || (r < 0 && !ssl_wait(s->ssl, r)) ? -1 : 0;
-}
-static int drive_h3(session *s) {
-    if (s->shutting_down == 2) return drain_h3(s);
-    SSL_CONN_CLOSE_INFO info;
-    if (SSL_get_conn_close_info(s->ssl, &info, sizeof(info))) return -1;
-    if (!s->h3) {
-        ERR_clear_error(); int r = SSL_accept(s->ssl);
-        if (r != 1) return ssl_wait(s->ssl, r) ? 0 : -1;
-        if (init_h3(s)) return -1;
-    }
-    SSL *q;
-    while ((q = SSL_accept_stream(s->ssl, SSL_ACCEPT_STREAM_NO_BLOCK))) {
-        if (!new_stream(s, (int64_t)SSL_get_stream_id(q), q)) { SSL_free(q); return -1; }
-    }
-    for (stream *p = s->streams; p; p = p->next) {
-        if (p->read_fin || (p->id & 3) == 3) continue;
-        for (int i = 0; i < 4 && p->input_len < INPUT_CAP - 32 * 1024; ++i) {
-            uint8_t buf[8192]; size_t n = 0; ERR_clear_error();
-            int r = SSL_read_ex(p->quic, buf, sizeof(buf), &n);
-            int fin = !r && SSL_get_error(p->quic, r) == SSL_ERROR_ZERO_RETURN;
-            if (!r && !fin) {
-                if (ssl_wait(p->quic, r)) break;
-                nghttp3_conn_shutdown_stream_read(s->h3, p->id);
-                nghttp3_conn_close_stream(s->h3, p->id, NGHTTP3_H3_REQUEST_CANCELLED);
-                p->closed = 1; break;
-            }
-            if (nghttp3_conn_read_stream(s->h3, p->id, buf, n, fin) < 0) return -1;
-            if (n || fin) s->activity = 1;
-            if (fin) {
-                p->read_fin = 1;
-                /* Unknown client unidirectional streams (including GREASE)
-                 * have no response half to wait for before releasing them. */
-                if ((p->id & 3) == 2) {
-                    nghttp3_conn_close_stream(s->h3, p->id, NGHTTP3_H3_NO_ERROR);
-                    p->closed = 1;
-                }
-                break;
-            }
-        }
-    }
-    for (stream *p = s->streams; p; p = p->next)
-        if (pump_backend(p)) return -1;
-    for (int i = 0; i < 128; ++i) {
-        nghttp3_vec vec[8]; int64_t id; int fin;
-        nghttp3_ssize nv = nghttp3_conn_writev_stream(s->h3, &id, &fin, vec, 8);
-        if (nv < 0) return -1;
-        if (id < 0) break;
-        stream *p = lookup(s, id); if (!p) return -1;
-        /* Combine small frame headers and bodies into one QUIC stream write.
-         * Large vectors stay in their existing buffer; no extra body copy. */
-        uint8_t batch[2048]; const uint8_t *data = nv ? vec[0].base : batch;
-        size_t len = nv ? vec[0].len : 0;
-        nghttp3_ssize used = nv ? 1 : 0;
-        if (nv > 1 && len <= sizeof(batch) && vec[1].len <= sizeof(batch) - len) {
-            memcpy(batch, data, len); data = batch;
-            while (used < nv && vec[used].len <= sizeof(batch) - len) {
-                memcpy(batch + len, vec[used].base, vec[used].len);
-                len += vec[used++].len;
-            }
-        }
-        int conclude = fin && used == nv;
-        size_t n = 0;
-        if (len) {
-            ERR_clear_error();
-            int r = SSL_write_ex2(p->quic, data, len, conclude ? SSL_WRITE_FLAG_CONCLUDE : 0, &n);
-            if (!r) {
-                if (ssl_wait(p->quic, r)) { nghttp3_conn_block_stream(s->h3, id); continue; }
-                nghttp3_conn_shutdown_stream_write(s->h3, id); p->closed = 1; continue;
-            }
-        }
-        if (nghttp3_conn_add_write_offset(s->h3, id, n)) return -1;
-        if (n) s->activity = 1;
-        /* SSL_write_ex2 copies into OpenSSL's retransmission buffer. The
-         * nghttp3 buffers can be released independently of packet ACKs. */
-        if (nghttp3_conn_add_ack_offset(s->h3, id, n)) return -1;
-        if (conclude && n == len) {
-            /* A zero-byte SSL_write_ex2 reports WANT_WRITE even when FIN was
-             * queued. Use the explicit API for a FIN without payload. */
-            if (!len && !SSL_stream_conclude(p->quic, 0)) return -1;
-            p->write_fin = 1;
-        }
-    }
-    for (stream *p = s->streams; p; p = p->next) {
-        if (p->read_fin && p->write_fin) {
-            nghttp3_conn_close_stream(s->h3, p->id, NGHTTP3_H3_NO_ERROR); p->closed = 1;
-        } else nghttp3_conn_unblock_stream(s->h3, p->id);
-    }
-    sweep(s);
-    if (s->shutting_down) {
-        for (stream *p = s->streams; p; p = p->next)
-            if ((p->id & 3) == 0) return 0;
-        /* Unlike RAPID shutdown, this waits for buffered response bytes to be
-         * acknowledged before sending CONNECTION_CLOSE with H3_NO_ERROR. */
-        s->shutting_down = 2;
-        return drain_h3(s);
-    }
-    return 0;
-}
-/* OpenSSL 3.5 has no public QUIC peer-address getter. Process long-header
- * datagrams while their address context is current, so the new-connection
- * callback captures the originating peer. Established short-header traffic
- * shares a bounded event-processing batch. Only this code reads the UDP fd. */
-static void peer_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, long argl, void *argp) {
-    (void)parent; (void)ad; (void)idx; (void)argl; (void)argp;
-    peer_info *p = ptr; if (p) { --p->owner->admitted; free(p); }
-}
-static int pending(SSL_CTX *ctx, SSL *ssl, void *arg) {
-    (void)ctx; listener *l = arg;
-    if (l->admitted >= l->limit) return 0;
-    peer_info *p = malloc(sizeof(*p)); if (!p) return 0;
-    p->peer = l->peer; p->local = l->local; p->owner = l;
-    if (!SSL_set_ex_data(ssl, peer_index, p)) { free(p); return 0; }
-    ++l->admitted;
-    return 1;
-}
-static int bio_addr(BIO_ADDR *b, const struct sockaddr_storage *s) {
-    int r;
-    if (s->ss_family == AF_INET) {
-        const struct sockaddr_in *a = (const void *)s;
-        r = BIO_ADDR_rawmake(b, AF_INET, &a->sin_addr, sizeof(a->sin_addr), a->sin_port);
-    } else {
-        const struct sockaddr_in6 *a = (const void *)s;
-        r = BIO_ADDR_rawmake(b, AF_INET6, &a->sin6_addr, sizeof(a->sin6_addr), a->sin6_port);
-    }
-    return r;
-}
-void *zhttp_h3_new(SSL_CTX *ctx, int fd, void *user, open_request open, drive_request drive,
-                   close_request close, unsigned limit) {
-    listener *l = calloc(1, sizeof(*l)); if (!l) return NULL;
-    l->fd = fd; l->user = user; l->open = open; l->drive = drive; l->close = close; l->limit = limit;
-    socklen_t len = sizeof(l->bound);
-    if (getsockname(fd, (struct sockaddr *)&l->bound, &len)) goto fail;
-    l->peer_addr = BIO_ADDR_new(); l->local_addr = BIO_ADDR_new();
-    if (!l->peer_addr || !l->local_addr) goto fail;
-    if (peer_index < 0) peer_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, peer_free);
-    if (peer_index < 0) goto fail;
-    l->ssl = SSL_new_listener(ctx, 0); if (!l->ssl) goto fail;
-    SSL_CTX_set_new_pending_conn_cb(ctx, pending, l);
-    BIO *rd = BIO_new(BIO_s_dgram_mem()), *wr = quic_output_new(&l->output, fd);
-    if (!rd || !wr) { BIO_free(rd); BIO_free(wr); goto fail; }
-    SSL_set0_rbio(l->ssl, rd); SSL_set0_wbio(l->ssl, wr);
-    if (!SSL_set_blocking_mode(l->ssl, 0) || !SSL_listen(l->ssl)) goto fail;
-    SSL_set_generic_value_uint(l->ssl, SSL_VALUE_QUIC_MAX_PENDING_CONNS, limit);
-    int one = 1;
-#ifdef IP_PKTINFO
-    setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
-#elif defined(IP_RECVDSTADDR)
-    setsockopt(fd, IPPROTO_IP, IP_RECVDSTADDR, &one, sizeof(one));
-#endif
-    setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
-#ifdef __linux__
-    ++quic_listeners;
-#endif
-    return l;
-fail:
-    SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l); return NULL;
-}
-#ifdef __linux__
-/* Shared by listeners on this event-loop thread; every batch is consumed
- * before another listener is driven. Keep full-size UDP buffers so valid
- * datagrams are not rejected solely because batching is enabled. */
-typedef struct {
-    uint8_t data[8][65536], control[8][256];
-    struct sockaddr_storage peer[8];
-    struct iovec vec[8];
-    struct mmsghdr msg[8];
-} quic_input_batch;
-/* Allocate only for QUIC traffic, not for every TLS worker/thread. */
-static _Thread_local quic_input_batch *quic_input;
-static ssize_t quic_recv(int fd, unsigned remaining, unsigned *index, unsigned *count,
-                          uint8_t **buf, struct msghdr *msg) {
-    if (!quic_input) {
-        quic_input = malloc(sizeof(*quic_input));
-        if (!quic_input) return -1;
-    }
-    if (*index == *count) {
-        memset(quic_input->msg, 0, sizeof(quic_input->msg));
-        for (unsigned k = 0; k < 8; ++k) {
-            struct msghdr *m = &quic_input->msg[k].msg_hdr;
-            quic_input->vec[k] = (struct iovec){quic_input->data[k], sizeof(quic_input->data[k])};
-            m->msg_iov = &quic_input->vec[k]; m->msg_iovlen = 1;
-            m->msg_name = &quic_input->peer[k]; m->msg_namelen = sizeof(quic_input->peer[k]);
-            m->msg_control = quic_input->control[k]; m->msg_controllen = sizeof(quic_input->control[k]);
-        }
-        int n = recvmmsg(fd, quic_input->msg, remaining < 8 ? remaining : 8, MSG_DONTWAIT, NULL);
-        if (n <= 0) return -1;
-        *index = 0; *count = (unsigned)n;
-    }
-    unsigned k = (*index)++;
-    *buf = quic_input->data[k]; *msg = quic_input->msg[k].msg_hdr;
-    return (ssize_t)quic_input->msg[k].msg_len;
-}
-#endif
-int zhttp_h3_drive(void *ptr) {
-    listener *l = ptr;
-    int activity = 0;
-#ifdef __linux__
-    unsigned packet_index = 0, packet_count = 0;
-#endif
-    for (int i = 0; i < 128; ++i) {
-#ifdef __linux__
-        uint8_t *buf; struct msghdr msg;
-        ssize_t n = quic_recv(l->fd, (unsigned)(128 - i), &packet_index, &packet_count, &buf, &msg);
-        if (n < 0) break;
-        l->peer = *(struct sockaddr_storage *)msg.msg_name;
-#else
-        uint8_t buf[65536], control[256]; struct iovec iov = {buf, sizeof(buf)};
-        struct msghdr msg = {0};
-        msg.msg_name = &l->peer; msg.msg_namelen = sizeof(l->peer);
-        msg.msg_iov = &iov; msg.msg_iovlen = 1; msg.msg_control = control; msg.msg_controllen = sizeof(control);
-        ssize_t n = recvmsg(l->fd, &msg, 0); if (n < 0) break;
-#endif
-        activity = 1;
-        if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) continue;
-        l->local = l->bound;
-        for (struct cmsghdr *ch = CMSG_FIRSTHDR(&msg); ch; ch = CMSG_NXTHDR(&msg, ch)) {
-#ifdef IP_PKTINFO
-            if (ch->cmsg_level == IPPROTO_IP && ch->cmsg_type == IP_PKTINFO)
-                ((struct sockaddr_in *)&l->local)->sin_addr = ((struct in_pktinfo *)CMSG_DATA(ch))->ipi_addr;
-#elif defined(IP_RECVDSTADDR)
-            if (ch->cmsg_level == IPPROTO_IP && ch->cmsg_type == IP_RECVDSTADDR)
-                memcpy(&((struct sockaddr_in *)&l->local)->sin_addr, CMSG_DATA(ch), sizeof(struct in_addr));
-#endif
-            if (ch->cmsg_level == IPPROTO_IPV6 && ch->cmsg_type == IPV6_PKTINFO)
-                ((struct sockaddr_in6 *)&l->local)->sin6_addr = ((struct in6_pktinfo *)CMSG_DATA(ch))->ipi6_addr;
-        }
-        if (bio_addr(l->peer_addr, &l->peer) && bio_addr(l->local_addr, &l->local)) {
-            SSL_inject_net_dgram(l->ssl, buf, (size_t)n, l->peer_addr, l->local_addr);
-            /* A new connection can only start with a long-header packet.
-             * Process it before changing the callback's peer/local context;
-             * established short-header packets can share one event tick. */
-            if (n && (buf[0] & 0x80)) SSL_handle_events(l->ssl);
-        }
-    }
-    SSL_handle_events(l->ssl);
-    SSL *q;
-    /* Calling accept on an empty queue runs two additional reactor ticks in
-     * OpenSSL 3.5. Explicit event handling above already refreshed this queue. */
-    while (SSL_get_accept_connection_queue_len(l->ssl) &&
-           (q = SSL_accept_connection(l->ssl, SSL_ACCEPT_CONNECTION_NO_BLOCK))) {
-        peer_info *pi = SSL_get_ex_data(q, peer_index);
-        session *s = pi ? calloc(1, sizeof(*s)) : NULL;
-        if (!s) { SSL_free(q); continue; }
-        ++active_sessions;
-        s->ssl = q; s->open = l->open; s->drive = l->drive; s->close = l->close;
-        s->user = l->user; s->peer = pi->peer; s->local = pi->local;
-        SSL_set_default_stream_mode(q, SSL_DEFAULT_STREAM_MODE_NONE);
-        SSL_set_incoming_stream_policy(q, SSL_INCOMING_STREAM_POLICY_ACCEPT, 0);
-        /* Drive QUIC once after the bounded application batch, rather than
-         * once per stream read/write. Streams inherit this mode. */
-        if (!SSL_set_event_handling_mode(q, SSL_VALUE_EVENT_HANDLING_MODE_EXPLICIT)) {
-            free_session(s); SSL_free(q); continue;
-        }
-        s->next = l->sessions; l->sessions = s;
-    }
-    session **pp = &l->sessions;
-    while (*pp) {
-        session *s = *pp;
-        s->activity = 0;
-        if (drive_h3(s)) {
-            *pp = s->next; SSL_shutdown_ex(s->ssl, SSL_SHUTDOWN_FLAG_RAPID, NULL, 0);
-            SSL *ssl = s->ssl; free_session(s); SSL_free(ssl);
-        } else { activity |= s->activity; pp = &s->next; }
-    }
-    SSL_handle_events(l->ssl);
-    return activity;
-}
-int zhttp_h3_wait_ms(void *ptr) {
-    listener *l = ptr;
-    struct timeval timeout; int infinite = 0;
-    if (!SSL_get_event_timeout(l->ssl, &timeout, &infinite) || infinite || timeout.tv_sec > 0)
-        return 5;
-    /* Polling backends accept whole milliseconds. Round down so QUIC pacing
-     * and ACK timers are never delayed by the generic 5 ms modern-I/O poll.
-     * Sub-millisecond deadlines briefly poll without sleeping. */
-    if (timeout.tv_sec < 0 || timeout.tv_usec < 0) return 0;
-    return timeout.tv_usec >= 5000 ? 5 : (int)(timeout.tv_usec / 1000);
-}
-
-void zhttp_h3_free(void *ptr) {
-    if (!ptr) return;
-    listener *l = ptr;
-    while (l->sessions) {
-        session *s = l->sessions; l->sessions = s->next;
-        SSL *ssl = s->ssl; free_session(s); SSL_free(ssl);
-    }
-    SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l);
-#ifdef __linux__
-    if (!--quic_listeners) { free(quic_input); quic_input = NULL; }
-#endif
-}

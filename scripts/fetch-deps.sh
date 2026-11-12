@@ -22,8 +22,7 @@ if [ -f SHA256SUMS ]; then shasum -a 256 -c SHA256SUMS; else
 for t in nginx-$NGINX openssl-$OPENSSL pcre2-$PCRE2 zlib-$ZLIB; do [ -d $t ] || tar xzf $t.tar.gz; done
 # Protocol libraries: hashes published with the pinned GitHub release assets.
 for spec in \
-  'nghttp2/nghttp2 1.71.0 0cdd35ecec77919b4b7b245f87fe8d2216e3d62da854eb0838c594ff058042fc' \
-  'ngtcp2/nghttp3 1.19.0 0dc9a55d38ca04c282524bfecdc5e31d393a4bb430200263dd06a87801a150af'; do
+  'nghttp2/nghttp2 1.71.0 0cdd35ecec77919b4b7b245f87fe8d2216e3d62da854eb0838c594ff058042fc'; do
   read -r repo version hash <<< "$spec"
   name="${repo##*/}-$version"
   fetch "https://github.com/$repo/releases/download/v$version/$name.tar.gz" "$name.tar.gz"

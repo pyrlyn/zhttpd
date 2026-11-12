@@ -50,7 +50,7 @@ the pinned dependency with `bash scripts/build-aws-lc.sh`, then add
 build and test commands. OpenSSL remains the default; omit `-Dtls-backend` and
 use the OpenSSL prefix to switch back. AWS-LC's headers and static libraries must
 come from the same installation. `zhttpd -V` identifies the selected backend.
-This option covers HTTP/1.1; it does not provide the OpenSSL QUIC API.
+This option covers HTTP/1.1; zquic needs OpenSSL's QUIC TLS callback API.
 The build rejects combining AWS-LC with `-Dhttp=true`; use the default OpenSSL
 backend for HTTP/2 and HTTP/3. OpenSSL providers are not supported by AWS-LC.
 
@@ -126,18 +126,22 @@ mise exec -- zig build test-protocols -Dtls=true -Dhttp=true \
 The protocol suite also downloads large HTTP/3 responses with small flow-control
 windows and deterministic packet loss, checking exact bodies before and after
 reload. A UDP relay also exercises reordering and late duplicate packets.
-The OpenSSL build applies `deps/patches/openssl-quic-stream-gc.patch` and runs
-`tests/quic-stream-gc.c` against the installed archive, including retention
-before the final ACK. Its cache stamp covers the patch, regression test,
-source/toolchain pins and build recipe. On Linux, `zig build test` with
-`-Dhttp=true` includes UDP GSO boundary,
-peer/source address, IPv6/failure fallback and bounded receive-batch tests.
-Run that adapter check alone with:
+A second relay switches the client to a new UDP source port mid-download and
+checks that the response completes on the validated new path.
+The OpenSSL build still applies `deps/patches/openssl-quic-stream-gc.patch` and
+runs `tests/quic-stream-gc.c` against the installed archive; zhttpd no longer
+uses OpenSSL's QUIC stack, but nginx comparison builds do. With `-Dhttp=true`,
+`zig build test` also runs the zquic unit tests (packet protection, loss
+recovery, flow control, QPACK, HTTP/3 framing and loopback handshakes) and the
+HTTP/2 codec test. Run them alone with:
 
 ```bash
-mise exec -- zig build test-quic-io -Dtls=true -Dhttp=true \
+mise exec -- zig build test-quic test-h2-codec -Dtls=true -Dhttp=true \
   -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
 ```
+
+The package also builds and tests on its own from `modules/quic`; see its
+[README](../modules/quic/README.md).
 
 After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:
 

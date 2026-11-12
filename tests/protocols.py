@@ -455,6 +455,66 @@ async def h3_peer_addresses(port):
     await asyncio.gather(*(one(f'127.0.0.{1 + i % 2}') for i in range(16)))
 
 
+async def h3_migration(port):
+    """A connection survives NAT rebinding plus a new connection ID (RFC 9000 §9)."""
+    loop = asyncio.get_running_loop()
+
+    class Upstream(asyncio.DatagramProtocol):
+        def __init__(self, relay):
+            self.relay = relay
+
+        def connection_made(self, transport):
+            self.transport = transport
+
+        def datagram_received(self, data, addr):
+            # Late packets to the old path still reach the client.
+            if self.relay.client and not self.relay.transport.is_closing():
+                self.relay.transport.sendto(data, self.relay.client)
+
+    class Relay(asyncio.DatagramProtocol):
+        client = None
+        upstream = None
+
+        def connection_made(self, transport):
+            self.transport = transport
+
+        def datagram_received(self, data, addr):
+            self.client = addr
+            self.upstream.transport.sendto(data, ('127.0.0.1', port))
+
+    relay_transport, relay = await loop.create_datagram_endpoint(Relay, local_addr=('127.0.0.1', 0))
+    paths = []
+
+    async def new_path():
+        transport, upstream = await loop.create_datagram_endpoint(lambda: Upstream(relay), local_addr=('127.0.0.1', 0))
+        paths.append(transport)
+        relay.upstream = upstream
+        return transport.get_extra_info('sockname')[1]
+
+    try:
+        first = await new_path()
+        cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'], verify_mode=ssl.CERT_NONE)
+        async with connect('127.0.0.1', relay_transport.get_extra_info('sockname')[1],
+                           configuration=cfg, create_protocol=H3Client) as client:
+            status, body = await asyncio.wait_for(client.request('/peer'), 5)
+            assert status == 200 and body == f'127.0.0.1 {first} 127.0.0.1'.encode(), body
+            # Rebind mid-transfer: the server validates the new path and moves
+            # the connection, including the in-flight response.
+            large = client.request('/large')
+            await asyncio.sleep(.01)
+            second = await new_path()
+            client._quic.change_connection_id()
+            client.transmit()
+            status, body = await asyncio.wait_for(large, 10)
+            assert status == 200 and body == LARGE
+            status, body = await asyncio.wait_for(client.request('/peer'), 5)
+            assert status == 200 and body == f'127.0.0.1 {second} 127.0.0.1'.encode(), body
+    finally:
+        for transport in paths:
+            transport.close()
+        relay_transport.close()
+
+
 def h1_exchange(port, host="localhost", offer_h2=False):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
@@ -480,6 +540,11 @@ def run():
         with socket.socket() as reserve:
             reserve.bind(('127.0.0.1', 0))
             port = reserve.getsockname()[1]
+        # Migration needs one engine per address: like nginx without
+        # quic_bpf, a multi-worker reuseport group cannot steer a new path.
+        with socket.socket(type=socket.SOCK_DGRAM) as reserve:
+            reserve.bind(('127.0.0.1', 0))
+            migration_port = reserve.getsockname()[1]
         upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
         thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         thread.start()
@@ -494,6 +559,7 @@ http {{
     server {{
         listen 127.0.0.1:{port} ssl;
         listen 127.0.0.1:{port} quic{' reuseport' if REUSEPORT else ''};
+        listen 127.0.0.1:{migration_port} quic;
         server_name localhost;
         ssl_certificate {cert};
         ssl_certificate_key {key};
@@ -559,6 +625,7 @@ http {{
             asyncio.run(h3_loss_backpressure(port))
             asyncio.run(h3_loss_and_reordering(port))
             asyncio.run(h3_workers(port))
+            asyncio.run(h3_migration(migration_port))
             if sys.platform == 'linux':
                 asyncio.run(h3_peer_addresses(port))
             # Two independent QUIC clients exercise connection demultiplexing.
@@ -579,7 +646,7 @@ http {{
             proc.send_signal(signal.SIGQUIT)
             proc.wait(timeout=10)
             assert proc.returncode == 0
-            print('PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, reload, shutdown')
+            print('PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, migration, reload, shutdown')
         except BaseException:
             log.flush(); log.seek(0); print(log.read())
             raise

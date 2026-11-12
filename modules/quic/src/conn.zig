@@ -420,6 +420,7 @@ pub const Conn = struct {
     close_deadline: u64 = 0,
     close_rx_count: u32 = 0,
     drain_close: ?u64 = null,
+    drain_after: u64 = 0,
     tp_buf: [256]u8 = undefined,
     app: ?*anyopaque = null,
     // endpoint bookkeeping
@@ -735,11 +736,20 @@ pub const Conn = struct {
     }
 
     /// Closes with `code` once every peer-initiated bidirectional stream is
-    /// released and fully acknowledged (graceful HTTP/3 shutdown).
+    /// released and fully acknowledged (graceful HTTP/3 shutdown). The close
+    /// waits at least three PTOs so requests the peer sent before it saw the
+    /// shutdown, but which were lost or reordered, still arrive and are served.
     pub fn closeWhenIdle(c: *Conn, code: u64) void {
         if (c.state != .open and c.state != .handshake) return;
         c.drain_close = code;
+        c.drain_after = c.now() + 3 * c.rtt.pto(c.peer_params.max_ack_delay_ms * 1000);
         c.markDirty();
+    }
+
+    /// True once a graceful close has passed its grace period; new peer
+    /// requests after this point should be refused.
+    pub fn drainGraceOver(c: *const Conn) bool {
+        return c.drain_close != null and c.now() >= c.drain_after;
     }
 
     /// Peer-initiated bidirectional streams still held by the transport.
@@ -1617,6 +1627,7 @@ pub const Conn = struct {
         const sp = &c.spaces[2];
         if (sp.ack_deadline != 0) d = @min(d, sp.ack_deadline);
         if (c.challenge != null) d = @min(d, c.challenge_deadline);
+        if (c.drain_close != null and c.drain_after > c.now()) d = @min(d, c.drain_after);
         return d;
     }
 
@@ -1682,7 +1693,7 @@ pub const Conn = struct {
     /// Builds the next datagram into `out`. Returns null when idle.
     pub fn send(c: *Conn, out: []u8) ?Datagram {
         if (c.state == .closed or c.state == .draining) return null;
-        if (c.drain_close) |code| if (c.state == .open and c.activeBidi() == 0) {
+        if (c.drain_close) |code| if (c.state == .open and c.activeBidi() == 0 and c.now() >= c.drain_after) {
             c.drain_close = null;
             c.closeApp(code, "");
         };

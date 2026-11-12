@@ -19,7 +19,8 @@ requiring the comparison nginx or downloaded OpenSSL sources. HTTP/2 and HTTP/3 
 
 ## Build with TLS
 
-The full build uses pinned OpenSSL, nghttp2 and nghttp3 libraries:
+The full build uses pinned OpenSSL and nghttp2 libraries; HTTP/3 comes from the
+in-tree zquic package:
 
 ```bash
 mise trust
