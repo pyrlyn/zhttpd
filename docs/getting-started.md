@@ -48,6 +48,20 @@ That prefix must contain headers in `include/` and static `libssl.a` and
 `scripts/gen-certs.sh`; its output is written to the ignored `bench/certs/`
 directory. These self-signed certificates are for testing.
 
+For the optional AWS-LC backend (C compiler, CMake, Ninja and git required):
+
+```bash
+bash scripts/build-aws-lc.sh
+zig build -Doptimize=ReleaseFast -Dtls=true -Dtls-backend=aws_lc \
+  -Dopenssl="$PWD/deps/aws-lc-install"
+```
+
+The script pins AWS-LC 5.14.0 and applies a versioned Linux Apple CPU-detection
+patch; other tracked dependency edits are rejected. OpenSSL stays the default;
+switch back by omitting `-Dtls-backend` and selecting its library prefix.
+See [backend validation](development.md) and the measured scope and limits in
+the [HTTPS/TLS report](../bench/TLS-OPTIMIZATION.md).
+
 ## Command-line reference
 
 | Option | Behavior |

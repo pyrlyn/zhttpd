@@ -3,7 +3,7 @@
 # zhttpd
 
 An HTTP/1.0 and HTTP/1.1 server written in Zig, with nginx-style configuration,
-optional TLS through OpenSSL, and native event loops: kqueue on macOS and epoll
+optional TLS through OpenSSL or AWS-LC, and native event loops: kqueue on macOS and epoll
 on Linux.
 
 It serves static files, proxies HTTP upstreams, routes virtual hosts, and renders
@@ -54,3 +54,6 @@ python3 tests/error-pages.py
 Benchmark results and methodology are in [bench/RESULTS.md](bench/RESULTS.md)
 and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
 [bench/lima/README.md](bench/lima/README.md).
+The HTTPS build passed the 1.5x-nginx throughput and p99 gates in the documented
+Linux/ARM64 benchmark matrix. Measurements, build options and limitations are
+in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).

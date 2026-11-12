@@ -6,12 +6,15 @@
 #   bench/run.sh --quick              # 3 s runs, 1 repetition, fewer scenarios (smoke)
 #   SERVERS="zhttpd nginx" bench/run.sh
 #   DURATION=15 REPS=3 bench/run.sh
+#   SCENARIO_FILTER='^https-' SERVERS="zhttpd nginx" bench/run.sh
+#   WORKERS=1 SERVER_CPUS=0 LOAD_CPUS=1-3 bench/run.sh # Linux CPU isolation
 #
 # Output: bench/results/<timestamp>/ with one oha JSON per run, runs.csv, load.log,
 # the exact nginx.conf used, and RESULTS.md (also copied to bench/RESULTS.md).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH="$ROOT/bench"
+CONF_TEMPLATE="${CONF_TEMPLATE:-$BENCH/nginx.conf.in}"
 # Platform-native binaries: Linux builds live under tools/linux and zig-out-linux
 # so a VM run never overwrites the Darwin ones.
 if [ "$(uname)" = Linux ]; then
@@ -26,6 +29,13 @@ else
   LEADER_BIN_DEFAULT="$BENCH/competitors/HttpArena/frameworks/dusty-tuned/zig-out/bin/dusty-arena"
 fi
 PORT="${PORT:-48080}"; TLSPORT="${TLSPORT:-48443}"
+WORKERS="${WORKERS:-auto}"
+[[ "$WORKERS" =~ ^(auto|[1-9][0-9]*)$ ]] || { echo "invalid WORKERS" >&2; exit 1; }
+# Optional Linux CPU isolation: pin both servers identically and keep the load
+# generator on separate CPUs so its own TLS work cannot hide server throughput.
+SERVER_RUN=(env); LOAD_RUN=(env)
+[ -z "${SERVER_CPUS:-}" ] || SERVER_RUN=(taskset -c "$SERVER_CPUS")
+[ -z "${LOAD_CPUS:-}" ] || LOAD_RUN=(taskset -c "$LOAD_CPUS")
 # raise the fd cap when the shell allows it (needed for c1024 + many TIME_WAIT)
 ulimit -n 65535 2>/dev/null || ulimit -n 10240 2>/dev/null || true
 DURATION="${DURATION:-10}"; WARMUP="${WARMUP:-2}"; REPS="${REPS:-2}"
@@ -53,7 +63,7 @@ SERVERS="${SERVERS:-zhttpd nginx $LEADER_NAME}"
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="$BENCH/results/$STAMP"
-mkdir -p "$OUT" "$BENCH/run/zhttpd/logs" "$BENCH/run/nginx/logs"
+mkdir -p "$OUT" "$BENCH/run/zhttpd/logs" "$BENCH/run/zhttpd-baseline/logs" "$BENCH/run/nginx/logs"
 
 # ---------------------------------------------------------------- inputs
 [ -f "$BENCH/certs/cert.pem" ] || "$ROOT/scripts/gen-certs.sh" || exit 1
@@ -65,14 +75,17 @@ random.seed(42)
 small = ("<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome</title>\n</head>\n<body>\n"
          + "<p>" + "zhttpd benchmark page. " * 22 + "</p>\n</body>\n</html>\n")
 open(os.path.join(d, "small.html"), "w").write(small[:612].ljust(612))
-for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024)):
+for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024),
+                   ("huge.bin", 100 * 1024 * 1024)):
     p = os.path.join(d, name)
     if not os.path.exists(p) or os.path.getsize(p) != size:
-        open(p, "wb").write(random.randbytes(size))
+        with open(p, "wb") as f:
+            for offset in range(0, size, 1024 * 1024):
+                f.write(random.randbytes(min(1024 * 1024, size - offset)))
 PY
 EVENTS=kqueue; [ "$(uname)" = Linux ] && EVENTS=epoll
-sed -e "s#@ROOT@#$ROOT#g" -e "s#@PORT@#$PORT#g" -e "s#@TLSPORT@#$TLSPORT#g" -e "s#use kqueue;#use $EVENTS;#" \
-    "$BENCH/nginx.conf.in" > "$BENCH/nginx.conf"
+sed -e "s#@ROOT@#$ROOT#g" -e "s#@PORT@#$PORT#g" -e "s#@TLSPORT@#$TLSPORT#g" -e "s#use kqueue;#use $EVENTS;#" -e "s#worker_processes auto;#worker_processes $WORKERS;#" \
+    "$CONF_TEMPLATE" > "$BENCH/nginx.conf"
 cp "$BENCH/nginx.conf" "$OUT/nginx.conf"
 
 # ---------------------------------------------------------------- scenarios
@@ -95,10 +108,17 @@ http-baseline-ka-c256|http|1|256|/baseline11?a=1&b=2
 https-small-ka-c64|https|1|64|/static/small.html
 https-small-ka-c256|https|1|256|/static/small.html
 https-large-ka-c64|https|1|64|/static/large.bin
+https-huge-ka-c64|https|1|64|/static/huge.bin
 https-small-noka-c64|https|0|64|/static/small.html"
 fi
 
 # ---------------------------------------------------------------- helpers
+if [ -n "${SCENARIO_FILTER:-}" ]; then
+  SCENARIOS=$(printf '%s\n' "$SCENARIOS" | grep -E "$SCENARIO_FILTER")
+  [ -n "$SCENARIOS" ] || { echo "SCENARIO_FILTER matched no scenarios" >&2; exit 1; }
+fi
+printf '%s\n' "$SCENARIOS" > "$OUT/scenarios.txt"
+
 loadavg() { if [ "$(uname)" = Darwin ]; then sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1}'; else cut -d' ' -f1 /proc/loadavg; fi; }
 ncpu() { if [ "$(uname)" = Darwin ]; then sysctl -n hw.ncpu; else nproc; fi; }
 
@@ -126,11 +146,12 @@ require_ports_free() {
 start_server() {
   require_ports_free || return 1
   case "$1" in
-    zhttpd) "$ZHTTPD" -p "$BENCH/run/zhttpd/" -c "$BENCH/nginx.conf" -q > "$OUT/zhttpd.stdout" 2>&1 & ;;
-    nginx)  "$NGINX" -p "$BENCH/run/nginx/" -c "$BENCH/nginx.conf" -g 'daemon off;' > "$OUT/nginx.stdout" 2>&1 & ;;
+    zhttpd) "${SERVER_RUN[@]}" "$ZHTTPD" -p "$BENCH/run/zhttpd/" -c "$BENCH/nginx.conf" -q > "$OUT/zhttpd.stdout" 2>&1 & ;;
+    zhttpd-baseline) "${SERVER_RUN[@]}" "${ZHTTPD_BASELINE:?set ZHTTPD_BASELINE}" -p "$BENCH/run/zhttpd-baseline/" -c "$BENCH/nginx.conf" -q > "$OUT/zhttpd-baseline.stdout" 2>&1 & ;;
+    nginx)  "${SERVER_RUN[@]}" "$NGINX" -p "$BENCH/run/nginx/" -c "$BENCH/nginx.conf" -g 'daemon off;' > "$OUT/nginx.stdout" 2>&1 & ;;
     dusty-tuned)
       ( cd "$BENCH/www" && PORT=$PORT TLS_PORT=$TLSPORT STATIC_DIR="$BENCH/www/static" \
-        TLS_CERT="$BENCH/certs/cert.pem" TLS_KEY="$BENCH/certs/key.pem" exec "$LEADER_BIN" ) > "$OUT/dusty.stdout" 2>&1 & ;;
+        TLS_CERT="$BENCH/certs/cert.pem" TLS_KEY="$BENCH/certs/key.pem" exec "${SERVER_RUN[@]}" "$LEADER_BIN" ) > "$OUT/dusty.stdout" 2>&1 & ;;
     *) echo "unknown server $1"; return 1 ;;
   esac
   SERVER_PID=$!
@@ -175,7 +196,9 @@ stop_server() {
 cleanup_bench() {
   stop_server || true
 }
-trap cleanup_bench EXIT INT TERM
+trap cleanup_bench EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Count TIME_WAIT sockets that mention our listen ports (max wait 90 s).
 count_time_wait() {
@@ -198,12 +221,14 @@ wait_time_wait() {
 }
 
 oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests)
-  local url="$1://127.0.0.1:$([ "$1" = https ] && echo $TLSPORT || echo $PORT)$4"
-  local args=(-c "$3" --no-tui --output-format json)
+  local port="$PORT"
+  [ "$1" = https ] && port="$TLSPORT"
+  local url="$1://127.0.0.1:$port$4"
+  local args=(-c "$3" --no-tui --output-format json -w -t 10s)
   case "$5" in n*) args+=(-n "${5#n}") ;; *) args+=(-z "${5}s") ;; esac
   [ "$1" = https ] && args+=(--insecure)
   [ "$2" = 0 ] && args+=(--disable-keepalive)
-  "$OHA" "${args[@]}" "$url" > "$6" 2>"$6.err"
+  "${LOAD_RUN[@]}" "$OHA" "${args[@]}" "$url" > "$6" 2>"$6.err"
 }
 
 # ---------------------------------------------------------------- run
@@ -211,14 +236,29 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   echo "date: $(date)"
   echo "host: $(uname -a)"
   echo "cpus: $(ncpu)"
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemTotal:/ { print "memory_total_kib: " $2 }' /proc/meminfo
+  else
+    echo "memory_total_bytes: $(sysctl -n hw.memsize)"
+  fi
   [ "$(uname)" = Darwin ] && echo "model: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / $(sysctl -n hw.memsize | awk '{printf "%.0f GiB", $1/1073741824}')"
   echo "oha: $("$OHA" --version)"
   echo "zhttpd: $("$ZHTTPD" -V 2>&1 | tr '\n' ' ')"
+  echo "zhttpd_binary: $ZHTTPD"
+  [ -z "${ZHTTPD_BASELINE:-}" ] || echo "zhttpd-baseline: $ZHTTPD_BASELINE"
   echo "nginx: $("$NGINX" -V 2>&1 | tr '\n' ' ')"
+  python3 - "$ZHTTPD" "$NGINX" "${ZHTTPD_BASELINE:-}" <<'PY'
+import hashlib, sys
+for label, path in zip(('zhttpd', 'nginx', 'zhttpd-baseline'), sys.argv[1:]):
+    if path:
+        with open(path, 'rb') as binary:
+            print(f'{label}_sha256: {hashlib.file_digest(binary, "sha256").hexdigest()}')
+PY
   LEADER_SRC="$BENCH/competitors/HttpArena"
 [ -d "$LEADER_SRC" ] || LEADER_SRC="/Users/listepo/Grok/zig-http-server/bench/competitors/HttpArena"
 echo "leader: $LEADER_NAME ($(git -C "$LEADER_SRC" log -1 --format=%H 2>/dev/null))"
   echo "duration=${DURATION}s warmup=${WARMUP}s keepalive-off=${NOKA_N} requests reps=$REPS servers=[$SERVERS]"
+  echo "workers=$WORKERS server_cpus=${SERVER_CPUS:-unbound} load_cpus=${LOAD_CPUS:-unbound} scenario_filter=${SCENARIO_FILTER:-all}"
 } > "$OUT/env.txt"
 echo "rep,order,server,scenario,load_before,load_after,file" > "$OUT/runs.csv"
 cat "$OUT/env.txt"
@@ -235,7 +275,7 @@ for rep in $(seq 1 "$REPS"); do
       if [ "$(uname)" = Darwin ]; then ps -Ao pcpu,comm -r | head -6
       else ps -eo pcpu,comm --sort=-pcpu | head -6
       fi; } >> "$OUT/load.log"
-    start_server "$srv" || continue
+    start_server "$srv" || exit 1
     while IFS='|' read -r name scheme ka conns path; do
       [ -z "$name" ] && continue
       wait_time_wait
@@ -244,7 +284,7 @@ for rep in $(seq 1 "$REPS"); do
       [ "$ka" = 0 ] && wait_time_wait
       lb=$(loadavg)
       f="$OUT/$name.$srv.r$rep.json"
-      oha_run "$scheme" "$ka" "$conns" "$path" "$d" "$f"
+      oha_run "$scheme" "$ka" "$conns" "$path" "$d" "$f" || exit 1
       la=$(loadavg)
       echo "$rep,$pos,$srv,$name,$lb,$la,$(basename "$f")" >> "$OUT/runs.csv"
       printf '   %-24s %s\n' "$name" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("%.0f rps" % d["summary"]["requestsPerSec"])' "$f" 2>/dev/null || echo error)"
@@ -253,5 +293,6 @@ for rep in $(seq 1 "$REPS"); do
   done
 done
 
-python3 "$BENCH/report.py" "$OUT" && cp "$OUT/RESULTS.md" "$BENCH/RESULTS.md"
+python3 "$BENCH/report.py" "$OUT" || exit 1
+cp "$OUT/RESULTS.md" "$BENCH/RESULTS.md" || exit 1
 echo "results: $OUT/RESULTS.md (copied to bench/RESULTS.md)"

@@ -2,8 +2,9 @@
 //!
 //! Memory: every buffer a request needs lives inside `Conn` (read buffer, write buffer,
 //! decoded-path buffer, a fixed per-request arena). Connections are pooled per worker,
-//! so the request hot path performs no heap allocation. The only heap use is a request
-//! body that must be kept for `proxy_pass` (bounded by `client_max_body_size`).
+//! so small static responses need no request-buffer allocation. Large TLS responses
+//! use temporary plaintext/ciphertext staging buffers; proxy request bodies are
+//! bounded by `client_max_body_size`.
 const std = @import("std");
 const c = std.c;
 const config = @import("../conf/config.zig");
@@ -21,6 +22,8 @@ const Regex = @import("../regex.zig").Regex;
 
 pub const rbuf_size = 16 * 1024;
 pub const wbuf_size = 16 * 1024;
+const file_read_size = 128 * 1024;
+const file_write_size = 192 * 1024;
 pub const arena_size = 16 * 1024;
 pub const path_size = 8 * 1024;
 
@@ -37,17 +40,23 @@ pub const Conn = struct {
     tag: Tag align(8) = .{ .kind = .client },
     up_tag: Tag align(8) = .{ .kind = .upstream },
     w: *Worker = undefined,
-    fd: c_int = -1,
+    fd: c_int align(8) = -1,
     ssl: ?*tls.SSL = null,
+    tls_read: tls.ReadState align(8) = .{},
     listen: *const config.Listen = undefined,
-    local: Addr = .{},
-    peer: Addr = .{},
+    local: Addr align(8) = .{},
+    peer: Addr align(8) = .{},
     id: u64 = 0,
-    state: State = .read_head,
+    // Keep hot scalar fields with the pointers, ahead of byte-aligned buffers
+    // in Zig's automatic struct layout. Otherwise state lands on the last page.
+    state: State align(8) = .read_head,
     prev: ?*Conn = null,
     next: ?*Conn = null,
+    posted: bool align(8) = false,
+    posted_prev: ?*Conn = null,
+    posted_next: ?*Conn = null,
     deadline: i64 = 0,
-    requests: u32 = 0,
+    requests: u32 align(8) = 0,
 
     // input
     rbuf: [rbuf_size]u8 = undefined,
@@ -55,29 +64,33 @@ pub const Conn = struct {
     scan: usize = 0,
 
     // request body
-    body_mode: BodyMode = .none,
+    body_mode: BodyMode align(8) = .none,
     body_left: u64 = 0,
     chunk: request.ChunkedDecoder = .{},
-    body_store: bool = false,
+    body_store: bool align(8) = false,
     body_limit: u64 = 0,
     body_pos: usize = 0,
     body: std.ArrayList(u8) = .empty,
-    after_body: AfterBody = .respond,
+    after_body: AfterBody align(8) = .respond,
 
     // output
     wbuf: [wbuf_size]u8 = undefined,
     segs: [4][]const u8 = undefined,
-    nsegs: u8 = 0,
-    seg_i: u8 = 0,
-    file_fd: c_int = -1,
+    nsegs: u8 align(8) = 0,
+    seg_i: u8 align(8) = 0,
+    file_fd: c_int align(8) = -1,
     /// file_fd belongs to the worker's open file cache: never close it here
-    file_borrowed: bool = false,
+    file_borrowed: bool align(8) = false,
     file_off: u64 = 0,
     file_end: u64 = 0,
-    file_sendfile: bool = false,
-    close_after: bool = false,
-    keep_alive: bool = false,
-    drop: bool = false, // `return 444`
+    file_sendfile: bool align(8) = false,
+    // Large TLS responses batch file reads without changing TLS record size.
+    // Leased from the worker while in flight; SSL_write retries retain it.
+    file_buf: ?[]u8 = null,
+    tls_write_buf: ?*tls.BIO = null,
+    close_after: bool align(8) = false,
+    keep_alive: bool align(8) = false,
+    drop: bool align(8) = false, // `return 444`
 
     // request
     req: Request = .{},
@@ -85,7 +98,7 @@ pub const Conn = struct {
     arena_mem: [arena_size]u8 = undefined,
     fba: std.heap.FixedBufferAllocator = undefined,
     ctx: vars.Ctx = undefined,
-    in_request: bool = false,
+    in_request: bool align(8) = false,
     start_ms: i64 = 0,
     up: proxy.Upstream = .{},
     head_len: usize = 0, // response head length in wbuf
@@ -106,6 +119,8 @@ pub const Conn = struct {
         conn.listen = listen;
         conn.local = if (listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
         conn.ssl = null;
+        conn.tls_write_buf = null;
+        conn.tls_read = .{};
         conn.state = .read_head;
         conn.requests = 0;
         conn.rlen = 0;
@@ -127,11 +142,20 @@ pub const Conn = struct {
     // ------------------------------------------------------------- raw I/O (TLS aware)
 
     pub fn recv(conn: *Conn, buf: []u8) net.Io {
-        if (tls.enabled) if (conn.ssl) |ssl| return switch (tls.read(ssl, buf)) {
-            .ok => |n| .{ .ok = n },
-            .want_read, .want_write => .again,
-            .eof => .eof,
-            .err => .{ .err = 0 },
+        if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
+            if (!conn.tls_read.ready and !conn.tls_read.eof and !conn.tls_read.want_write and !tls.hasPending(ssl)) return .again;
+        };
+        if (tls.enabled) if (conn.ssl) |ssl| {
+            const r = tls.read(ssl, buf);
+            // SSL_read may need to write protocol traffic (e.g. KeyUpdate).
+            // Preserve its retry even when the encrypted input was drained.
+            conn.tls_read.want_write = r == .want_write;
+            return switch (r) {
+                .ok => |n| .{ .ok = n },
+                .want_read, .want_write => .again,
+                .eof => .eof,
+                .err => .{ .err = 0 },
+            };
         };
         return net.read(conn.fd, buf);
     }
@@ -159,11 +183,26 @@ pub const Conn = struct {
     }
 
     pub fn outputPending(conn: *const Conn) bool {
-        return conn.seg_i < conn.nsegs or conn.file_off < conn.file_end;
+        return conn.seg_i < conn.nsegs or conn.file_off < conn.file_end or conn.tls_write_buf != null;
+    }
+
+    pub fn prepareFileBuffer(conn: *Conn, size: u64) void {
+        if (conn.ssl != null and size >= 64 * 1024 and conn.file_buf == null)
+            conn.file_buf = conn.w.acquireFileBuffer(@intCast(@min(size, file_read_size))) catch null;
     }
 
     /// Write queued segments, then the file range. Partial progress is kept.
     pub fn flush(conn: *Conn) Flush {
+        const sent_at_entry = conn.ctx.bytes_sent;
+        const limit = conn.ctx.conf.sendfile_max_chunk;
+        if (tls.enabled and conn.file_buf != null and conn.tls_write_buf == null and conn.file_off < conn.file_end) {
+            conn.tls_write_buf = tls.bufferWrites(conn.ssl.?, @intCast(@min(file_write_size, conn.file_end - conn.file_off)));
+            if (conn.tls_write_buf == null) {
+                // Allocation failure keeps the original unbuffered path.
+                conn.w.releaseFileBuffer(conn.file_buf.?);
+                conn.file_buf = null;
+            }
+        }
         while (true) {
             while (conn.seg_i < conn.nsegs) {
                 const r = blk: {
@@ -198,9 +237,44 @@ pub const Conn = struct {
                     .eof, .err => return .err,
                 }
             }
-            if (conn.file_off >= conn.file_end) return .done;
-            if (conn.ssl == null and conn.file_sendfile) {
-                switch (net.sendFile(conn.fd, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
+            if (conn.file_off >= conn.file_end) {
+                if (tls.enabled) if (conn.tls_write_buf) |buffer| {
+                    switch (tls.flushWrites(buffer)) {
+                        .ok => {
+                            tls.unbufferWrites(conn.ssl.?, buffer);
+                            conn.tls_write_buf = null;
+                        },
+                        .want_read, .want_write => return .again,
+                        else => return .err,
+                    }
+                };
+                return .done;
+            }
+            // A fast reader may keep a large file writable indefinitely. Bound
+            // this turn, as nginx's write filter does, and explicitly post the
+            // continuation: an edge-triggered socket need not signal again.
+            const budget = if (limit == 0) std.math.maxInt(u64) else limit -| (conn.ctx.bytes_sent - sent_at_entry);
+            // Prefer complete staged reads to an extra short read at a quantum
+            // boundary. Header bytes otherwise shift all subsequent file reads
+            // off their page alignment. Small limits must still make progress.
+            const split_read = if (conn.file_buf) |buf|
+                budget < buf.len and conn.file_end - conn.file_off > budget and conn.ctx.bytes_sent - sent_at_entry >= buf.len
+            else
+                false;
+            if (budget == 0 or split_read) {
+                if (tls.enabled) if (conn.tls_write_buf) |buffer| {
+                    switch (tls.flushWrites(buffer)) {
+                        .ok => {},
+                        .want_read, .want_write => return .again,
+                        else => return .err,
+                    }
+                };
+                conn.w.post(conn);
+                return .again;
+            }
+            if (conn.file_sendfile and conn.ssl == null) {
+                const r = net.sendFile(conn.fd, conn.file_fd, conn.file_off, @min(budget, conn.file_end - conn.file_off));
+                switch (r) {
                     .ok => |n| {
                         conn.file_off += n;
                         conn.ctx.bytes_sent += n;
@@ -210,12 +284,15 @@ pub const Conn = struct {
                     .eof, .err => return .err,
                 }
             } else {
-                const want: usize = @intCast(@min(conn.wbuf.len, conn.file_end - conn.file_off));
-                const n = net.pread(conn.file_fd, conn.wbuf[0..want], conn.file_off);
+                const buf = conn.file_buf orelse conn.wbuf[0..];
+                // Bound reads instead of slicing SSL_write retries: a retry
+                // must keep exactly the same plaintext length and contents.
+                const want: usize = @intCast(@min(buf.len, budget, conn.file_end - conn.file_off));
+                const n = net.pread(conn.file_fd, buf[0..want], conn.file_off);
                 if (n <= 0) return .err; // file truncated under us
                 const got: usize = @intCast(n);
                 conn.file_off += got;
-                conn.setOutput(&.{conn.wbuf[0..got]});
+                conn.setOutput(&.{buf[0..got]});
             }
         }
     }
@@ -223,6 +300,7 @@ pub const Conn = struct {
     // ------------------------------------------------------------- state machine
 
     pub fn drive(conn: *Conn) void {
+        if (conn.posted) return;
         while (true) {
             const progressed = switch (conn.state) {
                 .handshake => conn.doHandshake(),
@@ -234,6 +312,16 @@ pub const Conn = struct {
                 .closed => false,
             };
             if (!progressed) return;
+            // Give other ready connections a turn after each response. The
+            // continuation must run even without another edge from the OS:
+            // pipelined bytes may already be in rbuf or inside OpenSSL.
+            if (conn.state == .read_head and !conn.in_request and conn.requests > 0) {
+                if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
+                    if (conn.rlen == 0 and !conn.tls_read.ready and !conn.tls_read.eof and !tls.hasPending(ssl)) return;
+                };
+                conn.w.post(conn);
+                return;
+            }
         }
     }
 
@@ -286,7 +374,7 @@ pub const Conn = struct {
 
     /// Answer a malformed request (400/414/501/505) and close, like nginx.
     fn badRequest(conn: *Conn, status: u16) void {
-        conn.req = .{};
+        conn.req.reset();
         conn.req.version = .http10;
         conn.req.keep_alive = false;
         conn.req.line = std.mem.sliceTo(conn.rbuf[0..@min(conn.rlen, 1024)], '\r');
@@ -486,6 +574,8 @@ pub const Conn = struct {
     }
 
     pub fn closeFile(conn: *Conn) void {
+        if (conn.file_buf) |buf| conn.w.releaseFileBuffer(buf);
+        conn.file_buf = null;
         if (conn.file_fd >= 0) {
             if (!conn.file_borrowed) net.close(conn.file_fd);
             conn.file_fd = -1;
@@ -518,6 +608,9 @@ pub const Conn = struct {
             conn.close();
             return;
         }
+        if (tls.enabled and conn.requests == 1) if (conn.ssl) |ssl| {
+            tls.trackReads(ssl, &conn.tls_read);
+        };
         // pipelined bytes after this request move to the front
         const next = conn.body_pos;
         const rest = conn.rlen - next;
@@ -573,11 +666,13 @@ pub const Conn = struct {
 
     pub fn close(conn: *Conn) void {
         if (conn.state == .closed) return;
+        conn.w.unpost(conn);
         conn.closeFile();
         proxy.release(conn);
         if (tls.enabled) if (conn.ssl) |ssl| {
             tls.free(ssl);
             conn.ssl = null;
+            conn.tls_write_buf = null;
         };
         net.close(conn.fd);
         conn.fd = -1;
@@ -585,3 +680,37 @@ pub const Conn = struct {
         conn.w.release(conn);
     }
 };
+
+test "TLS file staging is optional and returns to a bounded worker cache" {
+    var w: Worker = undefined;
+    w.gpa = std.testing.allocator;
+    w.file_buffer_cache = null;
+    defer w.clearFileBufferCache();
+    var cn: Conn = .{};
+    cn.w = &w;
+    cn.prepareFileBuffer(1024 * 1024);
+    try std.testing.expect(cn.file_buf == null); // plaintext keeps sendfile
+    cn.ssl = @ptrFromInt(8); // presence flag only; no OpenSSL calls in this test
+    cn.prepareFileBuffer(1024);
+    try std.testing.expect(cn.file_buf == null);
+    cn.prepareFileBuffer(1024 * 1024);
+    try std.testing.expectEqual(file_read_size, cn.file_buf.?.len);
+    cn.closeFile();
+    cn.closeFile();
+    try std.testing.expect(cn.file_buf == null);
+    try std.testing.expectEqual(file_read_size, w.file_buffer_cache.?.len);
+    // Two active responses cannot share the same buffer. Releasing both keeps
+    // only one spare; the testing allocator verifies the other is freed.
+    const first = try w.acquireFileBuffer(file_read_size);
+    const second = try w.acquireFileBuffer(file_read_size);
+    try std.testing.expect(first.ptr != second.ptr);
+    w.releaseFileBuffer(first);
+    w.releaseFileBuffer(second);
+    w.clearFileBufferCache();
+
+    var empty: [0]u8 = .{};
+    var limited: std.heap.FixedBufferAllocator = .init(&empty);
+    w.gpa = limited.allocator();
+    cn.prepareFileBuffer(1024 * 1024);
+    try std.testing.expect(cn.file_buf == null); // existing wbuf is the fallback
+}

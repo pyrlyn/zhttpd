@@ -127,6 +127,7 @@ pub const LocConf = struct {
     client_body_timeout_ms: u32 = 60_000,
     send_timeout_ms: u32 = 60_000,
     sendfile: bool = false,
+    sendfile_max_chunk: u64 = 2 * 1024 * 1024,
     tcp_nodelay: bool = true,
     server_tokens: ServerTokens = .on,
     autoindex: bool = false,
@@ -780,6 +781,8 @@ const Builder = struct {
             lc.send_timeout_ms = b.timeArg(d) orelse return;
         } else if (eq(n, "sendfile")) {
             lc.sendfile = flag(d);
+        } else if (eq(n, "sendfile_max_chunk")) {
+            lc.sendfile_max_chunk = parseSize(a0) orelse return b.emerg(d, "\"sendfile_max_chunk\" directive invalid value", .{});
         } else if (eq(n, "tcp_nodelay")) {
             lc.tcp_nodelay = flag(d);
         } else if (eq(n, "server_tokens")) {
@@ -1444,6 +1447,7 @@ test "config errors are nginx-like" {
         .{ .src = "http { listen 80; }", .msg = "\"listen\" directive is not allowed here in test.conf:1" },
         .{ .src = "http { server { root; } }", .msg = "invalid number of arguments in \"root\" directive in test.conf:1" },
         .{ .src = "http { sendfile maybe; }", .msg = "invalid value \"maybe\" in \"sendfile\" directive, it must be \"on\" or \"off\"" },
+        .{ .src = "http { sendfile_max_chunk nope; }", .msg = "\"sendfile_max_chunk\" directive invalid value" },
         .{ .src = "http { server { location { } } }", .msg = "invalid number of arguments in \"location\" directive" },
         .{ .src = "http { server; }", .msg = "directive \"server\" has no opening \"{\"" },
         .{ .src = "events { use select; }", .msg = "invalid event type \"select\"" },
@@ -1462,4 +1466,27 @@ test "config errors are nginx-like" {
     defer diag.deinit();
     try t.expectError(error.ConfigFailed, loadString(t.allocator, "foo bar;", .{ .prefix = "/p", .conf_prefix = "/p", .strict = true }, &diag));
     try t.expect(diag.has("unknown directive \"foo\" in test.conf:1"));
+}
+
+test "sendfile_max_chunk defaults, inheritance and disabling" {
+    const t = std.testing;
+    var diag: Diag = .{ .gpa = t.allocator };
+    defer diag.deinit();
+    const cfg = try loadString(t.allocator,
+        \\http {
+        \\  server { listen 8080; }
+        \\  server {
+        \\    listen 8081;
+        \\    sendfile_max_chunk 3m;
+        \\    location /inherit { }
+        \\    location /off { sendfile_max_chunk 0; }
+        \\    location /small { sendfile_max_chunk 64k; }
+        \\  }
+        \\}
+    , .{ .prefix = "/p", .conf_prefix = "/p", .strict = true }, &diag);
+    defer destroy(t.allocator, cfg);
+    try t.expectEqual(@as(u64, 2 * 1024 * 1024), cfg.servers[0].conf.sendfile_max_chunk);
+    try t.expectEqual(@as(u64, 3 * 1024 * 1024), cfg.servers[1].locations[0].conf.sendfile_max_chunk);
+    try t.expectEqual(@as(u64, 0), cfg.servers[1].locations[1].conf.sendfile_max_chunk);
+    try t.expectEqual(@as(u64, 64 * 1024), cfg.servers[1].locations[2].conf.sendfile_max_chunk);
 }

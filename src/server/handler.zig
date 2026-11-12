@@ -279,12 +279,12 @@ fn mapUri(conn: *Conn, uri: []const u8) ![:0]u8 {
             return a.dupeSentinel(u8, base, 0);
         }
         const plen = if (loc) |l| @min(l.name.len, uri.len) else 0;
-        return std.fmt.allocPrintSentinel(a, "{s}{s}", .{ base, uri[plen..] }, 0);
+        return std.mem.concatWithSentinel(a, u8, &.{ base, uri[plen..] }, 0);
     }
     var root = try vars.eval(a, ctx, lc.root);
     if (root.len > 1 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
     ctx.document_root = root;
-    return std.fmt.allocPrintSentinel(a, "{s}{s}", .{ root, uri }, 0);
+    return std.mem.concatWithSentinel(a, u8, &.{ root, uri }, 0);
 }
 
 fn tryFiles(conn: *Conn, tf: []const expr.Expr) void {
@@ -348,7 +348,7 @@ fn staticFile(conn: *Conn) void {
     ctx.request_filename = path;
     const meta = switch (conn.w.files.open(lc.open_file_cache, path, @intCast(conn.w.now_ms))) {
         .err => |e| {
-            if (e == @intFromEnum(c.E.ACCES)) {
+            if (e == @backingInt(c.E.ACCES)) {
                 conn.w.errlog(.err, "open() \"{s}\" failed (13: Permission denied)", .{path});
                 return finalize(conn, 403);
             }
@@ -376,8 +376,7 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
     const lc = ctx.conf;
     var status: u16 = 200;
     if (ctx.status != 0 and ctx.error_page_done) status = ctx.status; // error_page target keeps the error status
-    var etag_buf: [48]u8 = undefined;
-    const etag: ?[]const u8 = if (lc.etag) std.fmt.bufPrint(&etag_buf, "\"{x}-{x}\"", .{ meta.mtime, meta.size }) catch null else null;
+    const etag: ?[]const u8 = if (lc.etag) conn.w.fileEtag(meta.mtime, meta.size) else null;
     var size = meta.size;
     var start: u64 = 0;
     var range_hdr: []const u8 = "";
@@ -441,6 +440,7 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
         if (d < 0) return finalize(conn, 500);
         conn.file_fd = d;
     }
+    conn.prepareFileBuffer(size);
     conn.setOutput(&.{head});
     conn.file_off = start;
     conn.file_end = start + size;
@@ -646,8 +646,7 @@ pub fn writeHeadTo(conn: *Conn, w: *std.Io.Writer, status: u16, o: HeadOpts) !vo
     }
     // nginx sends Last-Modified only with 200/206/304
     if (o.last_modified) |t| if (status == 200 or status == 206 or status == 304) {
-        var db: [29]u8 = undefined;
-        try w.print("Last-Modified: {s}\r\n", .{response.httpDate(&db, t)});
+        try w.print("Last-Modified: {s}\r\n", .{conn.w.lastModified(t)});
     };
     if (o.chunked) try w.writeAll("Transfer-Encoding: chunked\r\n");
     try w.writeAll(if (conn.keep_alive) "Connection: keep-alive\r\n" else "Connection: close\r\n");

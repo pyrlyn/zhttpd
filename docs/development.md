@@ -15,7 +15,7 @@
 | `src/server/worker.zig`, `loop.zig`, `conn.zig` | Event loop, workers, connections and buffers |
 | `src/server/router.zig`, `handler.zig`, `vars.zig` | Host/location matching, request phases and variables |
 | `src/server/proxy.zig` | HTTP upstream handling |
-| `src/server/tls.zig` | Nonblocking OpenSSL integration |
+| `src/server/tls.zig`, `aws_lc.c` | Nonblocking TLS and optional AWS-LC adapter |
 | `src/server/filecache.zig` | Open-file cache |
 | `src/os.zig`, `src/server/net.zig` | Platform and socket operations |
 | `tests/fixtures/` | nginx and Debian configuration fixtures |
@@ -37,6 +37,32 @@ and the real-world configuration fixtures. Run it from the repository root so
 fixture paths resolve. The default build disables TLS; add `-Dtls=true` and the
 appropriate OpenSSL prefix to test a TLS build.
 
+The optional AWS-LC 5.14.0 backend uses its optimized TLS/crypto implementation.
+The versioned Linux CPU-detection patch recognizes Apple Silicon via MIDR while
+retaining HWCAP instruction checks. Algorithms and assembly stay upstream. Build
+the pinned dependency with `bash scripts/build-aws-lc.sh`, then add
+`-Dtls=true -Dtls-backend=aws_lc -Dopenssl="$PWD/deps/aws-lc-install"` to the
+build and test commands. OpenSSL remains the default; omit `-Dtls-backend` and
+use the OpenSSL prefix to switch back. AWS-LC's headers and static libraries must
+come from the same installation. `zhttpd -V` identifies the selected backend.
+This option covers the HTTP/1.1 server in this branch; it does not provide an
+OpenSSL QUIC API. Do not assume compatibility with OpenSSL providers or another
+branch's HTTP/3 implementation.
+
+Run `OPENSSL_CLI=/path/to/openssl3 python3 tests/tls-config.py /path/to/zhttpd`
+for SNI rejection, configured cipher/group restrictions and TLS 1.2/1.3 ticket
+resumption. Run this and `tests/tls-io.py` against both TLS builds when changing
+the adapter. The AWS-LC adapter uses public typed configuration calls and a
+bounded ciphertext BIO; it does not change the negotiated TLS record format.
+
+AWS-LC initializes ticket keys before the worker fork, so initial ticket
+resumption works across workers. Its automatic ticket-key rotation remains
+active (48 hours in the pinned release); rotations are worker-local, so tickets
+issued after rotation may fall back to a full handshake on another worker.
+As with the existing OpenSSL implementation, nginx's shared session cache is
+not a shared-memory cache in zhttpd. The performance report distinguishes fresh
+handshakes from resumption and does not claim complete nginx TLS compatibility.
+
 ## HTTP error regression checks
 
 ```bash
@@ -47,6 +73,24 @@ python3 tests/error-pages.py /absolute/path/to/zhttpd
 This uses Python's standard library and a temporary config and port. It checks
 response codes, GET/HEAD, body lengths, server tokens, custom `error_page`
 responses, redirects, and 204/304 handling. It terminates its test server on exit.
+
+For a TLS-enabled build, run `python3 tests/tls-io.py /path/to/zhttpd`.
+Set `OPENSSL_CLI` to the OpenSSL 3.5.9 CLI used by the KeyUpdate checks
+(`s_client -adv` is unavailable in older distribution CLIs). The test streams
+and hashes 100 MiB responses over HTTP and both TLS versions.
+This generates a temporary test certificate with the `openssl` CLI and checks
+TLS 1.2 and 1.3 record fragmentation, coalesced records, pipelining, request body
+draining, HEAD/ranges, large responses with a slow reader, idle connections,
+Last-Modified headers, changes to open files, and TCP half-close with a pending
+response. Set `OPENSSL_CLI=/path/to/openssl` to use OpenSSL 3 for the additional
+TLS 1.3 KeyUpdate checks (older CLIs explicitly skip this check).
+ETag checks change file size and timestamp independently, revalidate metadata,
+and verify conditional 200/304 responses. Unit tests also verify that unrelated
+queued TLS errors do not corrupt nonblocking handshake/read/write retries.
+
+`python3 tests/bench-target.py` verifies that the performance gate rejects p99
+regressions against nginx or a saved baseline, incomplete samples, errors, and
+insufficient throughput.
 
 ## nginx comparison smoke checks
 

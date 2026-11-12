@@ -5,10 +5,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const tls = b.option(bool, "tls", "Build with TLS (links OpenSSL libssl/libcrypto)") orelse false;
-    const openssl = b.option([]const u8, "openssl", "OpenSSL install prefix (include/ and lib/), e.g. deps/openssl-install");
+    const backend = b.option(enum { openssl, aws_lc }, "tls-backend", "TLS implementation (default: openssl)") orelse .openssl;
+    const openssl = b.option([]const u8, "openssl", "TLS library install prefix (include/ and lib/)");
+    if (backend == .aws_lc and (!tls or openssl == null))
+        @panic("-Dtls-backend=aws_lc requires -Dtls=true and -Dopenssl=<AWS-LC install prefix>");
 
     const opts = b.addOptions();
     opts.addOption(bool, "tls", tls);
+    opts.addOption(bool, "aws_lc", backend == .aws_lc);
 
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -18,6 +22,10 @@ pub fn build(b: *std.Build) void {
     });
     lib_mod.addOptions("build_options", opts);
     if (tls) {
+        if (backend == .aws_lc) {
+            lib_mod.addCSourceFile(.{ .file = b.path("src/server/aws_lc.c"), .flags = &.{"-std=c11"} });
+            lib_mod.linkSystemLibrary("pthread", .{});
+        }
         if (openssl) |p| {
             lib_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             // static archives so the binary does not depend on a system OpenSSL

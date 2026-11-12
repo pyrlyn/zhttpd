@@ -113,7 +113,7 @@ pub const table = [_]Spec{
     .{ .name = "proxy_headers_hash_max_size", .ctx = HSL, .args = .one, .status = .ignored },
     .{ .name = "proxy_headers_hash_bucket_size", .ctx = HSL, .args = .one, .status = .ignored },
     .{ .name = "sendfile", .ctx = .{ .http = true, .srv = true, .loc = true, .lif = true }, .args = .flag, .status = .supported, .note = "sendfile(2) for plain-HTTP static files" },
-    .{ .name = "sendfile_max_chunk", .ctx = HSL, .args = .one, .status = .ignored },
+    .{ .name = "sendfile_max_chunk", .ctx = HSL, .args = .one, .status = .supported, .note = "static-file send budget per event-loop turn, including TLS; default 2m, 0 disables" },
     .{ .name = "tcp_nopush", .ctx = HSL, .args = .flag, .status = .ignored, .note = "headers and first body bytes are already coalesced" },
     .{ .name = "tcp_nodelay", .ctx = HSL, .args = .flag, .status = .supported },
     .{ .name = "keepalive_timeout", .ctx = HSL, .args = .one_two, .status = .supported, .note = "second arg (Keep-Alive header) ignored" },

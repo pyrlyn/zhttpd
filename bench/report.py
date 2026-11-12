@@ -46,6 +46,7 @@ def cell(sc, sv):
 
 desc = {
     "small": "612 B static file", "medium": "64 KiB static file", "large": "1 MiB static file",
+    "huge": "100 MiB static file",
     "baseline": "tiny dynamic answer (`return 200 \"3\"` / dusty handler)",
 }
 def describe(sc):

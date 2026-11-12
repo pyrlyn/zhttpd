@@ -42,12 +42,20 @@ pub const Worker = struct {
     max_conns: u32,
     pool: ?*Conn = null,
     graveyard: ?*Conn = null,
+    posted_head: ?*Conn = null,
+    posted_tail: ?*Conn = null,
     now_ms: i64 = 0,
     wall_sec: i64 = 0,
     wall_usec: i64 = 0,
     gmtoff: i64 = 0,
     date_sec: i64 = -1,
     date_buf: [29]u8 = undefined,
+    modified_sec: ?i64 = null,
+    modified_buf: [29]u8 = undefined,
+    etag_sec: ?i64 = null,
+    etag_size: u64 = 0,
+    etag_len: usize = 0,
+    etag_buf: [48]u8 = undefined,
     next_id: u64 = 1,
     stopping: bool = false,
     page_buf: [response.page_buffer_size]u8 = undefined,
@@ -56,6 +64,8 @@ pub const Worker = struct {
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs
     current: ?*Conn = null,
     files: filecache.Cache = .{},
+    // One spare large-response buffer per worker, never one per idle connection.
+    file_buffer_cache: ?[]u8 = null,
     tokens_on: []const u8 = "zhttpd/" ++ vars.version,
 
     pub fn init(gpa: std.mem.Allocator, cfg: *config.Config, listeners: []Listener, error_fd: c_int, worker_index: u32) !Worker {
@@ -90,11 +100,57 @@ pub const Worker = struct {
         return &w.date_buf;
     }
 
+    pub fn acquireFileBuffer(w: *Worker, size: usize) ![]u8 {
+        if (w.file_buffer_cache) |buf| if (buf.len >= size) {
+            w.file_buffer_cache = null;
+            return buf;
+        };
+        return w.gpa.alloc(u8, size);
+    }
+
+    pub fn releaseFileBuffer(w: *Worker, buf: []u8) void {
+        if (w.file_buffer_cache) |cached| {
+            if (cached.len >= buf.len) {
+                w.gpa.free(buf);
+                return;
+            }
+            w.gpa.free(cached);
+        }
+        w.file_buffer_cache = buf;
+    }
+
+    pub fn clearFileBufferCache(w: *Worker) void {
+        if (w.file_buffer_cache) |buf| w.gpa.free(buf);
+        w.file_buffer_cache = null;
+    }
+
     fn updateTime(w: *Worker) void {
         w.now_ms = loop_mod.nowMs();
         const t = loop_mod.wallNow();
         w.wall_sec = t.sec;
         w.wall_usec = t.usec;
+    }
+
+    /// Cache formatting only, keyed by the actual file metadata. File contents
+    /// and metadata still follow open_file_cache's usual validation rules.
+    pub fn lastModified(w: *Worker, sec: i64) []const u8 {
+        if (w.modified_sec == null or w.modified_sec.? != sec) {
+            _ = response.httpDate(&w.modified_buf, sec);
+            w.modified_sec = sec;
+        }
+        return &w.modified_buf;
+    }
+
+    /// ETags depend only on the same metadata used by the uncached formatter.
+    /// Cache the formatting, not the file contents or their validation.
+    pub fn fileEtag(w: *Worker, sec: i64, size: u64) []const u8 {
+        if (w.etag_sec == null or w.etag_sec.? != sec or w.etag_size != size) {
+            const tag = std.fmt.bufPrint(&w.etag_buf, "\"{x}-{x}\"", .{ sec, size }) catch unreachable;
+            w.etag_len = tag.len;
+            w.etag_sec = sec;
+            w.etag_size = size;
+        }
+        return w.etag_buf[0..w.etag_len];
     }
 
     pub fn run(w: *Worker) void {
@@ -114,9 +170,10 @@ pub const Worker = struct {
             }
             if (sig_quit and !w.stopping) w.beginStop();
             if (w.stopping and w.nconns == 0) break;
-            const evs = w.loop.wait(&events, 1000);
+            const evs = w.loop.wait(&events, if (w.posted_head != null) 0 else 1000);
             w.updateTime();
             for (evs) |ev| w.dispatch(ev);
+            w.runPosted();
             w.bury();
             if (w.now_ms - last_sweep >= 500) {
                 last_sweep = w.now_ms;
@@ -127,6 +184,8 @@ pub const Worker = struct {
         // close everything
         while (w.active) |cn| cn.close();
         w.bury();
+        w.clearFileBufferCache();
+        tls.clearWriteBufferCache();
     }
 
     fn beginStop(w: *Worker) void {
@@ -145,6 +204,36 @@ pub const Worker = struct {
         w.bury();
     }
 
+    pub fn post(w: *Worker, cn: *Conn) void {
+        if (cn.posted or cn.state == .closed) return;
+        cn.posted = true;
+        cn.posted_prev = w.posted_tail;
+        cn.posted_next = null;
+        if (w.posted_tail) |tail| tail.posted_next = cn else w.posted_head = cn;
+        w.posted_tail = cn;
+    }
+
+    pub fn unpost(w: *Worker, cn: *Conn) void {
+        if (!cn.posted) return;
+        if (cn.posted_prev) |prev| prev.posted_next = cn.posted_next else w.posted_head = cn.posted_next;
+        if (cn.posted_next) |next| next.posted_prev = cn.posted_prev else w.posted_tail = cn.posted_prev;
+        cn.posted = false;
+        cn.posted_prev = null;
+        cn.posted_next = null;
+    }
+
+    fn runPosted(w: *Worker) void {
+        const last = w.posted_tail orelse return;
+        while (w.posted_head) |cn| {
+            w.unpost(cn);
+            w.current = cn;
+            cn.drive();
+            w.current = null;
+            // Newly posted continuations wait for the next event-loop turn.
+            if (cn == last) break;
+        }
+    }
+
     fn dispatch(w: *Worker, ev: loop_mod.Event) void {
         const tag: *align(8) Tag = @ptrFromInt(ev.udata);
         switch (tag.kind) {
@@ -152,6 +241,8 @@ pub const Worker = struct {
             .client => {
                 const cn: *Conn = @alignCast(@fieldParentPtr("tag", tag));
                 if (cn.state == .closed) return;
+                if (ev.readable or ev.eof) cn.tls_read.ready = true;
+                if (ev.eof) cn.tls_read.eof = true;
                 w.current = cn;
                 defer w.current = null;
                 cn.drive();
@@ -197,6 +288,10 @@ pub const Worker = struct {
                         cn.close();
                         continue;
                     };
+                    // Start TLS from its readiness event. Doing a potentially
+                    // expensive handshake inside multi_accept delays already
+                    // active connections and probes sockets before data arrives.
+                    if (tls.enabled and cn.ssl != null) continue;
                     // data usually arrives with the connection: try right away
                     w.current = cn;
                     cn.drive();
@@ -205,7 +300,7 @@ pub const Worker = struct {
                 .again => return,
                 .err => |e| {
                     w.errlog(.alert, "accept() failed ({d}: {s})", .{ e, @import("../os.zig").strerror(e) });
-                    if (e == @intFromEnum(c.E.MFILE) or e == @intFromEnum(c.E.NFILE)) w.accept_paused_until = w.now_ms + 500;
+                    if (e == @backingInt(c.E.MFILE) or e == @backingInt(c.E.NFILE)) w.accept_paused_until = w.now_ms + 500;
                     return;
                 },
             }
@@ -300,7 +395,7 @@ pub const Worker = struct {
     }
 
     pub fn errlog(w: *Worker, level: LogLevel, comptime fmt: []const u8, args: anytype) void {
-        if (@intFromEnum(level) > w.error_level) return;
+        if (@backingInt(level) > w.error_level) return;
         var buf: [2048]u8 = undefined;
         const cv = response.civil(w.wall_sec + w.gmtoff);
         var bw: std.Io.Writer = .fixed(&buf);
@@ -348,6 +443,52 @@ fn appendEscaped(line: *std.ArrayList(u8), s: []const u8) void {
 }
 
 extern "c" fn tzset() void;
+
+test "file ETag formatting follows both metadata fields and signed timestamps" {
+    var w: Worker = undefined;
+    w.etag_sec = null;
+    var expected: [48]u8 = undefined;
+    const cases = [_]struct { sec: i64, size: u64 }{
+        .{ .sec = 0, .size = 0 },
+        .{ .sec = 123, .size = 456 },
+        .{ .sec = 123, .size = 456 },
+        .{ .sec = 123, .size = 789 },
+        .{ .sec = 124, .size = 789 },
+        .{ .sec = -1, .size = 0 },
+        .{ .sec = std.math.minInt(i64), .size = std.math.maxInt(u64) },
+    };
+    for (cases) |item| {
+        const tag = try std.fmt.bufPrint(&expected, "\"{x}-{x}\"", .{ item.sec, item.size });
+        try std.testing.expectEqualStrings(tag, w.fileEtag(item.sec, item.size));
+    }
+}
+
+test "posted continuations are unique and can be removed before pool reuse" {
+    var w: Worker = undefined;
+    w.posted_head = null;
+    w.posted_tail = null;
+    var conns: [3]Conn = @splat(.{});
+    for (&conns) |*cn| w.post(cn);
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == &conns[0]);
+    try std.testing.expect(w.posted_tail == &conns[2]);
+    w.unpost(&conns[1]);
+    try std.testing.expect(conns[0].posted_next == &conns[2]);
+    try std.testing.expect(conns[2].posted_prev == &conns[0]);
+    try std.testing.expect(!conns[1].posted);
+    w.unpost(&conns[0]);
+    w.unpost(&conns[2]);
+    w.unpost(&conns[2]);
+    try std.testing.expect(w.posted_head == null and w.posted_tail == null);
+    conns[1].state = .closed;
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == null);
+    conns[1].state = .read_head;
+    w.post(&conns[1]);
+    try std.testing.expect(w.posted_head == &conns[1] and w.posted_tail == &conns[1]);
+    try std.testing.expect(conns[1].posted_prev == null and conns[1].posted_next == null);
+}
+
 extern "c" fn localtime_r(t: *const c.time_t, out: *Tm) ?*Tm;
 const Tm = extern struct {
     sec: c_int,

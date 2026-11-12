@@ -1,0 +1,16 @@
+diff --git a/crypto/fipsmodule/cpucap/cpu_aarch64_linux.c b/crypto/fipsmodule/cpucap/cpu_aarch64_linux.c
+index fad47b32afdbe085a6471c4e82e195372b92e82c..674155405af74248afdbae13666b3c8efac9102f 100644
+--- a/crypto/fipsmodule/cpucap/cpu_aarch64_linux.c
++++ b/crypto/fipsmodule/cpucap/cpu_aarch64_linux.c
+@@ -73,6 +73,11 @@ void OPENSSL_cpuid_setup(void) {
+   // cause Valgrind to crash.
+   if (hwcap & kCPUID) {
+     OPENSSL_arm_midr = armv8_cpuid_probe();
++    // Apple Silicon is also exposed by Linux guests through MIDR_EL1.
++    // Keep instruction availability gated independently by AT_HWCAP.
++    if (MIDR_IMPLEMENTER(OPENSSL_arm_midr) == 0x61) {
++      OPENSSL_armcap_P |= ARMV8_APPLE_M;
++    }
+     if (MIDR_IS_CPU_MODEL(OPENSSL_arm_midr, ARM_CPU_IMP_ARM, ARM_CPU_PART_N1)) {
+       OPENSSL_armcap_P |= ARMV8_NEOVERSE_N1;
+     }

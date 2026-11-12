@@ -20,6 +20,7 @@ deps/openssl-*/
 deps/nginx-*/
 deps/pcre2-*/
 deps/zlib-*/
+deps/aws-lc-*/
 
 # bench artefacts (keep bench/RESULTS.md and other summaries at bench/*.md)
 bench/certs/*.pem
