@@ -46,6 +46,33 @@ static void output_boundaries(void) {
     BIO_ADDR_free(peer_a); BIO_ADDR_free(peer_b); BIO_ADDR_free(local);
     close(tx); close(rx_a); close(rx_b);
 }
+static void output_ipv6_fallback(void) {
+    struct sockaddr_in6 peer = {.sin6_family = AF_INET6, .sin6_addr = IN6ADDR_LOOPBACK_INIT};
+    int rx = socket(AF_INET6, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    int tx = socket(AF_INET6, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    assert(rx >= 0 && tx >= 0);
+    assert(bind(rx, (struct sockaddr *)&peer, sizeof(peer)) == 0);
+    socklen_t len = sizeof(peer);
+    assert(getsockname(rx, (struct sockaddr *)&peer, &len) == 0);
+    BIO_ADDR *addr = BIO_ADDR_new();
+    assert(addr && BIO_ADDR_rawmake(addr, AF_INET6, &peer.sin6_addr, sizeof(peer.sin6_addr), peer.sin6_port));
+    quic_output output = {0};
+    BIO *bio = quic_output_new(&output, tx); assert(bio);
+    unsigned char data[3][1400]; BIO_MSG msgs[3];
+    for (unsigned i = 0; i < 3; ++i) {
+        memset(data[i], (int)i + 1, sizeof(data[i]));
+        msgs[i] = (BIO_MSG){.data = data[i], .data_len = sizeof(data[i]), .peer = addr};
+    }
+    size_t sent = 0;
+    assert(BIO_sendmmsg(bio, msgs, sizeof(msgs[0]), 3, 0, &sent) == 1 && sent == 3);
+    for (unsigned i = 0; i < 3; ++i) {
+        unsigned char got[1401];
+        assert(recv(rx, got, sizeof(got), 0) == sizeof(data[i]));
+        assert(!memcmp(got, data[i], sizeof(data[i])));
+    }
+    BIO_free(bio); BIO_meth_free(output.method); BIO_ADDR_free(addr);
+    close(rx); close(tx);
+}
 static void input_budget(void) {
     struct sockaddr_in addr, source;
     int rx = udp_socket(&addr), tx = udp_socket(&source);
@@ -69,7 +96,7 @@ static void input_budget(void) {
     free(quic_input); quic_input = NULL;
 }
 int main(void) {
-    output_boundaries(); input_budget();
-    puts("PASS: UDP GSO boundaries, mixed peers, short tails, fallback and receive budgets");
+    output_boundaries(); output_ipv6_fallback(); input_budget();
+    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback and receive budgets");
     return 0;
 }
