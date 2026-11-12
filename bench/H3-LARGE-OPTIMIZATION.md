@@ -4,7 +4,8 @@ The **suite-wide target is not achieved**. For 1 MiB HTTP/3 responses the
 candidate reaches **1.353× nginx RPS (+35.3%)**, with **57.2% lower p99**.
 Small HTTP/3 responses improve against the saved main but remain slower than
 nginx, with higher p99. This does not justify a general “50% faster” claim.
-The performance gate remains failing; the branch is not merged into main.
+The performance gate remains failing. Integration of these changes does not
+mean that the performance target has been met.
 
 Acceptance requires at least **1.5× nginx successful RPS**, with median sample
 p99 no worse than both nginx and the saved main baseline, in every scenario.
@@ -112,5 +113,6 @@ The candidate archive differs from the baseline archive by the included QUIC
 stream-map fix; libcrypto is unchanged. Archive hashes are retained separately.
 
 Default builds without TLS also passed all 57 unit tests after the timer change.
-The branch remains available for further work; it was not merged because the
-requested performance acceptance conditions did not pass.
+Further performance work is required: the requested performance acceptance
+conditions did not pass. Functional validation does not establish the
+requested performance gain.
