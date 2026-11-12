@@ -283,6 +283,14 @@ pub const Request = struct {
         return false;
     }
 
+    /// Inline compare against a short constant (no call into `std.mem.eql`).
+    inline fn isName(name: []const u8, comptime lit: []const u8) bool {
+        if (name.len != lit.len) return false;
+        const V = @Vector(lit.len, u8);
+        const x: V = name[0..lit.len].*;
+        return @reduce(.And, x == @as(V, lit[0..lit.len].*));
+    }
+
     fn decodeHead(r: *Request) bool {
         const a = r.session.server.alloc;
         r.scratch.resize(a, r.block.items.len * 2 + 64) catch {
@@ -305,15 +313,15 @@ pub const Request = struct {
             for (f.name) |ch| if (ch >= 'A' and ch <= 'Z') return r.malformed();
             if (f.name[0] == ':') {
                 if (regular) return r.malformed();
-                const slot: *[]const u8 = if (std.mem.eql(u8, f.name, ":method"))
+                const slot: *[]const u8 = if (isName(f.name, ":method"))
                     &r.method
-                else if (std.mem.eql(u8, f.name, ":scheme"))
+                else if (isName(f.name, ":scheme"))
                     &r.scheme
-                else if (std.mem.eql(u8, f.name, ":authority"))
+                else if (isName(f.name, ":authority"))
                     &r.authority
-                else if (std.mem.eql(u8, f.name, ":path"))
+                else if (isName(f.name, ":path"))
                     &r.path
-                else if (std.mem.eql(u8, f.name, ":protocol"))
+                else if (isName(f.name, ":protocol"))
                     &r.protocol
                 else
                     return r.malformed();

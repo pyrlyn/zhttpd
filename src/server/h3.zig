@@ -265,8 +265,29 @@ fn eqlAny(name: []const u8, comptime list: []const []const u8) bool {
     return false;
 }
 
+const V16 = @Vector(16, u8);
+
+/// No NUL, CR or LF: a value copied into the HTTP/1.1 text cannot split a line.
 fn safeValue(v: []const u8) bool {
-    for (v) |ch| if (ch == 0 or ch == '\r' or ch == '\n') return false;
+    var i: usize = 0;
+    while (i + 16 <= v.len) : (i += 16) {
+        const x: V16 = v[i..][0..16].*;
+        const bad = (x == @as(V16, @splat(0))) | (x == @as(V16, @splat('\r'))) | (x == @as(V16, @splat('\n')));
+        if (@reduce(.Or, bad)) return false;
+    }
+    for (v[i..]) |ch| if (ch == 0 or ch == '\r' or ch == '\n') return false;
+    return true;
+}
+
+/// No control characters, space or DEL in the request target.
+fn safePath(v: []const u8) bool {
+    var i: usize = 0;
+    while (i + 16 <= v.len) : (i += 16) {
+        const x: V16 = v[i..][0..16].*;
+        const bad = (x <= @as(V16, @splat(32))) | (x == @as(V16, @splat(127)));
+        if (@reduce(.Or, bad)) return false;
+    }
+    for (v[i..]) |ch| if (ch <= 32 or ch == 127) return false;
     return true;
 }
 
@@ -276,7 +297,7 @@ fn convert(st: *Stream, r: *Request) bool {
     if (r.method.len == 0 or r.method.len >= 32 or r.path.len == 0 or r.path.len > 8192) return false;
     if (!std.mem.eql(u8, r.scheme, "https")) return false;
     if (!safeValue(r.method) or !safeValue(r.authority)) return false;
-    for (r.path) |ch| if (ch <= 32 or ch == 127) return false;
+    if (!safePath(r.path)) return false;
     var authority = r.authority;
     var content_length: ?[]const u8 = null;
     var size: usize = r.method.len + r.path.len + authority.len + 64;

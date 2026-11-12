@@ -199,6 +199,22 @@ pub fn huffDecode(in: []const u8, out: []u8) Error!usize {
 /// Iterates over the field lines of one encoded field section. Huffman
 /// strings are decoded into `scratch`, which must hold at least 8/5 of the
 /// section size.
+/// Equal-length compare with 8-byte loads (the last one overlapping), for
+/// strings of a few dozen bytes where a call into `std.mem.eql` dominates.
+fn eqlShort(a: []const u8, b: []const u8) bool {
+    std.debug.assert(a.len == b.len);
+    const n = a.len;
+    if (n < 8) {
+        for (a, b) |x, y| if (x != y) return false;
+        return true;
+    }
+    var i: usize = 0;
+    while (i + 8 < n) : (i += 8) {
+        if (std.mem.readInt(u64, a[i..][0..8], .little) != std.mem.readInt(u64, b[i..][0..8], .little)) return false;
+    }
+    return std.mem.readInt(u64, a[n - 8 ..][0..8], .little) == std.mem.readInt(u64, b[n - 8 ..][0..8], .little);
+}
+
 /// Recently decoded Huffman strings of one connection. Clients without a
 /// dynamic table resend the same literals (authority, user-agent, accept
 /// headers) on every request; a hit replaces decoding with a compare and copy.
@@ -229,7 +245,7 @@ pub const HuffCache = struct {
     fn find(c: *const HuffCache, raw: []const u8) ?usize {
         const base = set(raw) * ways;
         for (base..base + ways) |i| {
-            if (c.enc_len[i] == raw.len and std.mem.eql(u8, c.enc[i][0..raw.len], raw)) return i;
+            if (c.enc_len[i] == raw.len and eqlShort(c.enc[i][0..raw.len], raw)) return i;
         }
         return null;
     }
