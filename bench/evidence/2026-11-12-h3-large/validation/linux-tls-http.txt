@@ -1,0 +1,52 @@
+The original OpenSSL archive is an expected-failure negative control.
+Its GC mismatch lines below confirm reproduction; patched archive tests pass.
+
+patching file ssl/quic/quic_stream_map.c
+PASS: QUIC stream GC retains unread/unacknowledged data and releases drained streams
+GC mismatch: recv=4 send=4 deleted=1 stop_acked=0 collected=0
+GC mismatch: recv=6 send=6 deleted=1 stop_acked=0 collected=0
+stream retained after final ACK
+PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback and receive budgets
+Build Summary: 32/32 steps succeeded; 57/57 tests passed
+test success
++- run exe quic-io-test success 1ms
+|  +- compile exe quic-io-test debug native success 231ms MaxRSS:102M
++- run test 7 pass (7 total) 23ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:441M
+|     +- options cached
++- run test 3 pass (3 total) 5ms MaxRSS:5M
+|  +- compile test debug native cached 10ms MaxRSS:37M
++- run test 27 pass (27 total) 69ms MaxRSS:22M
+|  +- compile test debug native success 2s MaxRSS:346M
+|     +- options (reused)
++- run test 10 pass (10 total) 24ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:432M
+|     +- options (reused)
++- run test 1 pass (1 total) 17ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:319M
+|     +- options (reused)
++- run test 1 pass (1 total) 18ms MaxRSS:7M
+|  +- compile test debug native success 2s MaxRSS:380M
+|     +- options (reused)
++- run test success 17ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:311M
+|     +- options (reused)
++- run test success 16ms MaxRSS:6M
+|  +- compile test debug native success 1s MaxRSS:309M
+|     +- options (reused)
++- run test 2 pass (2 total) 2ms MaxRSS:3M
+|  +- compile test debug native cached 3ms MaxRSS:38M
++- run test 1 pass (1 total) 2ms MaxRSS:3M
+|  +- compile test debug native cached 1ms MaxRSS:38M
++- run test success 2ms MaxRSS:3M
+|  +- compile test debug native cached 3ms MaxRSS:35M
++- run test 3 pass (3 total) 5ms MaxRSS:5M
+|  +- compile test debug native cached 9ms MaxRSS:38M
++- run test 1 pass (1 total) 3ms MaxRSS:3M
+|  +- compile test debug native cached 3ms MaxRSS:38M
++- run test 1 pass (1 total) 3ms MaxRSS:3M
+   +- compile test debug native cached 3ms MaxRSS:38M
+
+zhttpd: the configuration file /tmp/zhttpd-protocols-7u1jdhpl/nginx.conf syntax is ok
+zhttpd: configuration file /tmp/zhttpd-protocols-7u1jdhpl/nginx.conf test is successful
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, reload, shutdown

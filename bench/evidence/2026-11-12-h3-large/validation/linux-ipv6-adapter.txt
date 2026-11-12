@@ -1,0 +1,6 @@
+PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback and receive budgets
+Build Summary: 3/3 steps succeeded
+test-quic-io success
++- run exe quic-io-test success 2ms
+   +- compile exe quic-io-test debug native success 398ms MaxRSS:101M
+

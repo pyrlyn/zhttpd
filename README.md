@@ -136,10 +136,21 @@ The transport feeds existing handlers through bounded memory buffers (64 KiB
 request input and 32 KiB response output per stream), without internal sockets.
 There are up to 32 concurrent request streams per connection. Stream handlers
 count toward `worker_connections`. Ready codec work continues without a polling
-delay; idle QUIC timers are serviced at intervals of at most 5 ms. HTTP/2 frames
+delay; QUIC deadlines shorten the idle event wait below its 5 ms cap.
+Sub-millisecond deadlines poll without sleeping until serviced. HTTP/2 frames
 are batched into TLS records, and QUIC stream I/O shares explicit event ticks.
 Each event-loop thread caches at most 32 reusable stream buffers (under 4 MiB
 total), and releases that cache when its last modern-protocol session closes.
+
+Small HTTP/3 frame fragments share a stream write, with FIN attached to the last
+payload. Linux batches up to eight received UDP datagrams and uses UDP GSO for
+compatible IPv4 output batches. Packet boundaries and peer/source addresses are
+preserved; IPv6 and unsupported GSO sockets use the ordinary datagram BIO.
+Receive buffers are allocated only for QUIC, shared by a thread's listeners,
+and freed when its last QUIC listener closes. Other platforms keep recvmsg.
+The pinned OpenSSL build includes a small QUIC stream-retirement fix: fully
+consumed streams are collected once the application releases them and the peer
+acknowledges outgoing data. Retransmission data remains live until that ACK.
 
 On Linux, `listen ... quic reuseport` creates one UDP socket per worker; the
 kernel distributes connections by their UDP address/port tuple. Without this
@@ -214,3 +225,5 @@ The measured HTTPS optimization and its unmet 1.5x-nginx target are documented
 in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).
 HTTP/2 and HTTP/3 measurements, raw evidence and the remaining target failures
 are in [bench/H2-H3-OPTIMIZATION.md](bench/H2-H3-OPTIMIZATION.md).
+The [HTTP/3 and large-response follow-up](bench/H3-LARGE-OPTIMIZATION.md)
+records subsequent changes and the still-failing 50% target.
