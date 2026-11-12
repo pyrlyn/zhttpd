@@ -107,6 +107,10 @@ static stream *lookup(session *s, int64_t id) {
 }
 static stream *new_stream(session *s, int64_t id, SSL *quic) {
     if (s->nstreams >= STREAMS + 6) return NULL;
+    /* Account for each accepted byte immediately. All-or-nothing QUIC writes
+     * retain a buffer address across WANT_WRITE, but drive_h3 batches small
+     * vectors on its stack and can be entered through different event paths. */
+    if (quic) SSL_set_mode(quic, SSL_MODE_ENABLE_PARTIAL_WRITE);
     int request_stream = !quic || (id & 3) == 0;
     stream *p;
     char *headers = NULL; uint8_t *input = NULL, *output = NULL;
