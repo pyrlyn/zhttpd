@@ -106,9 +106,9 @@ def request(path="/small", method="GET", extra=b""):
 def key_updates(openssl, port, body, large):
     # Python's ssl API has no KeyUpdate method. Exercise the OpenSSL 3 client
     # command interface and verify that requests survive both update modes.
-    version = subprocess.check_output([openssl, 'version'], text=True)
-    if not version.startswith('OpenSSL 3.'):
-        print('SKIP: KeyUpdate requires OPENSSL_CLI pointing to OpenSSL 3')
+    help_text = subprocess.run([openssl, 's_client', '-help'], capture_output=True, text=True)
+    if '-adv' not in help_text.stdout + help_text.stderr:
+        print('SKIP: KeyUpdate requires OPENSSL_CLI with s_client -adv (OpenSSL 3.5+)')
         return
     with tempfile.TemporaryFile() as errors:
         client = subprocess.Popen([
