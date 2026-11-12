@@ -216,6 +216,32 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path("."));
     const test_step = b.step("test", "Run all independent module unit tests");
+    if (http and target.result.os.tag == .linux) {
+        const datagrams = b.addExecutable(.{
+            .name = "quic-io-test",
+            .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+        });
+        datagrams.root_module.addCSourceFile(.{ .file = b.path("tests/quic_io.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        if (openssl) |p| {
+            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libcrypto.a", .{p}) });
+        } else {
+            datagrams.root_module.linkSystemLibrary("ssl", .{});
+            datagrams.root_module.linkSystemLibrary("crypto", .{});
+        }
+        if (http_deps) |p| {
+            datagrams.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
+            datagrams.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp3.a", .{p}) });
+        } else {
+            datagrams.root_module.linkSystemLibrary("nghttp2", .{});
+            datagrams.root_module.linkSystemLibrary("nghttp3", .{});
+        }
+        const run_datagrams = b.addRunArtifact(datagrams);
+        b.step("test-quic-io", "Test QUIC datagram batching and fallback").dependOn(&run_datagrams.step);
+        test_step.dependOn(&run_datagrams.step);
+    }
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&lb_tests.step);
     test_step.dependOn(&http_tests.step);

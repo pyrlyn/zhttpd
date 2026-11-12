@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include "quic_output.h"
 
 #define STREAMS 32
 #define INPUT_CAP (64 * 1024)
@@ -76,6 +77,7 @@ typedef struct listener {
     unsigned limit, admitted;
     struct sockaddr_storage peer, local, bound;
     BIO_ADDR *peer_addr, *local_addr;
+    quic_output output;
 } listener;
 typedef struct peer_info {
     struct sockaddr_storage peer, local;
@@ -584,7 +586,7 @@ static int drive_h3(session *s) {
         if (!new_stream(s, (int64_t)SSL_get_stream_id(q), q)) { SSL_free(q); return -1; }
     }
     for (stream *p = s->streams; p; p = p->next) {
-        if (p->read_fin || !(SSL_get_stream_type(p->quic) & SSL_STREAM_TYPE_READ)) continue;
+        if (p->read_fin || (p->id & 3) == 3) continue;
         for (int i = 0; i < 4 && p->input_len < INPUT_CAP - 32 * 1024; ++i) {
             uint8_t buf[8192]; size_t n = 0; ERR_clear_error();
             int r = SSL_read_ex(p->quic, buf, sizeof(buf), &n);
@@ -691,7 +693,7 @@ void *zhttp_h3_new(SSL_CTX *ctx, int fd, void *user, open_request open, drive_re
     if (peer_index < 0) goto fail;
     l->ssl = SSL_new_listener(ctx, 0); if (!l->ssl) goto fail;
     SSL_CTX_set_new_pending_conn_cb(ctx, pending, l);
-    BIO *rd = BIO_new(BIO_s_dgram_mem()), *wr = BIO_new_dgram(fd, BIO_NOCLOSE);
+    BIO *rd = BIO_new(BIO_s_dgram_mem()), *wr = quic_output_new(&l->output, fd);
     if (!rd || !wr) { BIO_free(rd); BIO_free(wr); goto fail; }
     SSL_set0_rbio(l->ssl, rd); SSL_set0_wbio(l->ssl, wr);
     if (!SSL_set_blocking_mode(l->ssl, 0) || !SSL_listen(l->ssl)) goto fail;
@@ -705,17 +707,57 @@ void *zhttp_h3_new(SSL_CTX *ctx, int fd, void *user, open_request open, drive_re
     setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
     return l;
 fail:
-    SSL_free(l->ssl); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l); return NULL;
+    SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l); return NULL;
 }
+#ifdef __linux__
+/* Shared by listeners on this event-loop thread; every batch is consumed
+ * before another listener is driven. Keep full-size UDP buffers so valid
+ * datagrams are not rejected solely because batching is enabled. */
+static _Thread_local struct {
+    uint8_t data[8][65536], control[8][256];
+    struct sockaddr_storage peer[8];
+    struct iovec vec[8];
+    struct mmsghdr msg[8];
+} quic_input;
+static ssize_t quic_recv(int fd, unsigned remaining, unsigned *index, unsigned *count,
+                          uint8_t **buf, struct msghdr *msg) {
+    if (*index == *count) {
+        memset(quic_input.msg, 0, sizeof(quic_input.msg));
+        for (unsigned k = 0; k < 8; ++k) {
+            struct msghdr *m = &quic_input.msg[k].msg_hdr;
+            quic_input.vec[k] = (struct iovec){quic_input.data[k], sizeof(quic_input.data[k])};
+            m->msg_iov = &quic_input.vec[k]; m->msg_iovlen = 1;
+            m->msg_name = &quic_input.peer[k]; m->msg_namelen = sizeof(quic_input.peer[k]);
+            m->msg_control = quic_input.control[k]; m->msg_controllen = sizeof(quic_input.control[k]);
+        }
+        int n = recvmmsg(fd, quic_input.msg, remaining < 8 ? remaining : 8, MSG_DONTWAIT, NULL);
+        if (n <= 0) return -1;
+        *index = 0; *count = (unsigned)n;
+    }
+    unsigned k = (*index)++;
+    *buf = quic_input.data[k]; *msg = quic_input.msg[k].msg_hdr;
+    return (ssize_t)quic_input.msg[k].msg_len;
+}
+#endif
 int zhttp_h3_drive(void *ptr) {
     listener *l = ptr;
     int activity = 0;
+#ifdef __linux__
+    unsigned packet_index = 0, packet_count = 0;
+#endif
     for (int i = 0; i < 128; ++i) {
+#ifdef __linux__
+        uint8_t *buf; struct msghdr msg;
+        ssize_t n = quic_recv(l->fd, (unsigned)(128 - i), &packet_index, &packet_count, &buf, &msg);
+        if (n < 0) break;
+        l->peer = *(struct sockaddr_storage *)msg.msg_name;
+#else
         uint8_t buf[65536], control[256]; struct iovec iov = {buf, sizeof(buf)};
         struct msghdr msg = {0};
         msg.msg_name = &l->peer; msg.msg_namelen = sizeof(l->peer);
         msg.msg_iov = &iov; msg.msg_iovlen = 1; msg.msg_control = control; msg.msg_controllen = sizeof(control);
         ssize_t n = recvmsg(l->fd, &msg, 0); if (n < 0) break;
+#endif
         activity = 1;
         if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) continue;
         l->local = l->bound;
@@ -775,5 +817,5 @@ void zhttp_h3_free(void *ptr) {
         session *s = l->sessions; l->sessions = s->next;
         SSL *ssl = s->ssl; free_session(s); SSL_free(ssl);
     }
-    SSL_free(l->ssl); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l);
+    SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l);
 }
