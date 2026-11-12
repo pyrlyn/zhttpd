@@ -231,13 +231,7 @@ pub fn argValue(args: []const u8, name: []const u8) ?[]const u8 {
 }
 
 pub fn cookieValue(cookies: []const u8, name: []const u8) ?[]const u8 {
-    var it = std.mem.splitScalar(u8, cookies, ';');
-    while (it.next()) |raw| {
-        const kv = std.mem.trim(u8, raw, " ");
-        const eqi = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
-        if (std.mem.eql(u8, kv[0..eqi], name)) return kv[eqi + 1 ..];
-    }
-    return null;
+    return @import("../http/cookie.zig").read(cookies, name);
 }
 
 fn sentHeader(head: []const u8, name: []const u8) ?[]const u8 {

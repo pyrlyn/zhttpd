@@ -58,7 +58,19 @@ pub const ServerTokens = enum { on, off, build };
 
 pub const LimitExcept = struct { methods: []const []const u8, access: []AccessRule };
 
+pub const Cors = struct { origins: []const []const u8 = &.{}, methods: []const []const u8 = &.{ "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS" }, headers: []const []const u8 = &.{ "Content-Type", "Authorization" }, credentials: bool = false, max_age: u32 = 600 };
+
 pub const LocConf = struct {
+    application: ?@import("application.zig").Application = null,
+    methods: []const []const u8 = &.{},
+    cors: Cors = .{},
+    jwt: ?@import("auth.zig").Policy = null,
+    rate_limit: u32 = 0, // requests per second per peer IP per worker
+    rate_burst: u32 = 1,
+    gzip: bool = false,
+    json_errors: bool = false,
+    health: bool = false,
+    idempotency: bool = false,
     root: Expr,
     alias: ?Expr = null,
     index: []Expr,
