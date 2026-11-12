@@ -1,0 +1,10 @@
+CI run: https://github.com/pyrlyn/zhttpd/actions/runs/43240394218
+Job: Protocol E2E (acme), first attempt, id 131258921093
+
+2026-11-12T14:45:29.4354361Z +- acme_e2e.py (self) failure
+2026-11-12T14:45:29.4362977Z time=2026-11-12T14:45:28.197Z level=ERROR msg=Error error="obtain certificate: resolver: one or more domains had a problem: [localhost: http01: error presenting token (localhost): could not start HTTP server for challenge: listen tcp :36411: bind: address already in use]"
+2026-11-12T14:45:29.4363797Z zhttpd: [emerg] initial ACME issuance failed; HTTPS was not started
+2026-11-12T14:45:29.4367179Z AssertionError: process exited: 1
+2026-11-12T14:47:23.3054512Z Build Summary: 11/13 steps succeeded (1 failed)
+2026-11-12T14:47:23.3054999Z +- acme_e2e.py (self) failure
+

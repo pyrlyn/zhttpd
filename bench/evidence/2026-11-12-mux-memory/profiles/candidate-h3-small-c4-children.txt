@@ -1,0 +1,125 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cpu-clock'
+# Event count (approx.): 9845691304
+#
+# Children      Self  Command  Shared Object      Symbol                                                                                            
+# ........  ........  .......  .................  ..................................................................................................
+#
+    96.78%     0.59%  zhttpd   zhttpd             [.] zhttp_h3_drive
+    74.54%     0.12%  zhttpd   zhttpd             [.] server.worker.Worker.run
+    74.39%     0.00%  zhttpd   zhttpd             [.] server.multiplex.driveH3 (inlined)
+    57.38%     0.00%  zhttpd   zhttpd             [.] drive_h3 (inlined)
+    37.61%     0.00%  zhttpd   zhttpd             [.] ossl_quic_handle_events
+    37.55%     0.04%  zhttpd   zhttpd             [.] ossl_quic_reactor_tick
+    37.55%     0.00%  zhttpd   zhttpd             [.] server.worker.Worker.dispatch (inlined)
+    37.51%     0.04%  zhttpd   zhttpd             [.] qeng_tick
+    37.47%     0.02%  zhttpd   zhttpd             [.] ossl_quic_port_subtick
+    36.70%     0.14%  zhttpd   zhttpd             [.] ossl_quic_channel_subtick
+    22.19%     0.14%  zhttpd   zhttpd             [.] pump_backend
+    21.82%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync
+    21.82%     0.00%  zhttpd   [kernel.kallsyms]  [k] el0t_64_sync_handler
+    21.78%     1.69%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+    20.11%     0.04%  zhttpd   [kernel.kallsyms]  [k] do_el0_svc
+    20.09%     0.04%  zhttpd   [kernel.kallsyms]  [k] el0_svc_common.constprop.0
+    19.78%     0.37%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+    17.69%     0.12%  zhttpd   zhttpd             [.] ossl_qtx_flush_net
+    17.36%     0.08%  zhttpd   zhttpd             [.] BIO_sendmmsg
+    17.30%     0.08%  zhttpd   zhttpd             [.] quic_sendmmsg
+    15.75%     0.02%  zhttpd   [kernel.kallsyms]  [k] ___sys_sendmsg
+    15.33%     0.04%  zhttpd   [kernel.kallsyms]  [k] ____sys_sendmsg
+    15.31%     0.06%  zhttpd   [kernel.kallsyms]  [k] __sock_sendmsg
+    15.08%     0.02%  zhttpd   [kernel.kallsyms]  [k] inet_sendmsg
+    14.92%     0.08%  zhttpd   [kernel.kallsyms]  [k] udp_sendmsg
+    14.49%     0.02%  zhttpd   zhttpd             [.] server.multiplex.driveRequest
+    14.47%     4.25%  zhttpd   zhttpd             [.] server.conn.Conn.drive
+    13.27%     0.00%  zhttpd   zhttpd             [.] server.conn.Conn.readHead (inlined)
+    12.29%     0.08%  zhttpd   [kernel.kallsyms]  [k] udp_send_skb
+    12.09%     0.08%  zhttpd   zhttpd             [.] nghttp3_conn_read_stream2
+    12.05%     0.00%  zhttpd   [kernel.kallsyms]  [k] ip_send_skb
+    11.91%     0.08%  zhttpd   [kernel.kallsyms]  [k] ip_output
+    11.74%     0.02%  zhttpd   [kernel.kallsyms]  [k] ip_finish_output
+    11.70%     0.06%  zhttpd   [kernel.kallsyms]  [k] __ip_finish_output
+    11.48%     0.02%  zhttpd   [kernel.kallsyms]  [k] ip_finish_output2
+    11.46%     0.04%  zhttpd   [kernel.kallsyms]  [k] neigh_hh_output
+    11.38%     0.02%  zhttpd   [kernel.kallsyms]  [k] __dev_queue_xmit
+    10.73%     0.26%  zhttpd   [kernel.kallsyms]  [k] __local_bh_enable_ip
+    10.65%     0.14%  zhttpd   zhttpd             [.] nghttp3_conn_read_bidi
+    10.48%     0.00%  zhttpd   [kernel.kallsyms]  [k] ____do_softirq
+    10.48%     0.00%  zhttpd   [kernel.kallsyms]  [k] __do_softirq
+    10.48%     0.00%  zhttpd   [kernel.kallsyms]  [k] call_on_irq_stack
+    10.48%     0.00%  zhttpd   [kernel.kallsyms]  [k] do_softirq_own_stack
+    10.46%     0.20%  zhttpd   [kernel.kallsyms]  [k] handle_softirqs
+    10.46%     0.00%  zhttpd   [kernel.kallsyms]  [k] do_softirq
+    10.24%     0.06%  zhttpd   [kernel.kallsyms]  [k] net_rx_action
+    10.18%     0.02%  zhttpd   [kernel.kallsyms]  [k] process_backlog
+    10.18%     0.00%  zhttpd   [kernel.kallsyms]  [k] __napi_poll
+    10.16%     0.02%  zhttpd   [kernel.kallsyms]  [k] __netif_receive_skb
+    10.12%     1.10%  zhttpd   zhttpd             [.] ossl_quic_tx_packetiser_generate
+    10.12%     0.04%  zhttpd   [kernel.kallsyms]  [k] __netif_receive_skb_one_core
+    10.05%     0.08%  zhttpd   [kernel.kallsyms]  [k] ip_rcv
+     9.95%     0.00%  zhttpd   [kernel.kallsyms]  [k] ip_rcv_finish
+     9.93%     0.04%  zhttpd   [kernel.kallsyms]  [k] ip_local_deliver
+     9.89%     0.04%  zhttpd   [kernel.kallsyms]  [k] ip_local_deliver_finish
+     9.85%     0.08%  zhttpd   [kernel.kallsyms]  [k] ip_protocol_deliver_rcu
+     9.71%     0.04%  zhttpd   [kernel.kallsyms]  [k] udp_rcv
+     9.69%     0.06%  zhttpd   [kernel.kallsyms]  [k] __udp4_lib_rcv
+     9.49%     0.18%  zhttpd   [kernel.kallsyms]  [k] udp_queue_rcv_skb
+     9.49%     0.00%  zhttpd   [kernel.kallsyms]  [k] udp_unicast_rcv_skb
+     9.28%     0.08%  zhttpd   [kernel.kallsyms]  [k] udp_queue_rcv_one_skb
+     9.08%     0.14%  zhttpd   libc.so.6          [.] sendmsg
+     9.06%     0.02%  zhttpd   [kernel.kallsyms]  [k] __udp_queue_rcv_skb
+     9.00%     0.22%  zhttpd   zhttpd             [.] conn_decode_headers
+     9.00%     0.04%  zhttpd   [kernel.kallsyms]  [k] __udp_enqueue_schedule_skb
+     8.92%     0.00%  zhttpd   zhttpd             [.] server.conn.Conn.startRequest (inlined)
+     8.87%     0.00%  zhttpd   [kernel.kallsyms]  [k] sock_def_readable
+     8.65%     8.63%  zhttpd   [kernel.kallsyms]  [k] __wake_up_sync_key
+     8.55%     0.02%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_sendmsg
+     8.53%     0.02%  zhttpd   [kernel.kallsyms]  [k] __sys_sendmsg
+     8.28%     0.00%  zhttpd   zhttpd             [.] server.handler.process (inlined)
+     8.04%     0.08%  zhttpd   zhttpd             [.] dgram_sendmmsg
+     7.96%     0.10%  zhttpd   libc.so.6          [.] __sendmmsg
+     7.57%     0.02%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_sendmmsg
+     7.55%     0.08%  zhttpd   [kernel.kallsyms]  [k] __sys_sendmmsg
+     7.27%     3.24%  zhttpd   zhttpd             [.] response_headers
+     6.88%     0.22%  zhttpd   zhttpd             [.] server.handler.contentHandler
+     6.88%     0.12%  zhttpd   zhttpd             [.] nghttp3_conn_writev_stream
+     6.82%     0.20%  zhttpd   zhttpd             [.] ossl_quic_handle_frames
+     6.82%     0.00%  zhttpd   zhttpd             [.] server.handler.staticFile (inlined)
+     6.59%     0.12%  zhttpd   zhttpd             [.] conn_writev_stream
+     6.33%     0.24%  zhttpd   zhttpd             [.] server.handler.serveOpenFile
+     6.19%     0.10%  zhttpd   zhttpd             [.] nghttp3_stream_fill_outq
+     5.33%     0.04%  zhttpd   zhttpd             [.] nghttp3_stream_write_header_block
+     4.64%     1.26%  zhttpd   libc.so.6          [.] malloc
+     4.52%     1.06%  zhttpd   zhttpd             [.] ERR_clear_error
+     4.44%     2.10%  zhttpd   libc.so.6          [.] cfree
+     4.42%     1.22%  zhttpd   zhttpd             [.] nghttp3_qpack_decoder_read_request
+     4.38%     0.75%  zhttpd   libc.so.6          [.] __libc_pread
+     4.38%     0.00%  zhttpd   zhttpd             [.] server.net.pread (inlined)
+     4.29%     0.04%  zhttpd   zhttpd             [.] nghttp3_qpack_encoder_encode
+     3.97%     0.00%  zhttpd   zhttpd             [.] http.request.parseHead (inlined)
+     3.68%     0.45%  zhttpd   zhttpd             [.] CRYPTO_malloc
+     3.60%     0.33%  zhttpd   zhttpd             [.] ossl_qtx_write_pkt
+     2.95%     0.04%  zhttpd   zhttpd             [.] depack_do_implicit_stream_create
+     2.91%     0.00%  zhttpd   zhttpd             [.] SSL_read_ex
+     2.89%     2.89%  zhttpd   zhttpd             [.] compiler_rt.memcpy.memcpyFast
+     2.71%     0.08%  zhttpd   zhttpd             [.] ossl_quic_channel_new_stream_remote
+     2.61%     0.10%  zhttpd   zhttpd             [.] ossl_quic_read
+     2.50%     0.04%  zhttpd   zhttpd             [.] ossl_ackm_on_rx_ack_frame
+     2.46%     0.39%  zhttpd   zhttpd             [.] qpack_encoder_write_indexed_name
+     2.40%     0.06%  zhttpd   zhttpd             [.] nghttp3_conn_submit_response
+     2.38%     0.26%  zhttpd   zhttpd             [.] CRYPTO_zalloc
+     2.14%     0.16%  zhttpd   zhttpd             [.] on_acked
+     2.12%     0.00%  zhttpd   [kernel.kallsyms]  [k] ip_make_skb
+     2.04%     0.18%  zhttpd   zhttpd             [.] h3_header
+     2.02%     0.22%  zhttpd   zhttpd             [.] quic_read_actual
+     2.02%     0.04%  zhttpd   [kernel.kallsyms]  [k] ksys_pread64
+     2.02%     0.00%  zhttpd   [kernel.kallsyms]  [k] __arm64_sys_pread64
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
