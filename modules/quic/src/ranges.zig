@@ -86,6 +86,38 @@ pub fn RangeSet(comptime cap: usize) type {
             return true;
         }
 
+        pub const Insert = enum { added, present, full };
+
+        /// Like `add`, but never forgets a range: reports `.full` instead.
+        pub fn tryAdd(s: *Self, start: u64, end: u64) Insert {
+            if (start >= end) return .present;
+            if (s.n == cap and s.wouldGrow(start, end)) return .full;
+            return if (s.add(start, end)) .added else .present;
+        }
+
+        /// Adds a range; when full, widens a neighbour instead, so the set
+        /// may over-cover gaps but never loses a range (used for data to
+        /// retransmit, where covering extra bytes is harmless).
+        pub fn addCover(s: *Self, start: u64, end: u64) void {
+            if (start >= end) return;
+            if (s.n < cap or !s.wouldGrow(start, end)) {
+                _ = s.add(start, end);
+                return;
+            }
+            var i: usize = 0;
+            while (i < s.n and s.r[i].end < start) i += 1;
+            // Merge into the closest neighbour (the one below when at the end).
+            const k = if (i == s.n) s.n - 1 else i;
+            _ = s.add(@min(start, s.r[k].start), @max(end, s.r[k].end));
+        }
+
+        fn wouldGrow(s: *const Self, start: u64, end: u64) bool {
+            for (s.r[0..s.n]) |r| {
+                if (r.end >= start and r.start <= end) return false;
+            }
+            return true;
+        }
+
         fn append(s: *Self, start: u64, end: u64) bool {
             if (s.n == cap) {
                 std.mem.copyForwards(Range, s.r[0 .. cap - 1], s.r[1..cap]);
@@ -176,4 +208,11 @@ test "range set add merge remove" {
     try std.testing.expectEqual(@as(usize, 4), s.n);
     try std.testing.expectEqual(@as(u64, 20), s.r[0].start);
     try std.testing.expectEqual(@as(u64, 50), s.max().?);
+    try std.testing.expectEqual(s.tryAdd(60, 61), .full);
+    try std.testing.expectEqual(s.tryAdd(50, 52), .added);
+    s.addCover(55, 56);
+    try std.testing.expectEqual(@as(usize, 4), s.n);
+    try std.testing.expectEqual(Range{ .start = 50, .end = 56 }, s.r[3]);
+    s.addCover(0, 1);
+    try std.testing.expectEqual(Range{ .start = 0, .end = 21 }, s.r[0]);
 }

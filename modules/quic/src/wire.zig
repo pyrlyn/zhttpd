@@ -71,7 +71,7 @@ pub const Writer = struct {
     }
     /// Fixed-width encoding, used for length fields patched after the body.
     pub inline fn varintWidth(w: *Writer, v: u64, width: usize) void {
-        putVarintWidth(w.buf[w.pos..][0..width], v);
+        putVarintWidth(w.buf[w.pos..], v, width);
         w.pos += width;
     }
 };

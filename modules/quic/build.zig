@@ -5,6 +5,7 @@ const std = @import("std");
 ///
 ///   zig build test [-Dopenssl=<prefix>]   unit tests
 ///   zig build bench-crypto -Dopenssl=<prefix>
+///   zig build example -Dopenssl=<prefix>   zig-out/bin/h3-server
 ///
 /// TLS 1.3 handshakes use OpenSSL 3.5's third-party QUIC API
 /// (SSL_set_quic_tls_cbs); packet protection uses keyed Zig AES-GCM /
@@ -49,6 +50,18 @@ pub fn build(b: *std.Build) void {
     const bench = b.addExecutable(.{ .name = "bench-crypto", .root_module = bench_mod });
     b.step("bench-crypto", "Packet protection microbenchmark").dependOn(&b.addRunArtifact(bench).step);
     b.installArtifact(bench);
+
+    const ex_mod = b.createModule(.{
+        .root_source_file = b.path("examples/h3_server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ex_mod.addImport("zquic", mod);
+    linkOpenssl(b, ex_mod, openssl);
+    const ex = b.addExecutable(.{ .name = "h3-server", .root_module = ex_mod });
+    b.installArtifact(ex);
+    b.step("example", "Build the example HTTP/3 server").dependOn(&b.addInstallArtifact(ex, .{}).step);
 }
 
 fn linkOpenssl(b: *std.Build, m: *std.Build.Module, prefix: ?[]const u8) void {
