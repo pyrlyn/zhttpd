@@ -5,6 +5,7 @@
 A Zig HTTP/1.0, HTTP/1.1, HTTP/2 and HTTP/3 server with native TOML settings and nginx, Apache, OpenLiteSpeed and Caddy adapters.
 TLS and QUIC use OpenSSL 3.5+, with nghttp2/nghttp3 for framing and HPACK/QPACK.
 Event backends: kqueue (macOS) and epoll (Linux).
+The HTTP/1.1-only build also supports the optional AWS-LC TLS backend.
 
 ## Build
 
@@ -224,7 +225,9 @@ bench/run.sh                   # full plan: see bench/PLAN.md
 Benchmark results and methodology are in [bench/RESULTS.md](bench/RESULTS.md)
 and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
 [bench/lima/README.md](bench/lima/README.md).
-The measured HTTPS optimization and its unmet 1.5x-nginx target are documented
+The pre-integration AWS-LC HTTP/1.1 candidate passed the 1.5x-nginx throughput
+and p99 gates in the documented Linux/ARM64 matrix. These measurements have not
+been repeated for the integrated HTTP/2–3/ACME tree. Build options and limitations are
 in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).
 HTTP/2 and HTTP/3 measurements, raw evidence and the remaining target failures
 are in [bench/H2-H3-OPTIMIZATION.md](bench/H2-H3-OPTIMIZATION.md).

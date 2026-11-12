@@ -80,10 +80,13 @@ random.seed(42)
 small = ("<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome</title>\n</head>\n<body>\n"
          + "<p>" + "zhttpd benchmark page. " * 22 + "</p>\n</body>\n</html>\n")
 open(os.path.join(d, "small.html"), "w").write(small[:612].ljust(612))
-for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024)):
+for name, size in (("medium.bin", 64 * 1024), ("large.bin", 1024 * 1024),
+                   ("huge.bin", 100 * 1024 * 1024)):
     p = os.path.join(d, name)
     if not os.path.exists(p) or os.path.getsize(p) != size:
-        open(p, "wb").write(random.randbytes(size))
+        with open(p, "wb") as f:
+            for offset in range(0, size, 1024 * 1024):
+                f.write(random.randbytes(min(1024 * 1024, size - offset)))
 PY
 EVENTS=kqueue; [ "$(uname)" = Linux ] && EVENTS=epoll
 HTTP_DIRECTIVES='http2 off;'
@@ -117,6 +120,7 @@ http-baseline-ka-c256|http|1|256|/baseline11?a=1&b=2
 https-small-ka-c64|https|1|64|/static/small.html
 https-small-ka-c256|https|1|256|/static/small.html
 https-large-ka-c64|https|1|64|/static/large.bin
+https-huge-ka-c64|https|1|64|/static/huge.bin
 https-small-noka-c64|https|0|64|/static/small.html"
 fi
 
@@ -269,6 +273,11 @@ oha_run() { # scheme ka conns path duration outfile  (duration "nN" = N requests
   echo "date: $(date)"
   echo "host: $(uname -a)"
   echo "cpus: $(ncpu)"
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemTotal:/ { print "memory_total_kib: " $2 }' /proc/meminfo
+  else
+    echo "memory_total_bytes: $(sysctl -n hw.memsize)"
+  fi
   [ "$(uname)" = Darwin ] && echo "model: $(sysctl -n machdep.cpu.brand_string 2>/dev/null) / $(sysctl -n hw.memsize | awk '{printf "%.0f GiB", $1/1073741824}')"
   echo "oha: $("$OHA" --version)"
   echo "zhttpd: $("$ZHTTPD" -V 2>&1 | tr '\n' ' ')"

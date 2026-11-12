@@ -1,0 +1,210 @@
+{
+  "OpenSSL baseline": [
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": false
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    }
+  ],
+  "AWS-LC candidate": [
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": false
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    }
+  ],
+  "Previous AWS-LC candidate": [
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": false
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    }
+  ],
+  "nginx": [
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": false
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    },
+    {
+      "cipher_suite": "0x1302",
+      "key_exchange_group": "0x11ec",
+      "resumed": true
+    }
+  ]
+}

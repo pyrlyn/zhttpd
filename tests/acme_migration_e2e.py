@@ -172,7 +172,12 @@ operation_timeout_seconds=10
                     assert (legacy/(names[0]+'.key')).exists()
                     assert peer_cert(f.port, 'other.test') == certs[0]
                     write(True)
-                wait(lambda: not (legacy/(names[0]+'.key')).exists(), 'cleanup did not resume after repaired source/reference removal')
+                # A legacy key disappears when it is moved into quarantine,
+                # before the remaining files are removed and directories synced.
+                # Manifest removal marks the completed cleanup transaction.
+                wait(lambda: all(not (current(i)/(name+'.migration.json')).exists()
+                                 for i, name in enumerate(names)),
+                     'cleanup did not finish after repaired source/reference removal')
                 assert all(not path.exists() for path in saved)
                 unchanged(account_files); assert unrelated.read_bytes() == b'leave-this-record-alone'
                 assert no_stage()

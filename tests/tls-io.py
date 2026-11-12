@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """TLS I/O regression checks; requires a -Dtls=true binary and openssl CLI."""
 from pathlib import Path
+import hashlib
+import http.client
 import socket
 import os
 import select
@@ -66,7 +68,7 @@ class Client:
                 self.flush()
                 self.receive()
 
-    def response(self, head=False):
+    def response(self, head=False, digest=False):
         while b"\r\n\r\n" not in self.plain:
             self.read_more()
         headers, self.plain = self.plain.split(b"\r\n\r\n", 1)
@@ -75,6 +77,19 @@ class Client:
         fields = dict((name.lower(), value) for name, value in
                       (line.split(b": ", 1) for line in lines[1:]))
         size = 0 if head or status in (204, 304) else int(fields[b"content-length"])
+        if digest:
+            # Keep the test client bounded for 100 MiB responses, including a
+            # pipelined response already decrypted after the file's last byte.
+            result = hashlib.sha256()
+            left = size
+            while left:
+                if not self.plain:
+                    self.read_more()
+                take = min(left, len(self.plain))
+                result.update(self.plain[:take])
+                self.plain = self.plain[take:]
+                left -= take
+            return status, fields, result.digest()
         while len(self.plain) < size:
             self.read_more()
         body, self.plain = self.plain[:size], self.plain[size:]
@@ -88,12 +103,12 @@ def request(path="/small", method="GET", extra=b""):
     return f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n".encode() + extra + b"\r\n"
 
 
-def key_updates(openssl, port, body):
+def key_updates(openssl, port, body, large):
     # Python's ssl API has no KeyUpdate method. Exercise the OpenSSL 3 client
     # command interface and verify that requests survive both update modes.
-    version = subprocess.check_output([openssl, 'version'], text=True)
-    if not version.startswith('OpenSSL 3.'):
-        print('SKIP: KeyUpdate requires OPENSSL_CLI pointing to OpenSSL 3')
+    help_text = subprocess.run([openssl, 's_client', '-help'], capture_output=True, text=True)
+    if '-adv' not in help_text.stdout + help_text.stderr:
+        print('SKIP: KeyUpdate requires OPENSSL_CLI with s_client -adv (OpenSSL 3.5+)')
         return
     with tempfile.TemporaryFile() as errors:
         client = subprocess.Popen([
@@ -101,19 +116,23 @@ def key_updates(openssl, port, body):
             '-connect', f'127.0.0.1:{port}', '-servername', 'localhost',
         ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
         try:
-            for command in (b'', b'{keyup:req}\n', b'{keyup:noreq}\n'):
-                client.stdin.write(command + request())
+            for command, path, expected in (
+                (b'', '/large', large),
+                (b'{keyup:req}\n', '/small', body),
+                (b'{keyup:noreq}\n', '/large', large),
+            ):
+                client.stdin.write(command + request(path))
                 client.stdin.flush()
-                received = b''
+                received = bytearray()
                 deadline = time.monotonic() + 5
-                while not received.endswith(body):
+                while not received.endswith(expected):
                     timeout = deadline - time.monotonic()
                     assert timeout > 0 and select.select([client.stdout], [], [], timeout)[0], 'KeyUpdate response timed out'
                     data = os.read(client.stdout.fileno(), 65536)
                     if not data:
                         errors.seek(0)
                         raise AssertionError('KeyUpdate client closed before response: ' + errors.read().decode(errors='replace'))
-                    received += data
+                    received.extend(data)
                 assert received.startswith(b'HTTP/1.1 200 '), received
             errors.seek(0)
             assert errors.read().count(b'KEYUPDATE') == 2
@@ -139,12 +158,21 @@ with tempfile.TemporaryDirectory(prefix="zhttpd-tls-") as tmp:
     large = bytes(range(256)) * 32768
     (root / "small").write_bytes(small)
     (root / "large").write_bytes(large)
+    huge_hash = hashlib.sha256()
+    block = large[:1024 * 1024]
+    with (root / "huge").open('wb') as huge:
+        for _ in range(100):
+            huge.write(block)
+            huge_hash.update(block)
     small_time, large_time = 1600000000, 1700000000
     os.utime(root / "small", (small_time, small_time))
     os.utime(root / "large", (large_time, large_time))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        plain_port = sock.getsockname()[1]
     conf = root / "nginx.conf"
     conf.write_text(f"""
 worker_processes 1;
@@ -157,6 +185,7 @@ http {{
     keepalive_requests 10000;
     open_file_cache max=16 inactive=60s;
     server {{
+        listen 127.0.0.1:{plain_port};
         listen 127.0.0.1:{port} ssl;
         server_name localhost;
         ssl_certificate {root}/cert.pem;
@@ -164,6 +193,8 @@ http {{
         ssl_protocols TLSv1.2 TLSv1.3;
         root {root};
         location /drain {{ return 200 "drained"; }}
+        location = /large {{ sendfile_max_chunk 64k; }}
+        location = /fresh {{ open_file_cache_valid 0s; }}
     }}
 }}
 """)
@@ -181,6 +212,21 @@ http {{
                     time.sleep(.05)
             else:
                 raise RuntimeError("TLS server did not start")
+
+            plain = http.client.HTTPConnection('127.0.0.1', plain_port, timeout=5)
+            try:
+                plain.request('GET', '/huge')
+                response = plain.getresponse()
+                assert response.status == 200
+                result = hashlib.sha256()
+                while block := response.read(65536):
+                    result.update(block)
+                assert result.digest() == huge_hash.digest()
+                plain.request('GET', '/small')
+                assert plain.getresponse().read() == small
+            finally:
+                plain.close()
+            print('PASS: HTTP sendfile: 100 MiB hash and keep-alive continuation')
 
             for version in (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
                 client = Client(port, version)
@@ -205,6 +251,17 @@ http {{
                     assert headers[b"last-modified"].decode() == formatdate(small_time, usegmt=True)
                     status, _, body = client.response()
                     assert status == 206 and body == small[1:6]
+                    client.send([request("/huge"), request()])
+                    status, headers, digest = client.response(digest=True)
+                    assert status == 200 and int(headers[b"content-length"]) == 100 * 1024 * 1024
+                    assert digest == huge_hash.digest(), '100 MiB response corrupted or truncated'
+                    assert client.response()[2] == small
+                    # Unaligned range spanning multiple file-read/TLS-record
+                    # boundaries, including a short final chunk, then reuse.
+                    client.send([request("/large", extra=b"Range: bytes=65531-200003\r\n"), request()])
+                    status, _, body = client.response()
+                    assert status == 206 and body == large[65531:200004]
+                    assert client.response()[2] == small
                     client.send([request("/large"), request()])
                     time.sleep(.1)  # let server writes encounter backpressure
                     _, headers, body = client.response()
@@ -230,6 +287,23 @@ http {{
                     assert client.response()[2] == small.upper()
                     (root / "small").write_bytes(small)
                     os.utime(root / "small", (small_time, small_time))
+                    # Formatting reuse must follow both metadata fields and
+                    # preserve conditional responses after revalidation.
+                    previous_tag = b'"not-current"'
+                    for content, stamp in ((b"abc", small_time),
+                                           (b"abcdef", small_time),
+                                           (b"abcdef", small_time + 1)):
+                        (root / "fresh").write_bytes(content)
+                        os.utime(root / "fresh", (stamp, stamp))
+                        client.send([request("/fresh", extra=b"If-None-Match: " + previous_tag + b"\r\n")])
+                        status, headers, body = client.response()
+                        assert status == 200 and body == content
+                        tag = f'"{stamp:x}-{len(content):x}"'.encode()
+                        assert headers[b"etag"] == tag and tag != previous_tag
+                        client.send([request("/fresh", extra=b"If-None-Match: " + tag + b"\r\n")])
+                        status, headers, body = client.response()
+                        assert status == 304 and not body and headers[b"etag"] == tag
+                        previous_tag = tag
                 finally:
                     client.close()
                 # Data and FIN may share one readiness notification. A short
@@ -245,8 +319,19 @@ http {{
                             pass
                     finally:
                         client.close()
-                print(f"PASS: {version.name}: fragmented/coalesced records, pipeline, body drain, HEAD/range, backpressure, idle buffers, file freshness, TCP half-close")
-            key_updates(openssl, port, small)
+                for _ in range(5):
+                    client = Client(port, version)
+                    client.send([request("/large")])
+                    client.read_more()
+                    client.close()  # abort with a partially sent file buffer
+                    client = Client(port, version)
+                    try:
+                        client.send([request()])
+                        assert client.response()[2] == small
+                    finally:
+                        client.close()
+                print(f"PASS: {version.name}: fragmented/coalesced records, pipeline, body drain, HEAD/range, 100 MiB hash, backpressure, idle buffers, file freshness, TCP half-close")
+            key_updates(openssl, port, small, large)
         finally:
             proc.terminate()
             proc.wait(timeout=5)

@@ -64,6 +64,10 @@ pub const Worker = struct {
     date_buf: [29]u8 = undefined,
     modified_sec: ?i64 = null,
     modified_buf: [29]u8 = undefined,
+    etag_sec: ?i64 = null,
+    etag_size: u64 = 0,
+    etag_len: usize = 0,
+    etag_buf: [48]u8 = undefined,
     next_id: u64 = 1,
     stopping: bool = false,
     page_buf: [response.page_buffer_size]u8 = undefined,
@@ -72,6 +76,8 @@ pub const Worker = struct {
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs
     current: ?*Conn = null,
     files: filecache.Cache = .{},
+    // One spare large-response buffer per worker, never one per idle connection.
+    file_buffer_cache: ?[]u8 = null,
     tokens_on: []const u8 = "zhttpd/" ++ vars.version,
 
     pub fn init(gpa: std.mem.Allocator, cfg: *config.Config, listeners: []Listener, error_fd: c_int, worker_index: u32) !Worker {
@@ -128,6 +134,30 @@ pub const Worker = struct {
         return &w.date_buf;
     }
 
+    pub fn acquireFileBuffer(w: *Worker, size: usize) ![]u8 {
+        if (w.file_buffer_cache) |buf| if (buf.len >= size) {
+            w.file_buffer_cache = null;
+            return buf;
+        };
+        return w.gpa.alloc(u8, size);
+    }
+
+    pub fn releaseFileBuffer(w: *Worker, buf: []u8) void {
+        if (w.file_buffer_cache) |cached| {
+            if (cached.len >= buf.len) {
+                w.gpa.free(buf);
+                return;
+            }
+            w.gpa.free(cached);
+        }
+        w.file_buffer_cache = buf;
+    }
+
+    pub fn clearFileBufferCache(w: *Worker) void {
+        if (w.file_buffer_cache) |buf| w.gpa.free(buf);
+        w.file_buffer_cache = null;
+    }
+
     fn updateTime(w: *Worker) void {
         w.now_ms = loop_mod.nowMs();
         const t = loop_mod.wallNow();
@@ -143,6 +173,18 @@ pub const Worker = struct {
             w.modified_sec = sec;
         }
         return &w.modified_buf;
+    }
+
+    /// ETags depend only on the same metadata used by the uncached formatter.
+    /// Cache the formatting, not the file contents or their validation.
+    pub fn fileEtag(w: *Worker, sec: i64, size: u64) []const u8 {
+        if (w.etag_sec == null or w.etag_sec.? != sec or w.etag_size != size) {
+            const tag = std.fmt.bufPrint(&w.etag_buf, "\"{x}-{x}\"", .{ sec, size }) catch unreachable;
+            w.etag_len = tag.len;
+            w.etag_sec = sec;
+            w.etag_size = size;
+        }
+        return w.etag_buf[0..w.etag_len];
     }
 
     pub fn run(w: *Worker) void {
@@ -201,6 +243,8 @@ pub const Worker = struct {
         // close everything
         while (w.active) |cn| cn.close();
         w.bury();
+        w.clearFileBufferCache();
+        tls.clearWriteBufferCache();
     }
 
     fn beginStop(w: *Worker) void {
@@ -311,8 +355,9 @@ pub const Worker = struct {
                         cn.close();
                         continue;
                     };
-                    // Start TLS from its readiness event. Handshakes inside
-                    // multi_accept delay connections that are already active.
+                    // Start TLS from its readiness event. Doing a potentially
+                    // expensive handshake inside multi_accept delays already
+                    // active connections and probes sockets before data arrives.
                     if (tls.enabled and cn.ssl != null) continue;
                     // data usually arrives with the connection: try right away
                     w.current = cn;
@@ -484,6 +529,25 @@ pub const Worker = struct {
 };
 
 extern "c" fn tzset() void;
+
+test "file ETag formatting follows both metadata fields and signed timestamps" {
+    var w: Worker = undefined;
+    w.etag_sec = null;
+    var expected: [48]u8 = undefined;
+    const cases = [_]struct { sec: i64, size: u64 }{
+        .{ .sec = 0, .size = 0 },
+        .{ .sec = 123, .size = 456 },
+        .{ .sec = 123, .size = 456 },
+        .{ .sec = 123, .size = 789 },
+        .{ .sec = 124, .size = 789 },
+        .{ .sec = -1, .size = 0 },
+        .{ .sec = std.math.minInt(i64), .size = std.math.maxInt(u64) },
+    };
+    for (cases) |item| {
+        const tag = try std.fmt.bufPrint(&expected, "\"{x}-{x}\"", .{ item.sec, item.size });
+        try std.testing.expectEqualStrings(tag, w.fileEtag(item.sec, item.size));
+    }
+}
 
 test "posted continuations are unique and can be removed before pool reuse" {
     var w: Worker = undefined;

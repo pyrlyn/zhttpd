@@ -7,13 +7,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const tls = b.option(bool, "tls", "Build with TLS (links OpenSSL libssl/libcrypto)") orelse false;
-    const openssl = b.option([]const u8, "openssl", "OpenSSL install prefix (include/ and lib/), e.g. deps/openssl-install");
+    const backend = b.option(enum { openssl, aws_lc }, "tls-backend", "TLS implementation (default: openssl)") orelse .openssl;
+    const openssl = b.option([]const u8, "openssl", "TLS library install prefix (include/ and lib/)");
+    if (backend == .aws_lc and (!tls or openssl == null))
+        @panic("-Dtls-backend=aws_lc requires -Dtls=true and -Dopenssl=<AWS-LC install prefix>");
 
     const http = b.option(bool, "http", "Build HTTP/2 and HTTP/3 (requires TLS, nghttp2, nghttp3 and OpenSSL 3.5+)") orelse false;
     const http_deps = b.option([]const u8, "http-deps", "nghttp2/nghttp3 installation prefix");
+    if (http and backend == .aws_lc) @panic("-Dhttp=true requires the OpenSSL backend (QUIC server API)");
     if (http and !tls) @panic("-Dhttp=true requires -Dtls=true");
     const opts = b.addOptions();
     opts.addOption(bool, "tls", tls);
+    opts.addOption(bool, "aws_lc", backend == .aws_lc);
     opts.addOption(bool, "http", http);
 
     const load_balancer_mod = b.addModule("load_balancer", .{ .root_source_file = b.path("src/load_balancer.zig"), .target = target, .optimize = optimize, .link_libc = true });
@@ -43,6 +48,10 @@ pub fn build(b: *std.Build) void {
     http_mod.addImport("acme", acme_mod);
     http_mod.addImport("load_balancer", load_balancer_mod);
     if (tls) {
+        if (backend == .aws_lc) {
+            http_mod.addCSourceFile(.{ .file = b.path("src/server/aws_lc.c"), .flags = &.{"-std=c11"} });
+            http_mod.linkSystemLibrary("pthread", .{});
+        }
         if (openssl) |p| {
             http_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             // static archives so the binary does not depend on a system OpenSSL
@@ -190,6 +199,7 @@ pub fn build(b: *std.Build) void {
     }
     for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
         .{ .group = .tls, .script = "tls-io.py" },
+        .{ .group = .tls, .script = "tls-config.py" },
         .{ .group = .core, .script = "request-storage.py" },
         .{ .group = .core, .script = "error-pages.py" },
         .{ .group = .core, .script = "config_e2e.py" },

@@ -139,3 +139,46 @@ jobs:
             .zig-cache
             ${{ env.ZIG_GLOBAL_CACHE_DIR }}
           key: ${{ steps.zig-cache.outputs.cache-primary-key }}
+
+  aws-lc:
+    name: AWS-LC HTTP/1.1 TLS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache_key_prefix: mise-aws-lc
+      - name: Cache compiled OpenSSL and HTTP codecs
+        id: native-deps
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps/openssl-install
+            deps/http-install
+          key: native-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'deps/SHA256SUMS', 'scripts/fetch-deps.sh', 'scripts/build-openssl.sh', 'deps/patches/**', 'tests/quic-stream-gc.c', 'scripts/build-http-deps.sh') }}
+      - name: Build pinned OpenSSL and HTTP codecs
+        if: steps.native-deps.outputs.cache-hit != 'true'
+        run: |
+          mise run deps:tls
+          mise run deps:http
+      - name: Cache pinned AWS-LC
+        id: aws-deps
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: deps/aws-lc-install
+          key: aws-lc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-aws-lc.sh', 'scripts/patches/aws-lc-*.patch') }}
+      - name: Build pinned AWS-LC
+        if: steps.aws-deps.outputs.cache-hit != 'true'
+        run: CC=gcc CXX=g++ bash scripts/build-aws-lc.sh
+      - name: Unit tests and release build
+        run: CC=/usr/bin/cc zig build test install -j2 -Doptimize=ReleaseFast -Dtls=true -Dtls-backend=aws_lc -Dopenssl=deps/aws-lc-install --summary all
+      - name: TLS backpressure, large files, KeyUpdate, SNI and resumption
+        run: |
+          python3 tests/tls-io.py zig-out/bin/zhttpd
+          python3 tests/tls-config.py zig-out/bin/zhttpd

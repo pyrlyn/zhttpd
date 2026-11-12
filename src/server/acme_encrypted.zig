@@ -30,7 +30,13 @@ extern "c" fn BIO_ctrl(*BIO, c_int, c_long, ?*anyopaque) c_long;
 extern "c" fn PEM_read_bio_PrivateKey(*BIO, ?*?*EVP_PKEY, Callback, ?*anyopaque) ?*EVP_PKEY;
 extern "c" fn PEM_write_bio_PrivateKey(*BIO, *EVP_PKEY, ?*const EVP_CIPHER, ?[*]const u8, c_int, Callback, ?*anyopaque) c_int;
 extern "c" fn EVP_PKEY_free(*EVP_PKEY) void;
-extern "c" fn EVP_PKEY_eq(*const EVP_PKEY, *const EVP_PKEY) c_int;
+const OpenSsl = struct {
+    extern "c" fn EVP_PKEY_eq(*const EVP_PKEY, *const EVP_PKEY) c_int;
+};
+const AwsLc = struct {
+    extern "c" fn EVP_PKEY_cmp(*const EVP_PKEY, *const EVP_PKEY) c_int;
+};
+const EVP_PKEY_eq = if (@import("build_options").aws_lc) AwsLc.EVP_PKEY_cmp else OpenSsl.EVP_PKEY_eq;
 extern "c" fn EVP_PKEY2PKCS8(*const EVP_PKEY) ?*PKCS8_PRIV_KEY_INFO;
 extern "c" fn PKCS8_PRIV_KEY_INFO_free(*PKCS8_PRIV_KEY_INFO) void;
 extern "c" fn EVP_aes_256_cbc() *const EVP_CIPHER;
