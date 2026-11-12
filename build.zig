@@ -47,6 +47,17 @@ pub fn build(b: *std.Build) void {
     http_mod.addImport("fastcgi", fastcgi_mod);
     http_mod.addImport("acme", acme_mod);
     http_mod.addImport("load_balancer", load_balancer_mod);
+    // HTTP/3 transport (QUIC v1 + HTTP/3/QPACK in Zig, TLS via OpenSSL).
+    const zquic_opts = b.addOptions();
+    zquic_opts.addOption(bool, "openssl_aead", true);
+    const zquic_mod = b.addModule("zquic", .{
+        .root_source_file = b.path("modules/quic/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zquic_mod.addOptions("zquic_options", zquic_opts);
+    http_mod.addImport("zquic", zquic_mod);
     if (tls) {
         if (backend == .aws_lc) {
             http_mod.addCSourceFile(.{ .file = b.path("src/server/aws_lc.c"), .flags = &.{"-std=c11"} });

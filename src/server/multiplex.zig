@@ -4,19 +4,17 @@ const std = @import("std");
 const config = @import("../http/config.zig");
 const tls = @import("tls.zig");
 const net = @import("net.zig");
+const Addr = @import("../http/addr.zig").Addr;
 const Conn = @import("conn.zig").Conn;
 const Worker = @import("worker.zig").Worker;
 const Listener = @import("worker.zig").Listener;
+const h3 = @import("h3.zig");
 pub const enabled = @import("build_options").http;
 const Open = *const fn (?*anyopaque, *anyopaque, *const net.SockAddr, *const net.SockAddr, c_int) callconv(.c) ?*anyopaque;
 const Drive = *const fn (*anyopaque) callconv(.c) void;
 extern "c" fn zhttp_h2_new(*tls.SSL, *anyopaque, Open, Drive, Drive, *const net.SockAddr, *const net.SockAddr) ?*anyopaque;
 extern "c" fn zhttp_h2_drive(*anyopaque) c_int;
 extern "c" fn zhttp_h2_free(*anyopaque) void;
-extern "c" fn zhttp_h3_new(*tls.SSL_CTX, c_int, *anyopaque, Open, Drive, Drive, c_uint) ?*anyopaque;
-extern "c" fn zhttp_h3_drive(*anyopaque) c_int;
-extern "c" fn zhttp_h3_wait_ms(*anyopaque) c_int;
-extern "c" fn zhttp_h3_free(*anyopaque) void;
 extern "c" fn zhttp_stream_read(*anyopaque, [*]u8, usize) isize;
 extern "c" fn zhttp_stream_write(*anyopaque, [*]const u8, usize) isize;
 extern "c" fn zhttp_stream_finish(*anyopaque) void;
@@ -39,12 +37,15 @@ pub fn validate(cfg: *const config.Config) !void {
 }
 
 fn openStream(w: *Worker, listen: *const config.Listen, stream: *anyopaque, peer: *const net.SockAddr, local: *const net.SockAddr, protocol: c_int) ?*anyopaque {
+    return openStreamAddr(w, listen, stream, net.fromSockAddr(peer), net.fromSockAddr(local), @intCast(protocol));
+}
+pub fn openStreamAddr(w: *Worker, listen: *const config.Listen, stream: *anyopaque, peer: Addr, local: Addr, protocol: u8) ?*anyopaque {
     if (w.stopping or w.nconns >= w.max_conns) return null;
     const cn = w.acquire() orelse return null;
-    cn.init(w, -1, net.fromSockAddr(peer), listen);
+    cn.init(w, -1, peer, listen);
     cn.transport_stream = stream;
-    cn.local = net.fromSockAddr(local);
-    cn.stream_protocol = @intCast(protocol);
+    cn.local = local;
+    cn.stream_protocol = protocol;
     cn.id = w.next_id;
     w.next_id += 1;
     return cn;
@@ -53,12 +54,10 @@ fn openH2(user: ?*anyopaque, stream: *anyopaque, peer: *const net.SockAddr, loca
     const cn: *Conn = @ptrCast(@alignCast(user.?));
     return openStream(cn.w, cn.listen, stream, peer, local, protocol);
 }
-fn openH3(user: ?*anyopaque, stream: *anyopaque, peer: *const net.SockAddr, local: *const net.SockAddr, protocol: c_int) callconv(.c) ?*anyopaque {
-    const l: *Listener = @ptrCast(@alignCast(user.?));
-    return openStream(l.worker.?, l.listen, stream, peer, local, protocol);
-}
 fn driveRequest(ptr: *anyopaque) callconv(.c) void {
-    const cn: *Conn = @ptrCast(@alignCast(ptr));
+    driveRequestConn(@ptrCast(@alignCast(ptr)));
+}
+pub fn driveRequestConn(cn: *Conn) void {
     const previous = cn.w.current;
     cn.w.current = cn;
     defer cn.w.current = previous;
@@ -68,22 +67,26 @@ fn closeRequest(ptr: *anyopaque) callconv(.c) void {
     const cn: *Conn = @ptrCast(@alignCast(ptr));
     cn.close();
 }
-pub fn readStream(stream: *anyopaque, buf: []u8) net.Io {
+pub fn readStream(stream: *anyopaque, protocol: u8, buf: []u8) net.Io {
     if (!enabled) unreachable;
+    if (protocol == 3) return h3.read(@ptrCast(@alignCast(stream)), buf);
     const n = zhttp_stream_read(stream, buf.ptr, buf.len);
     return if (n > 0) .{ .ok = @intCast(n) } else if (n == 0) .eof else if (n == -1) .again else .{ .err = 0 };
 }
-pub fn writeStream(stream: *anyopaque, buf: []const u8) net.Io {
+pub fn writeStream(stream: *anyopaque, protocol: u8, buf: []const u8) net.Io {
     if (!enabled) unreachable;
+    if (protocol == 3) return h3.write(@ptrCast(@alignCast(stream)), buf);
     const n = zhttp_stream_write(stream, buf.ptr, buf.len);
     return if (n >= 0) .{ .ok = @intCast(n) } else if (n == -1) .again else .{ .err = 0 };
 }
-pub fn finishStream(stream: *anyopaque) void {
+pub fn finishStream(stream: *anyopaque, protocol: u8) void {
     if (!enabled) unreachable;
+    if (protocol == 3) return h3.finishStream(@ptrCast(@alignCast(stream)));
     zhttp_stream_finish(stream);
 }
-pub fn sendFile(stream: *anyopaque, fd: c_int, offset: u64, remaining: u64) net.Io {
+pub fn sendFile(stream: *anyopaque, protocol: u8, fd: c_int, offset: u64, remaining: u64) net.Io {
     if (!enabled) unreachable;
+    if (protocol == 3) return h3.sendFile(@ptrCast(@alignCast(stream)), fd, offset, remaining);
     const n = zhttp_stream_file(stream, fd, offset, remaining);
     return if (n > 0) .{ .ok = @intCast(n) } else if (n == -1) .again else .{ .err = 0 };
 }
@@ -108,23 +111,31 @@ pub fn freeH2(cn: *Conn) void {
     if (enabled) if (cn.multiplex) |p| zhttp_h2_free(p);
     cn.multiplex = null;
 }
+fn h3Server(l: *const Listener) ?*h3.Server {
+    return @ptrCast(@alignCast(l.quic orelse return null));
+}
 pub fn startH3(l: *Listener, w: *Worker) bool {
     if (!enabled) return false;
     l.worker = w;
-    l.quic = zhttp_h3_new(l.sni.?.default_ctx, l.fd, l, openH3, driveRequest, closeRequest, w.max_conns) orelse return false;
+    l.quic = h3.start(l, w) orelse return false;
     return true;
 }
+/// Listener readable: receive datagrams, run timers, transmit.
 pub fn driveH3(l: *Listener) void {
-    if (enabled) if (l.quic) |p| {
-        l.pending = zhttp_h3_drive(p) != 0;
+    if (enabled) if (h3Server(l)) |s| {
+        l.pending = h3.drive(s);
     };
 }
+/// Timers and output for responses produced outside listener events.
+pub fn serviceH3(l: *Listener) void {
+    if (enabled) if (h3Server(l)) |s| h3.service(s);
+}
 pub fn waitH3(l: *const Listener) i32 {
-    if (enabled) if (l.quic) |p| return zhttp_h3_wait_ms(p);
-    return 5;
+    if (enabled) if (h3Server(l)) |s| return h3.waitMs(s);
+    return 1000;
 }
 pub fn freeH3(l: *Listener) void {
-    if (enabled) if (l.quic) |p| zhttp_h3_free(p);
+    if (enabled) if (h3Server(l)) |s| h3.free(s);
     l.quic = null;
     l.pending = false;
 }

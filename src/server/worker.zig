@@ -214,10 +214,8 @@ pub const Worker = struct {
             if (w.stopping and w.nconns == 0) break;
             var modern = false;
             var pending = w.posted_head != null;
-            for (w.listeners) |l| {
-                modern = modern or l.quic != null;
-                pending = pending or l.pending;
-            }
+            // QUIC listeners wait for their exact transport timers instead.
+            for (w.listeners) |l| pending = pending or l.pending;
             var cn_it = w.active;
             while (cn_it) |cn| : (cn_it = cn.next) modern = modern or cn.multiplex != null;
             var wait_ms: i32 = if (pending) 0 else if (modern) 5 else 1000;
@@ -228,13 +226,15 @@ pub const Worker = struct {
             w.updateTime();
             w.balancer.update(w.nconns);
             for (evs) |ev| w.dispatch(ev);
-            for (w.listeners) |*l| multiplex.driveH3(l);
+            for (w.listeners) |*l| multiplex.serviceH3(l);
             cn_it = w.active;
             while (cn_it) |cn| {
                 cn_it = cn.next;
                 if (cn.state == .multiplexed and !cn.posted) multiplex.driveH2(cn);
             }
             w.runPosted();
+            // Transmit stream output produced by posted continuations.
+            for (w.listeners) |*l| multiplex.serviceH3(l);
             w.bury();
             if (w.now_ms - last_sweep >= 500) {
                 last_sweep = w.now_ms;

@@ -37,7 +37,6 @@ extern "c" fn BIO_get_callback_arg(bio: *const BIO) ?*anyopaque;
 extern "c" fn BIO_set_flags(bio: *BIO, flags: c_int) void;
 extern "c" fn BIO_clear_flags(bio: *BIO, flags: c_int) void;
 
-extern "c" fn OSSL_QUIC_server_method() *const SSL_METHOD;
 extern "c" fn TLS_server_method() *const SSL_METHOD;
 extern "c" fn SSL_CTX_new(m: *const SSL_METHOD) ?*SSL_CTX;
 extern "c" fn SSL_CTX_free(ctx: *SSL_CTX) void;
@@ -247,7 +246,7 @@ pub fn filePassword(buf: [*]u8, size: c_int, writing: c_int, userdata: ?*anyopaq
 /// Create an SSL_CTX for a server from its ssl_* directives.
 pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const config.Server, diag: *Diag, quic: bool) !*SSL_CTX {
     var ebuf: [256]u8 = undefined;
-    const ctx = SSL_CTX_new(if (@import("multiplex.zig").enabled and quic) OSSL_QUIC_server_method() else TLS_server_method()) orelse return error.TlsInit;
+    const ctx = SSL_CTX_new(TLS_server_method()) orelse return error.TlsInit;
     errdefer SSL_CTX_free(ctx);
     SSL_CTX_set_default_passwd_cb(ctx, noPassword);
     if (!t.reject_handshake) {
@@ -306,6 +305,12 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
         const v: c_long = if (std.mem.eql(u8, p, "TLSv1")) TLS1_VERSION else if (std.mem.eql(u8, p, "TLSv1.1")) TLS1_1_VERSION else if (std.mem.eql(u8, p, "TLSv1.2")) TLS1_2_VERSION else if (std.mem.eql(u8, p, "TLSv1.3")) TLS1_3_VERSION else continue;
         if (min == 0 or v < min) min = v;
         if (v > max) max = v;
+    }
+    // QUIC carries TLS 1.3 only (RFC 9001 §4.2); the zquic transport drives
+    // this context through SSL_set_quic_tls_cbs.
+    if (quic) {
+        min = TLS1_3_VERSION;
+        max = TLS1_3_VERSION;
     }
     if (min != 0) {
         _ = SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, min, null);
@@ -371,13 +376,8 @@ const router = @import("router.zig");
 const Regex = @import("../regex.zig").Regex;
 
 fn selectContext(ssl: *SSL, ctx: *SSL_CTX, quic: bool) bool {
-    if (!@import("multiplex.zig").enabled or !quic) return SSL_set_SSL_CTX(ssl, ctx) != null;
-    // OpenSSL 3.5 does not support SSL_set_SSL_CTX on a QUIC SSL object.
-    // Install the already-loaded certificate/key/chain on this connection;
-    // SSL_use_cert_and_key supports QUIC and takes its own references.
-    var chain: ?*anyopaque = null;
-    if (SSL_CTX_ctrl(ctx, 115, 0, @ptrCast(&chain)) != 1) return false; // SSL_CTRL_GET_CHAIN_CERTS
-    return SSL_use_cert_and_key(ssl, SSL_CTX_get0_certificate(ctx) orelse return false, SSL_CTX_get0_privatekey(ctx) orelse return false, chain, 1) == 1;
+    _ = quic;
+    return SSL_set_SSL_CTX(ssl, ctx) != null;
 }
 
 fn sniCallback(ssl: *SSL, alert: *c_int, arg: ?*anyopaque) callconv(.c) c_int {
