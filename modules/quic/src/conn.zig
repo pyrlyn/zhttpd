@@ -123,7 +123,10 @@ pub const Stream = struct {
     queued: bool = false,
     ctrl_queued: bool = false,
     want_write: bool = false,
+    /// On the connection's event list (read and/or write notification).
     readable_queued: bool = false,
+    ev_read: bool = false,
+    ev_write: bool = false,
     released: bool = false,
     freeing: bool = false,
     next: ?*Stream = null,
@@ -405,6 +408,7 @@ pub const Conn = struct {
     ctrl_head: ?*Stream = null,
     ctrl_tail: ?*Stream = null,
     ev_head: ?*Stream = null,
+    ev_tail: ?*Stream = null,
     free_list: ?*Stream = null,
     // lifecycle
     peer_params: tp.Params = .{},
@@ -1284,9 +1288,9 @@ pub const Conn = struct {
             switch (f.kind) {
                 .stream => if (c.streams.get(f.id)) |st| {
                     st.send.onAck(f.offset, f.len, f.fin);
-                    if (st.want_write and st.send.buffered() < c.cfg().stream_send_buffer) {
+                    if (st.want_write and st.send.buffered() <= c.cfg().stream_send_buffer / 2) {
                         st.want_write = false;
-                        if (!st.released) c.cb().stream_writable(c.cb().ctx, st);
+                        c.queueWritable(st);
                     }
                     c.maybeFree(st);
                 },
@@ -1512,17 +1516,35 @@ pub const Conn = struct {
     }
 
     fn queueEvent(c: *Conn, s: *Stream) void {
-        if (s.readable_queued or s.released) return;
-        s.readable_queued = true;
-        s.ev_next = c.ev_head;
-        c.ev_head = s;
+        c.pushEvent(s);
+        s.ev_read = true;
     }
 
+    fn queueWritable(c: *Conn, s: *Stream) void {
+        c.pushEvent(s);
+        s.ev_write = true;
+    }
+
+    fn pushEvent(c: *Conn, s: *Stream) void {
+        if (s.readable_queued or s.released) return;
+        s.readable_queued = true;
+        s.ev_next = null;
+        if (c.ev_tail) |t| t.ev_next = s else c.ev_head = s;
+        c.ev_tail = s;
+    }
+
+    /// Delivers queued stream notifications outside of frame processing.
     fn flushEvents(c: *Conn) void {
         while (c.ev_head) |s| {
             c.ev_head = s.ev_next;
+            if (c.ev_head == null) c.ev_tail = null;
             s.readable_queued = false;
-            if (!s.released and c.state == .open) c.cb().stream_readable(c.cb().ctx, s);
+            const rd = s.ev_read;
+            const wr = s.ev_write;
+            s.ev_read = false;
+            s.ev_write = false;
+            if (rd and !s.released and c.state == .open) c.cb().stream_readable(c.cb().ctx, s);
+            if (wr and !s.released and c.state == .open) c.cb().stream_writable(c.cb().ctx, s);
             if (s.freeing) {
                 s.freeing = false;
                 c.maybeFree(s);

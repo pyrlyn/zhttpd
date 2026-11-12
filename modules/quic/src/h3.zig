@@ -389,7 +389,10 @@ pub const Request = struct {
         buf[start] = frame_headers;
         _ = wire.putVarint(buf[start + 1 ..], block_len);
         const frame = buf[start .. 9 + block_len];
-        if (s.writable() < frame.len) return error.WouldBlock;
+        if (s.writable() < frame.len) {
+            s.want_write = true;
+            return error.WouldBlock;
+        }
         const n = try s.write(frame);
         std.debug.assert(n == frame.len);
         if (end) s.finish();
@@ -401,7 +404,10 @@ pub const Request = struct {
         const s = r.stream orelse return error.Closed;
         if (data.len == 0) return 0;
         const room = s.writable();
-        if (room < 10) return 0;
+        if (room < 10) {
+            s.want_write = true;
+            return 0;
+        }
         const n = @min(data.len, room - 9);
         var hdr: [9]u8 = undefined;
         hdr[0] = frame_data;
@@ -418,7 +424,10 @@ pub const Request = struct {
     pub fn reserveData(r: *Request, max: usize) ![]u8 {
         const s = r.stream orelse return error.Closed;
         const room = s.writable();
-        if (room < 5 + 64) return &.{};
+        if (room < 5 + 64) {
+            s.want_write = true;
+            return &.{};
+        }
         const want = @min(max, room - 5, (1 << 30) - 1);
         const b = try s.reserve(5 + want);
         if (b.len < 5 + 64) {
@@ -670,23 +679,20 @@ pub const Server = struct {
     }
 
     fn newRequest(sv: *Server, se: *Session, s: *Stream) ?*Request {
-        const r = if (sv.free_reqs) |f| blk: {
-            sv.free_reqs = f.next_free;
+        if (sv.free_reqs) |r| {
+            sv.free_reqs = r.next_free;
             sv.nfree -= 1;
-            break :blk f;
-        } else sv.alloc.create(Request) catch return null;
-        const block = r.block;
-        const scratch = r.scratch;
-        const fields = r.fields;
-        r.* = .{ .session = se, .stream = s };
-        if (sv.nfree > 0 or block.capacity > 0) {
-            r.block = block;
-            r.scratch = scratch;
-            r.fields = fields;
-            r.block.clearRetainingCapacity();
-            r.scratch.clearRetainingCapacity();
-            r.fields.clearRetainingCapacity();
+            var block = r.block;
+            var scratch = r.scratch;
+            var fields = r.fields;
+            block.clearRetainingCapacity();
+            scratch.clearRetainingCapacity();
+            fields.clearRetainingCapacity();
+            r.* = .{ .session = se, .stream = s, .block = block, .scratch = scratch, .fields = fields };
+            return r;
         }
+        const r = sv.alloc.create(Request) catch return null;
+        r.* = .{ .session = se, .stream = s };
         return r;
     }
 
