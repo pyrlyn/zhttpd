@@ -19,9 +19,8 @@ extern "c" fn zhttp_h3_wait_ms(*anyopaque) c_int;
 extern "c" fn zhttp_h3_free(*anyopaque) void;
 extern "c" fn zhttp_stream_read(*anyopaque, [*]u8, usize) isize;
 extern "c" fn zhttp_stream_write(*anyopaque, [*]const u8, usize) isize;
-extern "c" fn zhttp_stream_writable(*anyopaque, *[*]u8, u64) isize;
-extern "c" fn zhttp_stream_commit(*anyopaque, usize) void;
 extern "c" fn zhttp_stream_finish(*anyopaque) void;
+extern "c" fn zhttp_stream_file(*anyopaque, c_int, u64, u64) isize;
 
 pub fn validate(cfg: *const config.Config) !void {
     for (cfg.listens) |l| {
@@ -85,16 +84,8 @@ pub fn finishStream(stream: *anyopaque) void {
 }
 pub fn sendFile(stream: *anyopaque, fd: c_int, offset: u64, remaining: u64) net.Io {
     if (!enabled) unreachable;
-    var buffer: [*]u8 = undefined;
-    const capacity = zhttp_stream_writable(stream, &buffer, remaining);
-    if (capacity == 0) return .again;
-    if (capacity < 0) return .{ .err = 0 };
-    const len: usize = @intCast(@min(@as(u64, @intCast(capacity)), remaining));
-    const n = net.pread(fd, buffer[0..len], offset);
-    if (n <= 0) return .{ .err = 0 };
-    const written: usize = @intCast(n);
-    zhttp_stream_commit(stream, written);
-    return .{ .ok = written };
+    const n = zhttp_stream_file(stream, fd, offset, remaining);
+    return if (n > 0) .{ .ok = @intCast(n) } else if (n == -1) .again else .{ .err = 0 };
 }
 pub fn startH2(cn: *Conn) bool {
     if (!enabled) return false;

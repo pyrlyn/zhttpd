@@ -26,6 +26,9 @@
 
 #define STREAMS 32
 #define INPUT_CAP (64 * 1024)
+#define INPUT_INITIAL_CAP 1024
+#define HEAD_INITIAL_CAP 1024
+#define OUTPUT_INITIAL_CAP 2048
 #define H2_OUTPUT_CAP (16 * 1024)
 /* Two DATA payloads plus their 9-byte frame headers fill two TLS records. */
 #define OUTPUT_CAP (2 * (H2_OUTPUT_CAP - 9))
@@ -45,10 +48,14 @@ struct stream {
     void *request;
     int started, request_end, chunked, eof, submitted, closed, read_fin, write_fin;
     char *headers;
-    size_t headers_len, header_count;
+    size_t headers_len, header_count, headers_cap;
     uint8_t *input, *output;
-    size_t input_len, input_pos, output_len, output_pos, output_cap, credit, offered;
-    char method[32], path[8193], authority[1024], content_length[32];
+    size_t input_len, input_pos, input_cap, output_len, output_pos, output_cap, credit, offered;
+    /* Borrowed from the live Zig request; never closed by the codec. */
+    int file_active, file_offer, file_fd;
+    uint64_t file_offset, file_left;
+    size_t file_sent;
+    char method[32], authority[1024], content_length[32], path[8193];
 };
 struct session {
     session *next;
@@ -121,23 +128,27 @@ static stream *new_stream(session *s, int64_t id, SSL *quic) {
     int request_stream = !quic || (id & 3) == 0;
     stream *p;
     char *headers = NULL; uint8_t *input = NULL, *output = NULL;
-    size_t output_cap = OUTPUT_CAP;
+    size_t output_cap = OUTPUT_INITIAL_CAP, input_cap = INPUT_INITIAL_CAP, headers_cap = HEAD_INITIAL_CAP;
     if (request_stream && stream_cache) {
         p = stream_cache; stream_cache = p->next; --cached_streams;
         headers = p->headers; input = p->input; output = p->output;
         output_cap = p->output_cap; cached_output_bytes -= output_cap;
+        input_cap = p->input_cap;
+        headers_cap = p->headers_cap;
     } else p = malloc(sizeof(*p));
     if (!p) return NULL;
     /* Field strings are length checked and terminated by copy_field. Reset
      * their empty markers, not 9 KiB of unused URI/authority capacity. */
     memset(p, 0, offsetof(stream, method));
     p->headers = headers; p->input = input; p->output = output; p->output_cap = output_cap;
+    p->input_cap = input_cap;
+    p->headers_cap = headers_cap;
     p->method[0] = p->path[0] = p->authority[0] = p->content_length[0] = 0;
     // Control/QPACK streams carry no HTTP request and need no bridge buffers.
     if (request_stream && !p->headers) {
-        p->headers = malloc(HEAD_CAP);
-        p->input = malloc(INPUT_CAP);
-        p->output = malloc(OUTPUT_CAP + 1);
+        p->headers = malloc(headers_cap);
+        p->input = malloc(input_cap);
+        p->output = malloc(output_cap + 1);
         if (!p->headers || !p->input || !p->output) {
             free_stream(p); return NULL;
         }
@@ -168,8 +179,22 @@ static void sweep(session *s) {
         --s->nstreams;
     }
 }
+static int reserve_input(stream *p, size_t needed) {
+    if (needed > INPUT_CAP) return -1;
+    /* GET requests only need the bounded header bridge. Grow for request
+     * bodies, retaining the same receive limit and flow-control budget.
+     * No external consumer keeps a pointer into the input buffer. */
+    if (needed > p->input_cap) {
+        size_t capacity = p->input_cap;
+        while (capacity < needed) capacity *= 2;
+        uint8_t *larger = realloc(p->input, capacity);
+        if (!larger) return -1;
+        p->input = larger; p->input_cap = capacity;
+    }
+    return 0;
+}
 static int append(stream *p, const void *data, size_t len) {
-    if (len > INPUT_CAP - p->input_len) return -1;
+    if (len > INPUT_CAP - p->input_len || reserve_input(p, p->input_len + len)) return -1;
     memcpy(p->input + p->input_len, data, len); p->input_len += len;
     return 0;
 }
@@ -198,6 +223,11 @@ static int header(stream *p, const uint8_t *name, size_t nn, const uint8_t *valu
     if (eq_literal(name, nn, "te")) return eq_literal(value, vn, "trailers") ? 0 : -1;
     if (eq_literal(name, nn, "content-length")) return copy_field(p->content_length, sizeof(p->content_length), value, vn);
     if (eq_literal(name, nn, "expect")) return 0;
+    if (p->headers_len + nn + vn + 4 > p->headers_cap) {
+        char *larger = realloc(p->headers, HEAD_CAP);
+        if (!larger) return -1;
+        p->headers = larger; p->headers_cap = HEAD_CAP;
+    }
     memcpy(p->headers + p->headers_len, name, nn); p->headers_len += nn;
     memcpy(p->headers + p->headers_len, ": ", 2); p->headers_len += 2;
     memcpy(p->headers + p->headers_len, value, vn); p->headers_len += vn;
@@ -219,6 +249,7 @@ static int start_request(stream *p) {
     /* Field arrays are bounded and terminated by header(). Preflight the same
      * bridge limit before copying, without a printf parser for every request. */
     if (n + p->headers_len + 2 > HEAD_CAP || n + p->headers_len + 2 > INPUT_CAP) return -1;
+    if (reserve_input(p, n + p->headers_len + 2)) return -1;
     uint8_t *out = request_part(p->input, p->method, method_len);
     out = request_part(out, " ", 1);
     out = request_part(out, p->path, path_len);
@@ -255,6 +286,13 @@ ssize_t zhttp_stream_read(void *ptr, uint8_t *buf, size_t len) {
 ssize_t zhttp_stream_write(void *ptr, const uint8_t *buf, size_t len) {
     stream *p = ptr;
     if (p->closed || p->eof) return -2;
+    if (len > p->output_cap - p->output_len && p->output_cap < OUTPUT_CAP && !p->offered) {
+        uint8_t *larger = realloc(p->output, OUTPUT_CAP + 1);
+        if (larger) { p->output = larger; p->output_cap = OUTPUT_CAP; }
+        /* An incomplete header cannot drain through the codec. Failing its
+         * growth must close the request instead of waiting on a full buffer. */
+        else if (!p->submitted) return -2;
+    }
     size_t n = p->output_cap - p->output_len;
     if (!n) return -1;
     if (n > len) n = len;
@@ -268,9 +306,10 @@ ssize_t zhttp_stream_writable(void *ptr, uint8_t **buf, uint64_t remaining) {
     /* Batch large QUIC file reads. Never relocate a vector retained by the
      * codec, and leave small responses at the original allocation size.
      * Allocation failure simply retains the smaller, correct path. */
-    if (!p->owner->h2 && remaining > OUTPUT_CAP && !p->offered && p->output_cap < FILE_OUTPUT_CAP) {
-        uint8_t *larger = realloc(p->output, FILE_OUTPUT_CAP + 1);
-        if (larger) { p->output = larger; p->output_cap = FILE_OUTPUT_CAP; }
+    size_t capacity = !p->owner->h2 && remaining > OUTPUT_CAP ? FILE_OUTPUT_CAP : OUTPUT_CAP;
+    if (remaining > p->output_cap - p->output_len && !p->offered && p->output_cap < capacity) {
+        uint8_t *larger = realloc(p->output, capacity + 1);
+        if (larger) { p->output = larger; p->output_cap = capacity; }
     }
     *buf = p->output + p->output_len;
     return (ssize_t)(p->output_cap - p->output_len);
@@ -281,7 +320,40 @@ void zhttp_stream_commit(void *ptr, size_t n) {
 }
 void zhttp_stream_finish(void *ptr) {
     stream *p = ptr;
+    if (p->file_active) {
+        /* Timeout/cancellation can close the application's descriptor while
+         * a DATA frame is deferred. Never read it after ownership returns. */
+        if (p->file_left && !p->closed && p->owner->h2)
+            nghttp2_submit_rst_stream(p->owner->h2, 0, (int32_t)p->id, NGHTTP2_INTERNAL_ERROR);
+        p->file_active = 0; p->file_fd = -1;
+    }
     p->request = NULL; p->eof = 1; p->owner->activity = 1;
+}
+/* -1 waits for flow control, -2 reports an I/O error. Positive values
+ * acknowledge bytes copied into codec-owned storage. The application retains
+ * the descriptor until all of those bytes have been reported. */
+ssize_t zhttp_stream_file(void *ptr, int fd, uint64_t offset, uint64_t remaining) {
+    stream *p = ptr;
+    if (p->closed || p->eof) return -2;
+    if (p->file_active) {
+        size_t n = p->file_sent; p->file_sent = 0;
+        if (!p->file_left && !p->offered) p->file_active = 0;
+        return n ? (ssize_t)n : -1;
+    }
+    if (!p->owner->h2 || remaining <= OUTPUT_CAP) {
+        uint8_t *buf;
+        ssize_t capacity = zhttp_stream_writable(p, &buf, remaining);
+        if (capacity <= 0) return capacity ? -2 : -1;
+        size_t len = remaining < (uint64_t)capacity ? (size_t)remaining : (size_t)capacity;
+        ssize_t n;
+        do { n = pread(fd, buf, len, (off_t)offset); } while (n < 0 && errno == EINTR);
+        if (n <= 0) return -2;
+        zhttp_stream_commit(p, (size_t)n);
+        return n;
+    }
+    p->file_active = 1; p->file_fd = fd;
+    p->file_offset = offset; p->file_left = remaining;
+    return -1;
 }
 static int body(stream *p, const uint8_t *data, size_t n) {
     if (!p || !p->started || p->request_end) return -1;
@@ -303,6 +375,13 @@ static nghttp2_ssize h2_read(nghttp2_session *h, int32_t id, uint8_t *buf, size_
     (void)h; (void)id; (void)user;
     stream *p = source->ptr;
     size_t n = p->output_len - p->output_pos;
+    if (!n && p->file_active && p->file_left) {
+        n = p->file_left < len ? (size_t)p->file_left : len;
+        if (n > H2_OUTPUT_CAP - 9) n = H2_OUTPUT_CAP - 9;
+        *flags |= NGHTTP2_DATA_FLAG_NO_COPY;
+        p->offered = n; p->file_offer = 1;
+        return (nghttp2_ssize)n;
+    }
     if (n > len) n = len;
     if (!n && !p->eof) return NGHTTP2_ERR_DEFERRED;
     if (n > H2_OUTPUT_CAP / 2) {
@@ -393,7 +472,8 @@ static int pump_backend(stream *p) {
     if (p->output_pos == p->output_len && !p->offered) p->output_pos = p->output_len = 0;
     /* A completed request cannot consume more input. Let the codec drain its
      * retained response bytes before revisiting the application writer. */
-    if (p->request && (!p->output_len || !p->request_end || p->input_pos < p->input_len || !p->submitted))
+    if (p->request && (!p->file_active || p->file_sent || !p->request_end || p->input_pos < p->input_len) &&
+        (!p->output_len || !p->request_end || p->input_pos < p->input_len || !p->submitted))
         p->owner->drive(p->request);
     /* An early response can finish before the client body; discard buffered
      * input while returning its flow-control credit to the connection. */
@@ -467,6 +547,7 @@ static int h2_send_data(nghttp2_session *h, nghttp2_frame *frame, const uint8_t 
     (void)h;
     session *s = user; stream *p = source->ptr;
     if (frame->data.padlen || n != p->offered) return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (p->file_offer && p->file_fd < 0) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
     if (s->h2_write_blocked || H2_OUTPUT_CAP - s->h2_output_len < n + 9)
         return NGHTTP2_ERR_WOULDBLOCK;
     /* Large responses otherwise issue one socket write per TLS record.
@@ -486,7 +567,18 @@ static int h2_send_data(nghttp2_session *h, nghttp2_frame *frame, const uint8_t 
     /* Copy straight into the session-owned TLS batch. Keeping the retry bytes
      * independent of the stream also makes cancellation during WANT_WRITE safe. */
     memcpy(s->h2_output + s->h2_output_len, head, 9);
-    memcpy(s->h2_output + s->h2_output_len + 9, p->output + p->output_pos - n, n);
+    uint8_t *body_out = s->h2_output + s->h2_output_len + 9;
+    if (p->file_offer) {
+        size_t done = 0;
+        while (done < n) {
+            ssize_t r = pread(p->file_fd, body_out + done, n - done, (off_t)(p->file_offset + done));
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+            done += (size_t)r;
+        }
+        p->file_offset += n; p->file_left -= n; p->file_sent += n;
+        p->file_offer = 0;
+    } else memcpy(body_out, p->output + p->output_pos - n, n);
     s->h2_output_len += n + 9; s->activity = 1; p->offered = 0;
     return 0;
 }

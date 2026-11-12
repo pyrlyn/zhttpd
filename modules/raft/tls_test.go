@@ -115,6 +115,60 @@ func TestMutualTLSReplication(t *testing.T) {
 	t.Fatal("committed document did not replicate to all mTLS peers")
 }
 
+func TestShutdownDrainsPublisher(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{ID: "a", ClusterID: "shutdown", RaftAddress: freeAddress(t), APIAddress: freeAddress(t),
+		DataDir: filepath.Join(dir, "data"), MetricsInbox: filepath.Join(dir, "in"), MetricsView: filepath.Join(dir, "out"),
+		Bootstrap: true, InsecureLoopback: true, IntervalMS: 60000, MetricsTTLMS: 5000,
+		token: "test-token-with-at-least-32-characters"}
+	c.Peers = []Peer{{c.ID, c.RaftAddress, c.APIAddress}}
+	n, err := startNode(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for n.raft.State() != raft.Leader && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n.raft.State() != raft.Leader {
+		n.close()
+		t.Fatal("single node did not become leader")
+	}
+	// Model a publisher already working when cancellation arrives. The
+	// consensus engine must keep serving its final write until it returns.
+	resume := make(chan struct{})
+	result := make(chan error, 1)
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		<-n.ctx.Done()
+		<-resume
+		result <- n.apply(Command{Kind: "config", Node: "a", TOML: "drained during shutdown"})
+	}()
+	closed := make(chan struct{})
+	go func() { n.close(); close(closed) }()
+	<-n.ctx.Done()
+	// Give close time to reach the drain. Previously it stopped Raft here.
+	time.Sleep(100 * time.Millisecond)
+	close(resume)
+	select {
+	case err = <-result:
+		if err != nil {
+			t.Errorf("publisher lost its consensus engine: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("publisher hung during shutdown")
+	}
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("node did not finish shutdown")
+	}
+	if n.fsm.copy().Documents["a"].TOML != "drained during shutdown" {
+		t.Fatal("publisher's final write was not applied")
+	}
+}
+
 func TestMutualTLSAPIAndClusterIsolation(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := tlsMaterial(t, dir)

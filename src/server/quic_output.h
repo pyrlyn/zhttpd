@@ -38,6 +38,14 @@ static int quic_same_addr(const BIO_ADDR *a, const BIO_ADDR *b) {
 static BIO_MSG *quic_msg(BIO_MSG *msg, size_t stride, size_t i) {
     return (BIO_MSG *)((unsigned char *)msg + stride * i);
 }
+static int quic_gso_pair(const BIO_MSG *a, const BIO_MSG *b) {
+    return !a->flags && !b->flags && a->data_len && b->data_len &&
+        a->data_len <= UINT16_MAX && b->data_len <= a->data_len &&
+        a->data_len + b->data_len <= 65507 &&
+        a->peer && BIO_ADDR_family(a->peer) == AF_INET &&
+        (!a->local || BIO_ADDR_family(a->local) == AF_INET) &&
+        quic_same_addr(a->peer, b->peer) && quic_same_addr(a->local, b->local);
+}
 static int quic_sendmmsg(BIO *bio, BIO_MSG *msg, size_t stride, size_t count,
                          uint64_t flags, size_t *processed) {
     quic_output *q = BIO_get_data(bio);
@@ -86,6 +94,17 @@ static int quic_sendmmsg(BIO *bio, BIO_MSG *msg, size_t stride, size_t count,
         }
         size_t done = 0;
         size_t plain = q->disabled || flags ? count - *processed : 1;
+        /* Unequal short packets cannot use GSO. Keep them together for the
+         * ordinary sendmmsg BIO instead of issuing one syscall per packet;
+         * stop before the next pair that can start a GSO group. */
+        if (!q->disabled && !flags) {
+            while (*processed + plain < count) {
+                size_t next = *processed + plain;
+                if (next + 1 < count && quic_gso_pair(quic_msg(msg, stride, next),
+                                                     quic_msg(msg, stride, next + 1))) break;
+                ++plain;
+            }
+        }
         int ok = BIO_sendmmsg(q->direct, first, stride, plain, flags, &done);
         *processed += done;
         if (BIO_should_retry(q->direct)) BIO_set_retry_write(bio);
