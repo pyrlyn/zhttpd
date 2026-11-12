@@ -133,6 +133,32 @@ static void output_growth_and_cache(void) {
     }
     cached_streams = 0; cached_output_bytes = 0;
 }
+static void *capture_bridge(void *user, void *p, const struct sockaddr *peer,
+                            const struct sockaddr *local, int version) {
+    (void)peer; (void)local; assert(version == 2); ++*(unsigned *)user; return p;
+}
+static void request_bridge_format_and_limit(void) {
+    unsigned opened = 0; session s = {.open = capture_bridge, .user = &opened};
+    stream *p = new_stream(&s, 1, NULL); assert(p);
+    strcpy(p->method, "POST"); strcpy(p->path, "/path?q=x"); strcpy(p->authority, "example.test");
+    strcpy(p->content_length, "123");
+    const char extra[] = "x-test: value\r\n";
+    memcpy(p->headers, extra, sizeof(extra) - 1); p->headers_len = sizeof(extra) - 1;
+    const char expected[] = "POST /path?q=x HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\nContent-Length: 123\r\nx-test: value\r\n\r\n";
+    assert(start_request(p) == 0 && opened == 1);
+    assert(p->input_len == sizeof(expected) - 1 && !memcmp(p->input, expected, sizeof(expected) - 1));
+    p->started = 0; p->request = NULL; p->content_length[0] = 0; p->headers_len = 0;
+    const char chunked[] = "POST /path?q=x HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n";
+    assert(start_request(p) == 0 && opened == 2);
+    assert(p->input_len == sizeof(chunked) - 1 && !memcmp(p->input, chunked, sizeof(chunked) - 1));
+    p->started = 0; p->request = NULL;
+    p->headers_len = HEAD_CAP - (sizeof(chunked) - 1);
+    memset(p->headers, 'x', p->headers_len);
+    assert(start_request(p) == 0 && opened == 3 && p->input_len == HEAD_CAP);
+    p->started = 0; p->request = NULL; ++p->headers_len;
+    assert(start_request(p) == -1 && opened == 3);
+    free_stream(p);
+}
 static void h3_stream_association_lifetime(void) {
     session *s = calloc(1, sizeof(*s)); assert(s); ++active_sessions;
     nghttp3_callbacks cb = {0}; nghttp3_settings settings; nghttp3_settings_default(&settings);
@@ -152,7 +178,7 @@ static void h3_stream_association_lifetime(void) {
     assert(!stream_cache && !cached_streams && !cached_output_bytes && !active_sessions);
 }
 int main(void) {
-    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache(); h3_stream_association_lifetime();
-    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth, bounded cache and stream association lifetime");
+    output_boundaries(); output_ipv6_fallback(); input_budget(); output_growth_and_cache(); request_bridge_format_and_limit(); h3_stream_association_lifetime();
+    puts("PASS: UDP GSO boundaries, mixed peers, short tails, IPv6/failure fallback, receive budgets, output growth, bounded cache, request format/limits and stream association lifetime");
     return 0;
 }

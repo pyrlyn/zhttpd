@@ -204,16 +204,35 @@ static int header(stream *p, const uint8_t *name, size_t nn, const uint8_t *valu
     memcpy(p->headers + p->headers_len, "\r\n", 2); p->headers_len += 2;
     return 0;
 }
+static uint8_t *request_part(uint8_t *out, const void *data, size_t n) {
+    memcpy(out, data, n); return out + n;
+}
 static int start_request(stream *p) {
     if (!p || p->started || !*p->method || !*p->path || !*p->authority) return -1;
     p->chunked = !*p->content_length;
-    int n = snprintf((char *)p->input, INPUT_CAP,
-        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s: %s\r\n",
-        p->method, p->path, p->authority,
-        p->chunked ? "Transfer-Encoding" : "Content-Length", p->chunked ? "chunked" : p->content_length);
-    if (n < 0 || (size_t)n + p->headers_len + 2 > HEAD_CAP) return -1;
-    p->input_len = (size_t)n;
-    if (append(p, p->headers, p->headers_len) || append(p, "\r\n", 2)) return -1;
+    const char *framing = p->chunked ? "Transfer-Encoding: chunked\r\n" : "Content-Length: ";
+    size_t method_len = strlen(p->method), path_len = strlen(p->path), authority_len = strlen(p->authority);
+    size_t framing_len = p->chunked ? sizeof("Transfer-Encoding: chunked\r\n") - 1 : sizeof("Content-Length: ") - 1;
+    size_t content_len = p->chunked ? 0 : strlen(p->content_length);
+    size_t n = method_len + 1 + path_len + sizeof(" HTTP/1.1\r\nHost: ") - 1 + authority_len +
+        sizeof("\r\nConnection: close\r\n") - 1 + framing_len + (p->chunked ? 0 : content_len + 2);
+    /* Field arrays are bounded and terminated by header(). Preflight the same
+     * bridge limit before copying, without a printf parser for every request. */
+    if (n + p->headers_len + 2 > HEAD_CAP || n + p->headers_len + 2 > INPUT_CAP) return -1;
+    uint8_t *out = request_part(p->input, p->method, method_len);
+    out = request_part(out, " ", 1);
+    out = request_part(out, p->path, path_len);
+    out = request_part(out, " HTTP/1.1\r\nHost: ", sizeof(" HTTP/1.1\r\nHost: ") - 1);
+    out = request_part(out, p->authority, authority_len);
+    out = request_part(out, "\r\nConnection: close\r\n", sizeof("\r\nConnection: close\r\n") - 1);
+    out = request_part(out, framing, framing_len);
+    if (!p->chunked) {
+        out = request_part(out, p->content_length, content_len);
+        out = request_part(out, "\r\n", 2);
+    }
+    out = request_part(out, p->headers, p->headers_len);
+    out = request_part(out, "\r\n", 2);
+    p->input_len = (size_t)(out - p->input);
     session *s = p->owner;
     p->request = s->open(s->user, p, (struct sockaddr *)&s->peer, (struct sockaddr *)&s->local, s->h3 ? 3 : 2);
     if (!p->request) return -1;
