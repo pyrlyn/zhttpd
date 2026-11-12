@@ -89,6 +89,9 @@ static int peer_index = -1;
  * separate cache each. Active stream buffers still follow STREAMS limits. */
 static _Thread_local stream *stream_cache;
 static _Thread_local unsigned cached_streams, active_sessions;
+#ifdef __linux__
+static _Thread_local unsigned quic_listeners;
+#endif
 
 static void free_stream(stream *p) {
     free(p->headers); free(p->input); free(p->output); free(p);
@@ -614,14 +617,28 @@ static int drive_h3(session *s) {
     for (stream *p = s->streams; p; p = p->next)
         if (pump_backend(p)) return -1;
     for (int i = 0; i < 128; ++i) {
-        nghttp3_vec vec[1]; int64_t id; int fin;
-        nghttp3_ssize nv = nghttp3_conn_writev_stream(s->h3, &id, &fin, vec, 1);
+        nghttp3_vec vec[8]; int64_t id; int fin;
+        nghttp3_ssize nv = nghttp3_conn_writev_stream(s->h3, &id, &fin, vec, 8);
         if (nv < 0) return -1;
         if (id < 0) break;
         stream *p = lookup(s, id); if (!p) return -1;
+        /* Combine small frame headers and bodies into one QUIC stream write.
+         * Large vectors stay in their existing buffer; no extra body copy. */
+        uint8_t batch[2048]; const uint8_t *data = nv ? vec[0].base : batch;
+        size_t len = nv ? vec[0].len : 0;
+        nghttp3_ssize used = nv ? 1 : 0;
+        if (nv > 1 && len <= sizeof(batch) && vec[1].len <= sizeof(batch) - len) {
+            memcpy(batch, data, len); data = batch;
+            while (used < nv && vec[used].len <= sizeof(batch) - len) {
+                memcpy(batch + len, vec[used].base, vec[used].len);
+                len += vec[used++].len;
+            }
+        }
+        int conclude = fin && used == nv;
         size_t n = 0;
-        if (nv && vec[0].len) {
-            ERR_clear_error(); int r = SSL_write_ex(p->quic, vec[0].base, vec[0].len, &n);
+        if (len) {
+            ERR_clear_error();
+            int r = SSL_write_ex2(p->quic, data, len, conclude ? SSL_WRITE_FLAG_CONCLUDE : 0, &n);
             if (!r) {
                 if (ssl_wait(p->quic, r)) { nghttp3_conn_block_stream(s->h3, id); continue; }
                 nghttp3_conn_shutdown_stream_write(s->h3, id); p->closed = 1; continue;
@@ -629,11 +646,13 @@ static int drive_h3(session *s) {
         }
         if (nghttp3_conn_add_write_offset(s->h3, id, n)) return -1;
         if (n) s->activity = 1;
-        /* SSL_write_ex copies into OpenSSL's retransmission buffer. The nghttp3
-         * buffers can be released immediately, independently of packet ACKs. */
+        /* SSL_write_ex2 copies into OpenSSL's retransmission buffer. The
+         * nghttp3 buffers can be released independently of packet ACKs. */
         if (nghttp3_conn_add_ack_offset(s->h3, id, n)) return -1;
-        if (fin && (!nv || n == vec[0].len)) {
-            if (!SSL_stream_conclude(p->quic, 0)) return -1;
+        if (conclude && n == len) {
+            /* A zero-byte SSL_write_ex2 reports WANT_WRITE even when FIN was
+             * queued. Use the explicit API for a FIN without payload. */
+            if (!len && !SSL_stream_conclude(p->quic, 0)) return -1;
             p->write_fin = 1;
         }
     }
@@ -705,6 +724,9 @@ void *zhttp_h3_new(SSL_CTX *ctx, int fd, void *user, open_request open, drive_re
     setsockopt(fd, IPPROTO_IP, IP_RECVDSTADDR, &one, sizeof(one));
 #endif
     setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
+#ifdef __linux__
+    ++quic_listeners;
+#endif
     return l;
 fail:
     SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l); return NULL;
@@ -713,30 +735,36 @@ fail:
 /* Shared by listeners on this event-loop thread; every batch is consumed
  * before another listener is driven. Keep full-size UDP buffers so valid
  * datagrams are not rejected solely because batching is enabled. */
-static _Thread_local struct {
+typedef struct {
     uint8_t data[8][65536], control[8][256];
     struct sockaddr_storage peer[8];
     struct iovec vec[8];
     struct mmsghdr msg[8];
-} quic_input;
+} quic_input_batch;
+/* Allocate only for QUIC traffic, not for every TLS worker/thread. */
+static _Thread_local quic_input_batch *quic_input;
 static ssize_t quic_recv(int fd, unsigned remaining, unsigned *index, unsigned *count,
                           uint8_t **buf, struct msghdr *msg) {
+    if (!quic_input) {
+        quic_input = malloc(sizeof(*quic_input));
+        if (!quic_input) return -1;
+    }
     if (*index == *count) {
-        memset(quic_input.msg, 0, sizeof(quic_input.msg));
+        memset(quic_input->msg, 0, sizeof(quic_input->msg));
         for (unsigned k = 0; k < 8; ++k) {
-            struct msghdr *m = &quic_input.msg[k].msg_hdr;
-            quic_input.vec[k] = (struct iovec){quic_input.data[k], sizeof(quic_input.data[k])};
-            m->msg_iov = &quic_input.vec[k]; m->msg_iovlen = 1;
-            m->msg_name = &quic_input.peer[k]; m->msg_namelen = sizeof(quic_input.peer[k]);
-            m->msg_control = quic_input.control[k]; m->msg_controllen = sizeof(quic_input.control[k]);
+            struct msghdr *m = &quic_input->msg[k].msg_hdr;
+            quic_input->vec[k] = (struct iovec){quic_input->data[k], sizeof(quic_input->data[k])};
+            m->msg_iov = &quic_input->vec[k]; m->msg_iovlen = 1;
+            m->msg_name = &quic_input->peer[k]; m->msg_namelen = sizeof(quic_input->peer[k]);
+            m->msg_control = quic_input->control[k]; m->msg_controllen = sizeof(quic_input->control[k]);
         }
-        int n = recvmmsg(fd, quic_input.msg, remaining < 8 ? remaining : 8, MSG_DONTWAIT, NULL);
+        int n = recvmmsg(fd, quic_input->msg, remaining < 8 ? remaining : 8, MSG_DONTWAIT, NULL);
         if (n <= 0) return -1;
         *index = 0; *count = (unsigned)n;
     }
     unsigned k = (*index)++;
-    *buf = quic_input.data[k]; *msg = quic_input.msg[k].msg_hdr;
-    return (ssize_t)quic_input.msg[k].msg_len;
+    *buf = quic_input->data[k]; *msg = quic_input->msg[k].msg_hdr;
+    return (ssize_t)quic_input->msg[k].msg_len;
 }
 #endif
 int zhttp_h3_drive(void *ptr) {
@@ -818,4 +846,7 @@ void zhttp_h3_free(void *ptr) {
         SSL *ssl = s->ssl; free_session(s); SSL_free(ssl);
     }
     SSL_free(l->ssl); BIO_meth_free(l->output.method); BIO_ADDR_free(l->peer_addr); BIO_ADDR_free(l->local_addr); free(l);
+#ifdef __linux__
+    if (!--quic_listeners) { free(quic_input); quic_input = NULL; }
+#endif
 }

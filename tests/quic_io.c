@@ -66,6 +66,7 @@ static void input_budget(void) {
         assert(received == 5 || received == 131);
     }
     close(tx); close(rx);
+    free(quic_input); quic_input = NULL;
 }
 int main(void) {
     output_boundaries(); input_budget();
