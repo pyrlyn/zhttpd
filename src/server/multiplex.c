@@ -535,6 +535,23 @@ fail:
     nghttp2_session_callbacks_del(cb); nghttp2_option_del(opt); nghttp2_session_del(s->h2);
     free(s->h2_output); free(s); return NULL;
 }
+/* Keep large-response BIO bookkeeping out of the small-response hot path. */
+static __attribute__((noinline)) int finish_buffered_h2(session *s, int activity) {
+    size_t pending = BIO_wpending(s->h2_buffer);
+    if (pending) {
+        int r = BIO_flush(s->h2_buffer);
+        if (r <= 0 && !BIO_should_retry(s->h2_buffer)) return 0;
+        size_t remaining = BIO_wpending(s->h2_buffer);
+        activity |= remaining < pending;
+        pending = remaining;
+    }
+    if (!pending && !s->nstreams && !s->h2_output_len && !s->h2_write_blocked) {
+        /* Do not retain a large-response buffer on an idle keepalive socket. */
+        BIO *socket = BIO_pop(s->h2_buffer);
+        SSL_set0_wbio(s->ssl, socket); s->h2_buffer = NULL;
+    }
+    return pending || s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
+}
 int zhttp_h2_drive(void *ptr) {
     session *s = ptr; uint8_t buf[16384]; s->activity = 0;
     /* Bound work per tick so a busy connection cannot starve other clients. */
@@ -545,8 +562,10 @@ int zhttp_h2_drive(void *ptr) {
         if (nghttp2_session_mem_recv2(s->h2, buf, (size_t)n) < 0) return 0;
     }
     int activity = s->activity;
-    /* Batch frames into TLS records, but bound each turn for other clients. */
-    for (int pass = 0; pass < (s->h2_buffer ? 64 : 4); ++pass) {
+    /* Select the budget once. A newly buffered connection gets the larger
+     * budget on its next active turn; short responses keep the fixed loop. */
+    const int passes = s->h2_buffer ? 64 : 4;
+    for (int pass = 0; pass < passes; ++pass) {
         s->activity = 0;
         if (flush_h2(s)) return 0;
         for (stream *p = s->streams; p; p = p->next)
@@ -556,20 +575,8 @@ int zhttp_h2_drive(void *ptr) {
         activity |= s->activity;
         if (!s->activity) break;
     }
-    size_t pending = s->h2_buffer ? BIO_wpending(s->h2_buffer) : 0;
-    if (pending) {
-        int r = BIO_flush(s->h2_buffer);
-        if (r <= 0 && !BIO_should_retry(s->h2_buffer)) return 0;
-        size_t remaining = BIO_wpending(s->h2_buffer);
-        activity |= remaining < pending;
-        pending = remaining;
-    }
-    if (s->h2_buffer && !pending && !s->nstreams && !s->h2_output_len && !s->h2_write_blocked) {
-        /* Do not retain a large-response buffer on an idle keepalive socket. */
-        BIO *socket = BIO_pop(s->h2_buffer);
-        SSL_set0_wbio(s->ssl, socket); s->h2_buffer = NULL;
-    }
-    return pending || s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
+    if (s->h2_buffer) return finish_buffered_h2(s, activity);
+    return s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
 }
 static void free_session(session *s) {
     nghttp2_session_del(s->h2); nghttp3_conn_del(s->h3);
