@@ -168,9 +168,10 @@ pub fn build(b: *std.Build) void {
     raft_e2e.setCwd(b.path("."));
     raft_e2e.step.dependOn(&raft_build.step);
     b.step("test-raft-e2e", "Test Raft failover, durable state, membership and load balancing").dependOn(&raft_e2e.step);
-    // The unfiltered target keeps the complete sequential suite. CI selects one
-    // group per runner, so tests cannot contend for fixtures or listening ports.
+    // The default target keeps the complete sequential suite. CI can fan out
+    // ACME/DNS scripts into isolated processes, one per configuration adapter.
     const e2e_group = b.option(E2eGroup, "e2e-group", "Run only this E2E group (default: all)");
+    const parallel_adapters = b.option(bool, "e2e-parallel-adapters", "Run ACME/DNS adapters concurrently (bounded by -j)") orelse false;
     const e2e = b.addSystemCommand(&.{e2e_command});
     e2e.addFileArg(b.path("tests/protocols.py"));
     e2e.addArtifactArg(exe);
@@ -184,7 +185,7 @@ pub fn build(b: *std.Build) void {
         previous = &e2e.step;
         e2e_step.dependOn(&benchmark_gate.step);
     }
-    for ([_]struct { group: E2eGroup, script: []const u8 }{
+    for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
         .{ .group = .tls, .script = "tls-io.py" },
         .{ .group = .core, .script = "error-pages.py" },
         .{ .group = .core, .script = "config_e2e.py" },
@@ -202,23 +203,38 @@ pub fn build(b: *std.Build) void {
         .{ .group = .rotation, .script = "acme_migration_e2e.py" },
         .{ .group = .acme, .script = "acme_sni_e2e.py" },
         .{ .group = .acme_reload, .script = "acme_reload_e2e.py" },
+        .{ .group = .acme_auto, .script = "acme_reload_e2e.py", .args = &.{"--auto"} },
     }) |check_spec| {
         if (e2e_group != null and e2e_group != check_spec.group) continue;
-        const check = b.addSystemCommand(&.{e2e_command});
-        check.addFileArg(b.path(b.fmt("tests/{s}", .{check_spec.script})));
-        check.addArtifactArg(exe);
-        check.setCwd(b.path("."));
-        if (previous) |step| check.step.dependOn(step);
-        previous = &check.step;
-    }
-    if (e2e_group == null or e2e_group == .acme_auto) {
-        const acme_auto = b.addSystemCommand(&.{e2e_command});
-        acme_auto.addFileArg(b.path("tests/acme_reload_e2e.py"));
-        acme_auto.addArtifactArg(exe);
-        acme_auto.addArg("--auto");
-        acme_auto.setCwd(b.path("."));
-        if (previous) |step| acme_auto.step.dependOn(step);
-        previous = &acme_auto.step;
+        const shard_adapters = parallel_adapters and switch (check_spec.group) {
+            .reload, .acme, .encryption, .rotation, .acme_reload, .acme_auto => true,
+            .core, .tls, .sni => false,
+        };
+        const adapters: []const ?[]const u8 = if (shard_adapters)
+            &.{ "self", "nginx", "apache", "litespeed", "caddy" }
+        else
+            &.{null};
+        for (adapters) |adapter| {
+            const check = b.addSystemCommand(&.{e2e_command});
+            check.addFileArg(b.path(b.fmt("tests/{s}", .{check_spec.script})));
+            check.addArtifactArg(exe);
+            check.addArgs(check_spec.args);
+            if (adapter) |name| check.addArg(name);
+            check.setCwd(b.path("."));
+            if (shard_adapters) {
+                // Inherited stdio takes Zig's global lock and serializes runs.
+                // Capture/check the result instead, but never cache execution.
+                check.expectExitCode(0);
+                check.has_side_effects = true;
+                check.step.name = b.fmt("{s} ({s})", .{ check_spec.script, adapter.? });
+                // Each invocation owns its temporary files and local CA/DNS.
+                // Keep every shard as a required dependency, including failures.
+                e2e_step.dependOn(&check.step);
+            } else {
+                if (previous) |step| check.step.dependOn(step);
+                previous = &check.step;
+            }
+        }
     }
     if (e2e_group == null or e2e_group == .core) {
         const ws_check = b.addSystemCommand(&.{e2e_command});

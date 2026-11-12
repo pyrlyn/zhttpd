@@ -52,8 +52,13 @@ E2E dependencies.
   tests, Go race/mTLS tests, and real load-balancer/Raft cluster E2E tests.
 - Nine parallel Linux E2E groups cover the full HTTP/1.1, HTTP/2, HTTP/3,
   configuration/reload, TLS/password, ACME, gateway and WebSocket suite. Each
-  runner has isolated fixtures; tests within a group remain sequential. The
-  `core` group also builds the release server and runs TLS/HTTP unit tests.
+  runner has isolated fixtures. ACME/DNS groups (`reload`, `acme`, `encryption`,
+  `rotation`, `acme_reload`, `acme_auto`) fan out by adapter: `self`, `nginx`,
+  `apache`, `litespeed`, `caddy`. At most five test processes run per runner,
+  sharing the compiled server but using separate temporary directories and local
+  CA/DNS servers. Every shard is required; HTTP-01/DNS-01 and manual/automatic
+  reload scenarios remain intact. The `core` group also builds the release server
+  and runs TLS/HTTP unit tests.
   `fail-fast: false` lets all groups report failures.
 
 The ACME/DNS and Raft checks use local fixtures and require no production
@@ -80,7 +85,9 @@ ACME tests use a local CA; they do not request public certificates.
 `zig build test-e2e` still runs every E2E check sequentially. To select the same
 subset as a CI runner, add `-De2e-group=core`, `reload`, `tls`, `sni`, `acme`,
 `encryption`, `rotation`, `acme_reload` or `acme_auto`. No group is selected by
-default; an invalid group is rejected.
+default; an invalid group is rejected. Add `-De2e-parallel-adapters=true -j5`
+to use CI's adapter parallelism; omit it for the original sequential execution.
+The `core`, `tls` and `sni` groups retain their existing execution order.
 
 After preparing dependencies, run just the protocol checks with:
 

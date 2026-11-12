@@ -126,7 +126,7 @@ jobs:
         env:
           E2E_GROUP: ${{ matrix.group }}
         run: >-
-          zig build test-e2e -j2 -Dtls=true -Dhttp=true
+          zig build test-e2e -j5 -De2e-parallel-adapters=true -Dtls=true -Dhttp=true
           -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install
           -De2e-python=.run/venv/bin/python -De2e-group="$E2E_GROUP" --summary all
       # All groups compile the same debug server. Only core writes the shared
