@@ -810,7 +810,10 @@ int zhttp_h3_drive(void *ptr) {
     }
     SSL_handle_events(l->ssl);
     SSL *q;
-    while ((q = SSL_accept_connection(l->ssl, SSL_ACCEPT_CONNECTION_NO_BLOCK))) {
+    /* Calling accept on an empty queue runs two additional reactor ticks in
+     * OpenSSL 3.5. Explicit event handling above already refreshed this queue. */
+    while (SSL_get_accept_connection_queue_len(l->ssl) &&
+           (q = SSL_accept_connection(l->ssl, SSL_ACCEPT_CONNECTION_NO_BLOCK))) {
         peer_info *pi = SSL_get_ex_data(q, peer_index);
         session *s = pi ? calloc(1, sizeof(*s)) : NULL;
         if (!s) { SSL_free(q); continue; }
@@ -838,6 +841,18 @@ int zhttp_h3_drive(void *ptr) {
     SSL_handle_events(l->ssl);
     return activity;
 }
+int zhttp_h3_wait_ms(void *ptr) {
+    listener *l = ptr;
+    struct timeval timeout; int infinite = 0;
+    if (!SSL_get_event_timeout(l->ssl, &timeout, &infinite) || infinite || timeout.tv_sec > 0)
+        return 5;
+    /* Polling backends accept whole milliseconds. Round down so QUIC pacing
+     * and ACK timers are never delayed by the generic 5 ms modern-I/O poll.
+     * Sub-millisecond deadlines briefly poll without sleeping. */
+    if (timeout.tv_sec < 0 || timeout.tv_usec < 0) return 0;
+    return timeout.tv_usec >= 5000 ? 5 : (int)(timeout.tv_usec / 1000);
+}
+
 void zhttp_h3_free(void *ptr) {
     if (!ptr) return;
     listener *l = ptr;
