@@ -397,6 +397,8 @@ pub const Conn = struct {
     tx_sent: u64 = 0,
     // streams
     streams: std.AutoHashMapUnmanaged(u64, *Stream) = .{},
+    /// Removals since the stream map last dropped its tombstones.
+    stream_removals: usize = 0,
     peer_seen: [2]ranges.RangeSet(32) = .{ .{}, .{} },
     max_streams: [2]u64 = .{ 0, 0 },
     max_streams_pending: [2]bool = .{ false, false },
@@ -1105,6 +1107,14 @@ pub const Conn = struct {
             break :blk f;
         } else try c.alloc.create(Stream);
         s.* = .{ .id = id, .conn = c };
+        // Stream ids only grow and every stream is removed again, so the
+        // open-addressing map fills with tombstones that lengthen each probe
+        // (every new id is a miss). Compact it once they reach half its size;
+        // nothing iterates the map here.
+        if (c.stream_removals >= 32 and c.stream_removals * 2 >= c.streams.capacity()) {
+            c.streams.rehash(std.hash_map.AutoContext(u64){});
+            c.stream_removals = 0;
+        }
         c.streams.put(c.alloc, id, s) catch |e| {
             c.alloc.destroy(s);
             return e;
@@ -1574,7 +1584,7 @@ pub const Conn = struct {
     }
 
     fn retireStream(c: *Conn, s: *Stream) void {
-        _ = c.streams.remove(s.id);
+        if (c.streams.remove(s.id)) c.stream_removals += 1;
         if (s.id & 1 == 0) {
             const uni: usize = @intFromBool(s.isUni());
             c.closed_streams[uni] += 1;

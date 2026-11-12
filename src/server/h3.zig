@@ -261,7 +261,7 @@ fn onAborted(_: ?*anyopaque, r: *Request, _: u64) void {
 // ---------------------------------------------------------------- request head
 
 fn eqlAny(name: []const u8, comptime list: []const []const u8) bool {
-    inline for (list) |x| if (std.mem.eql(u8, name, x)) return true;
+    inline for (list) |x| if (name.len == x.len and std.mem.eql(u8, name, x)) return true;
     return false;
 }
 
@@ -285,13 +285,13 @@ fn convert(st: *Stream, r: *Request) bool {
     for (fields) |f| {
         if (!safeValue(f.value)) return false;
         if (eqlAny(f.name, &.{ "connection", "transfer-encoding", "upgrade", "keep-alive", "proxy-connection" })) return false;
-        if (std.mem.eql(u8, f.name, "host")) {
+        if (eqlAny(f.name, &.{"host"})) {
             if (authority.len == 0) {
                 authority = f.value;
             } else if (!std.mem.eql(u8, authority, f.value)) return false;
-        } else if (std.mem.eql(u8, f.name, "te")) {
+        } else if (eqlAny(f.name, &.{"te"})) {
             if (!std.mem.eql(u8, f.value, "trailers")) return false;
-        } else if (std.mem.eql(u8, f.name, "content-length")) {
+        } else if (eqlAny(f.name, &.{"content-length"})) {
             if (content_length != null or f.value.len == 0 or f.value.len >= 20) return false;
             for (f.value) |ch| if (ch < '0' or ch > '9') return false;
             content_length = f.value;
@@ -409,8 +409,7 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     const take = @min(data.len, response_head_cap - old);
     if (take == 0) return .{ .err = 0 };
     st.head.appendSlice(a, data[0..take]) catch return .{ .err = 0 };
-    const from = old -| 3;
-    const end = (std.mem.indexOfPos(u8, st.head.items, from, "\r\n\r\n") orelse return .{ .ok = take }) + 4;
+    const end = headEnd(st.head.items, old -| 3) orelse return .{ .ok = take };
     st.head.shrinkRetainingCapacity(end);
     const accepted = end - old;
     switch (submit(st, r)) {
@@ -428,6 +427,16 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     return .{ .ok = accepted };
 }
 
+/// Offset just past the first "\r\n\r\n" at or after `from`.
+fn headEnd(h: []const u8, from: usize) ?usize {
+    var i = from;
+    while (std.mem.indexOfScalarPos(u8, h, i, '\n')) |j| {
+        if (j >= 3 and h[j - 1] == '\r' and h[j - 2] == '\n' and h[j - 3] == '\r' and j - 3 >= from) return j + 1;
+        i = j + 1;
+    }
+    return null;
+}
+
 fn hopHeader(name: []const u8) bool {
     return eqlAny(name, &.{ "connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "trailer" });
 }
@@ -440,11 +449,12 @@ fn submit(st: *Stream, r: *Request) enum { sent, informational, blocked, invalid
     if (status < 200) return .informational;
     var fields: [100]zh3.Field = undefined;
     var count: usize = 0;
-    var pos = (std.mem.indexOf(u8, h, "\r\n") orelse return .invalid) + 2;
+    var pos = (std.mem.indexOfScalar(u8, h, '\n') orelse return .invalid) + 1;
     while (pos + 2 < h.len) {
-        const nl = std.mem.indexOfPos(u8, h, pos, "\r\n") orelse return .invalid;
-        const line = h[pos..nl];
-        pos = nl + 2;
+        const nl = std.mem.indexOfScalarPos(u8, h, pos, '\n') orelse return .invalid;
+        if (nl == pos or h[nl - 1] != '\r') return .invalid;
+        const line = h[pos .. nl - 1];
+        pos = nl + 1;
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return .invalid;
         const name = line[0..colon];
         for (name) |*ch| ch.* = std.ascii.toLower(ch.*);

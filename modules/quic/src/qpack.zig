@@ -57,11 +57,15 @@ pub fn writeInt(out: []u8, pos: *usize, comptime prefix: u4, flags: u8, v: u64) 
 // ---------------------------------------------------------------------------
 // Huffman decoding (RFC 7541 Appendix B; the code is canonical)
 
-const fast_bits = 9;
+const fast_bits = 11;
+const fast_mask: u64 = (1 << fast_bits) - 1;
+
+/// Fast-table entry: up to two whole symbols in the next `fast_bits` bits.
+/// sym1 | sym2 << 8 | len1 << 16 | len2 << 21 | count << 26.
+const FastEntry = u32;
 
 const Huff = struct {
-    /// Indexed by the next `fast_bits` bits: symbol | len << 9 (len 0 = slow).
-    fast: [1 << fast_bits]u16,
+    fast: [1 << fast_bits]FastEntry,
     /// Canonical decoding for longer codes.
     first: [31]u32,
     count: [31]u16,
@@ -70,9 +74,8 @@ const Huff = struct {
 };
 
 const huff: Huff = blk: {
-    @setEvalBranchQuota(200_000);
+    @setEvalBranchQuota(400_000);
     var h: Huff = undefined;
-    h.fast = @splat(0);
     h.first = @splat(0);
     h.count = @splat(0);
     h.offset = @splat(0);
@@ -86,11 +89,28 @@ const huff: Huff = blk: {
             h.count[len] += 1;
         };
     }
+    // One symbol per prefix first: sym | len << 8 (len 0 = no short code).
+    var one: [1 << fast_bits]u16 = @splat(0);
     for (0..256) |s| {
-        const len = tables.huff_lens[s];
+        const len: u16 = tables.huff_lens[s];
         if (len > fast_bits) continue;
         const base = tables.huff_codes[s] << (fast_bits - len);
-        for (0..(1 << (fast_bits - len))) |k| h.fast[base + k] = @intCast(s | (@as(u16, len) << 9));
+        for (0..(1 << (fast_bits - len))) |k| one[base + k] = @as(u16, s) | (len << 8);
+    }
+    for (0..(1 << fast_bits)) |p| {
+        const e1: u32 = one[p];
+        const len1: u32 = e1 >> 8;
+        if (len1 == 0) {
+            h.fast[p] = 0;
+            continue;
+        }
+        var e: u32 = (e1 & 0xff) | (len1 << 16) | (1 << 26);
+        // The remaining bits, zero-padded, select a second symbol; it counts
+        // only if its whole code fits in what is left.
+        const e2: u32 = one[(p << len1) & ((1 << fast_bits) - 1)];
+        const len2: u32 = e2 >> 8;
+        if (len2 != 0 and len1 + len2 <= fast_bits) e = (e & ~@as(u32, 3 << 26)) | ((e2 & 0xff) << 8) | (len2 << 21) | (2 << 26);
+        h.fast[p] = e;
     }
     break :blk h;
 };
@@ -98,31 +118,56 @@ const huff: Huff = blk: {
 /// Decodes a Huffman string into `out`; returns the decoded length.
 pub fn huffDecode(in: []const u8, out: []u8) Error!usize {
     var acc: u64 = 0;
-    var nbits: u7 = 0;
+    var nbits: u32 = 0;
     var i: usize = 0;
     var o: usize = 0;
     while (true) {
-        while (nbits <= 56 and i < in.len) : (i += 1) {
-            acc = (acc << 8) | in[i];
-            nbits += 8;
+        if (nbits < 32) {
+            if (in.len - i >= 4) {
+                acc = (acc << 32) | std.mem.readInt(u32, in[i..][0..4], .big);
+                i += 4;
+                nbits += 32;
+            } else while (nbits <= 56 and i < in.len) : (i += 1) {
+                acc = (acc << 8) | in[i];
+                nbits += 8;
+            }
         }
         if (nbits == 0) break;
-        const peek: u32 = if (nbits >= fast_bits)
-            @intCast((acc >> @intCast(nbits - fast_bits)) & ((1 << fast_bits) - 1))
+        // Fast path: a full table window and room for two symbols, so both
+        // are taken as the entry says without tail checks.
+        if (nbits >= fast_bits and out.len - o >= 2) {
+            const e = huff.fast[@intCast((acc >> @intCast(nbits - fast_bits)) & fast_mask)];
+            if (e != 0) {
+                out[o] = @truncate(e);
+                out[o + 1] = @truncate(e >> 8);
+                o += e >> 26;
+                nbits -= ((e >> 16) & 0x1f) + ((e >> 21) & 0x1f);
+                continue;
+            }
+        }
+        const peek: usize = @intCast(if (nbits >= fast_bits)
+            (acc >> @intCast(nbits - fast_bits)) & fast_mask
         else
-            @intCast((acc << @intCast(fast_bits - nbits)) & ((1 << fast_bits) - 1));
+            (acc << @intCast(fast_bits - nbits)) & fast_mask);
         const e = huff.fast[peek];
-        const elen: u7 = @intCast(e >> 9);
-        if (elen != 0 and elen <= nbits) {
+        const len1: u32 = (e >> 16) & 0x1f;
+        if (len1 != 0 and len1 <= nbits) {
             if (o >= out.len) return error.NoSpace;
-            out[o] = @intCast(e & 0x1ff);
+            out[o] = @truncate(e);
             o += 1;
-            nbits -= elen;
+            nbits -= len1;
+            const len2: u32 = (e >> 21) & 0x1f;
+            if (e >> 26 == 2 and len2 <= nbits) {
+                if (o >= out.len) return error.NoSpace;
+                out[o] = @truncate(e >> 8);
+                o += 1;
+                nbits -= len2;
+            }
             continue;
         }
         // Long code, or the tail of the string.
         var code: u32 = 0;
-        var len: u7 = 0;
+        var len: u32 = 0;
         var found = false;
         while (len < 30 and len < nbits) {
             len += 1;
@@ -214,35 +259,51 @@ pub const Decoder = struct {
 // ---------------------------------------------------------------------------
 // Field section encoding
 
-const NameEntry = struct { name: []const u8, first: u8 };
+const ValueEntry = struct { []const u8, u8 };
 
-/// Static-table indices by field name.
+/// Static-table entries of one field name: the first index (for name
+/// references) and every (value, index) pair with that name.
+const NameInfo = struct { first: u8, values: []const ValueEntry };
+
 const name_index = blk: {
-    @setEvalBranchQuota(100_000);
-    var list: [static_table.len]struct { []const u8, u8 } = undefined;
+    @setEvalBranchQuota(200_000);
+    var names: [static_table.len][]const u8 = undefined;
     var n: usize = 0;
-    for (static_table, 0..) |f, i| {
+    for (static_table) |f| {
         var seen = false;
-        for (list[0..n]) |e| if (std.mem.eql(u8, e[0], f.name)) {
+        for (names[0..n]) |x| if (std.mem.eql(u8, x, f.name)) {
             seen = true;
         };
         if (!seen) {
-            list[n] = .{ f.name, i };
+            names[n] = f.name;
             n += 1;
         }
     }
-    const final = list[0..n].*;
-    break :blk std.StaticStringMap(u8).initComptime(final);
+    var list: [n]struct { []const u8, NameInfo } = undefined;
+    for (names[0..n], 0..) |name, k| {
+        var vals: [static_table.len]ValueEntry = undefined;
+        var m: usize = 0;
+        var first: ?u8 = null;
+        for (static_table, 0..) |f, i| if (std.mem.eql(u8, f.name, name)) {
+            if (first == null) first = i;
+            vals[m] = .{ f.value, i };
+            m += 1;
+        };
+        const final = vals[0..m].*;
+        list[k] = .{ name, .{ .first = first.?, .values = &final } };
+    }
+    const all = list;
+    break :blk std.StaticStringMap(NameInfo).initComptime(all);
 };
 
-fn exactIndex(name: []const u8, value: []const u8) ?u8 {
-    const first = name_index.get(name) orelse return null;
-    var i: usize = first;
-    while (i < static_table.len) : (i += 1) {
-        const f = static_table[i];
-        if (std.mem.eql(u8, f.name, name) and std.mem.eql(u8, f.value, value)) return @intCast(i);
-    }
+fn exactIn(info: NameInfo, value: []const u8) ?u8 {
+    for (info.values) |v| if (v[0].len == value.len and std.mem.eql(u8, v[0], value)) return v[1];
     return null;
+}
+
+fn exactIndex(name: []const u8, value: []const u8) ?u8 {
+    const info = name_index.get(name) orelse return null;
+    return exactIn(info, value);
 }
 
 pub const Encoder = struct {
@@ -265,9 +326,9 @@ pub const Encoder = struct {
 
     /// `name` must be lowercase.
     pub fn field(e: *Encoder, name: []const u8, value: []const u8) Error!void {
-        if (exactIndex(name, value)) |idx| return writeInt(e.out, &e.pos, 6, 0xc0, idx);
-        if (name_index.get(name)) |idx| {
-            try writeInt(e.out, &e.pos, 4, 0x50, idx);
+        if (name_index.get(name)) |info| {
+            if (exactIn(info, value)) |idx| return writeInt(e.out, &e.pos, 6, 0xc0, idx);
+            try writeInt(e.out, &e.pos, 4, 0x50, info.first);
             return e.raw(7, 0, value);
         }
         try e.raw(3, 0x20, name);
@@ -391,4 +452,49 @@ test "decode a Huffman-coded request" {
     const p = (try d.next()).?;
     try std.testing.expectEqualStrings(":path", p.name);
     try std.testing.expectEqualStrings("no-cache", p.value);
+}
+
+test "exact static index" {
+    const long: [200]u8 = @splat('v');
+    for (static_table, 0..) |f, i| try std.testing.expectEqual(@as(?u8, @intCast(i)), exactIndex(f.name, f.value));
+    try std.testing.expectEqual(@as(?u8, 52), exactIndex("content-type", "text/html; charset=utf-8"));
+    try std.testing.expectEqual(@as(?u8, null), exactIndex("content-type", "text/x-unknown"));
+    try std.testing.expectEqual(@as(?u8, null), exactIndex("x-long", &long));
+}
+
+fn testHuffEncode(in: []const u8, out: []u8) usize {
+    var acc: u64 = 0;
+    var nbits: u6 = 0;
+    var o: usize = 0;
+    for (in) |ch| {
+        const len: u6 = @intCast(tables.huff_lens[ch]);
+        acc = (acc << len) | tables.huff_codes[ch];
+        nbits += len;
+        while (nbits >= 8) {
+            nbits -= 8;
+            out[o] = @truncate(acc >> nbits);
+            o += 1;
+        }
+    }
+    if (nbits > 0) {
+        out[o] = @truncate((acc << (8 - nbits)) | ((@as(u64, 1) << (8 - nbits)) - 1));
+        o += 1;
+    }
+    return o;
+}
+
+test "huffman decode round trip" {
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const rnd = prng.random();
+    var src: [300]u8 = undefined;
+    var enc: [1200]u8 = undefined;
+    var dec: [300]u8 = undefined;
+    for (0..2000) |round| {
+        const n = rnd.uintLessThan(usize, src.len + 1);
+        for (src[0..n]) |*b| b.* = if (round % 2 == 0) rnd.int(u8) else "abcdefghijklmnopqrstuvwxyz0123456789/.-:"[rnd.uintLessThan(usize, 40)];
+        const m = testHuffEncode(src[0..n], &enc);
+        const k = try huffDecode(enc[0..m], &dec);
+        try std.testing.expectEqualSlices(u8, src[0..n], dec[0..k]);
+        if (n > 0) try std.testing.expectError(error.NoSpace, huffDecode(enc[0..m], dec[0 .. n - 1]));
+    }
 }
