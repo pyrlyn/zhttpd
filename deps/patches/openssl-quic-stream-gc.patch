@@ -1,0 +1,16 @@
+--- a/ssl/quic/quic_stream_map.c
++++ b/ssl/quic/quic_stream_map.c
+@@ -294,7 +294,12 @@
+ 
+ static int qsm_ready_for_gc(QUIC_STREAM_MAP *qsm, QUIC_STREAM *qs)
+ {
+-    int recv_stream_fully_drained = 0; /* TODO(QUIC FUTURE): Optimisation */
++    /* Consumed FIN/reset needs no STOP_SENDING acknowledgement. The
++     * application release and send-side acknowledgement checks below still
++     * protect live streams and data awaiting retransmission. */
++    int recv_stream_fully_drained =
++        qs->recv_state == QUIC_RSTREAM_STATE_DATA_READ
++        || qs->recv_state == QUIC_RSTREAM_STATE_RESET_READ;
+ 
+     /*
+      * If sstream has no FIN, we auto-reset it at marked-for-deletion time, so

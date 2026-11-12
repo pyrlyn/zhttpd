@@ -297,6 +297,51 @@ async def h3_exchange(port):
         assert client.close_code == 0x100, client.close_code
 
 
+async def h3_loss_and_reordering(port):
+    """Completed stream GC must preserve retransmissions and tolerate late duplicates."""
+    loop = asyncio.get_running_loop()
+
+    class Relay(asyncio.DatagramProtocol):
+        def __init__(self):
+            self.client = None
+            self.count = self.dropped = self.delayed = self.duplicated = 0
+
+        def connection_made(self, transport):
+            self.transport = transport
+
+        def forward(self, data, target):
+            if not self.transport.is_closing():
+                self.transport.sendto(data, target)
+
+        def datagram_received(self, data, addr):
+            if addr == ('127.0.0.1', port):
+                target = self.client
+            else:
+                self.client = addr
+                target = ('127.0.0.1', port)
+            if target is None:
+                return
+            self.count += 1
+            if self.count % 113 == 0:
+                self.dropped += 1
+                return
+            if self.count % 97 == 0:
+                self.delayed += 1
+                loop.call_later(.02, self.forward, data, target)
+            else:
+                self.forward(data, target)
+            if self.count % 71 == 0:
+                self.duplicated += 1
+                loop.call_later(.1, self.forward, data, target)
+
+    transport, relay = await loop.create_datagram_endpoint(Relay, local_addr=('127.0.0.1', 0))
+    try:
+        await h3_exchange(transport.get_extra_info('sockname')[1])
+        assert relay.dropped and relay.delayed and relay.duplicated
+    finally:
+        transport.close()
+
+
 async def h3_loss_backpressure(port):
     class LossyClient(H3Client):
         discard = False
@@ -461,6 +506,7 @@ http {{
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
             asyncio.run(h3_loss_backpressure(port))
+            asyncio.run(h3_loss_and_reordering(port))
             asyncio.run(h3_workers(port))
             if sys.platform == 'linux':
                 asyncio.run(h3_peer_addresses(port))
