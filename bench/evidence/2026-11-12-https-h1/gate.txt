@@ -1,0 +1,5 @@
+PASS https-huge-ka-c64: RPS 1.679x (required 1.500x), p99 0.251x nginx, 0.375x baseline (required <=1.000x)
+PASS https-large-ka-c64: RPS 1.695x (required 1.500x), p99 0.582x nginx, 0.929x baseline (required <=1.000x)
+PASS https-small-ka-c256: RPS 1.913x (required 1.500x), p99 0.626x nginx, 0.981x baseline (required <=1.000x)
+PASS https-small-ka-c64: RPS 1.680x (required 1.500x), p99 0.739x nginx, 0.977x baseline (required <=1.000x)
+PASS https-small-noka-c64: RPS 2.098x (required 1.500x), p99 0.397x nginx, 0.828x baseline (required <=1.000x)

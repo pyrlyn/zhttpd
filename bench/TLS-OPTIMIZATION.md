@@ -6,16 +6,24 @@ on Linux/ARM64, four workers, using the optional AWS-LC build. It is not a
 guarantee for other machines, protocols or workload mixes. OpenSSL remains the
 default backend; the comparison nginx uses OpenSSL, with the same config text.
 
+## Measurement scope after integration
+
+The published [raw evidence](evidence/2026-11-12-https-h1/README.md) belongs to
+candidate commit `68f0b57`, before merging the newer HTTP/2, HTTP/3 and ACME code.
+The integration commits receive functional validation, but have not repeated
+this performance series. The figures below must not be attributed to a different
+binary. Older exploratory run links refer to locally retained, untracked results.
+
 ## Final acceptance — all five scenarios pass
 
-[20261112-032358](results/20261112-032358/RESULTS.md) contains all 90 samples:
+[20261112-032358](evidence/2026-11-12-https-h1/RESULTS.md) contains all 90 samples:
 six repetitions, three servers, five scenarios. Keep-alive samples run for
 15 seconds after a 3-second warmup; full-handshake samples use 12,000 requests.
 Four server CPUs (0–3), eight client CPUs (4–11), 12 GiB guest RAM. Resumption
 is disabled identically for every server. The baseline is the saved AWS-LC
 1.73.0 binary from before this iteration, not a selected intermediate build.
 
-The [strict gate](results/20261112-032358/gate.txt) requires median successful
+The [strict gate](evidence/2026-11-12-https-h1/gate.txt) requires median successful
 RPS >=1.5x nginx, median per-run p99 <= nginx AND the saved baseline, complete
 repetitions and zero HTTP/client errors. All conditions pass, without rounding
 or dropping samples. All requests in the 90 samples succeeded.
@@ -32,12 +40,12 @@ or dropping samples. All requests in the 90 samples succeeded.
 Small-response p99 is 2.3% and 1.9% below the previous build at c64/c256;
 those margins are smaller and run-to-run variation remains. This pass concerns
 the declared medians, not every individual repetition or every future run.
-The [acceptance data](results/20261112-032358/acceptance.json) includes ranges.
+The [acceptance data](evidence/2026-11-12-https-h1/acceptance.json) includes ranges.
 
-The [process monitor](results/20261112-032358/host-monitor.jsonl) records 225
+The [process monitor](evidence/2026-11-12-https-h1/host-monitor.jsonl) records 225
 samples with no competing benchmark/build jobs in the other benchmark VM.
 Normal host applications and infrastructure VMs remain active. In 1,254
-[memory samples](results/20261112-032358/memory.jsonl), available RAM stays
+[memory samples](evidence/2026-11-12-https-h1/memory.jsonl), available RAM stays
 above 7.92 GiB and OHA's peak RSS is 2.98 GiB. Instrumented profiling and
 functional tests ran separately from the performance series.
 

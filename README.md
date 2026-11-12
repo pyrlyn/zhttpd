@@ -222,8 +222,9 @@ bench/run.sh                   # full plan: see bench/PLAN.md
 Benchmark results and methodology are in [bench/RESULTS.md](bench/RESULTS.md)
 and [bench/PLAN.md](bench/PLAN.md). Linux benchmarking instructions are in
 [bench/lima/README.md](bench/lima/README.md).
-The HTTPS build passed the 1.5x-nginx throughput and p99 gates in the documented
-Linux/ARM64 benchmark matrix. Measurements, build options and limitations are
+The pre-integration AWS-LC HTTP/1.1 candidate passed the 1.5x-nginx throughput
+and p99 gates in the documented Linux/ARM64 matrix. These measurements have not
+been repeated for the integrated HTTP/2–3/ACME tree. Build options and limitations are
 in [bench/TLS-OPTIMIZATION.md](bench/TLS-OPTIMIZATION.md).
 HTTP/2 and HTTP/3 measurements, raw evidence and the remaining target failures
 are in [bench/H2-H3-OPTIMIZATION.md](bench/H2-H3-OPTIMIZATION.md).

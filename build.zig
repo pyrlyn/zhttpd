@@ -196,6 +196,7 @@ pub fn build(b: *std.Build) void {
     }
     for ([_]struct { group: E2eGroup, script: []const u8, args: []const []const u8 = &.{} }{
         .{ .group = .tls, .script = "tls-io.py" },
+        .{ .group = .tls, .script = "tls-config.py" },
         .{ .group = .core, .script = "error-pages.py" },
         .{ .group = .core, .script = "config_e2e.py" },
         .{ .group = .reload, .script = "auto_reload_e2e.py" },

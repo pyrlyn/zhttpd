@@ -50,9 +50,9 @@ the pinned dependency with `bash scripts/build-aws-lc.sh`, then add
 build and test commands. OpenSSL remains the default; omit `-Dtls-backend` and
 use the OpenSSL prefix to switch back. AWS-LC's headers and static libraries must
 come from the same installation. `zhttpd -V` identifies the selected backend.
-This option covers the HTTP/1.1 server in this branch; it does not provide an
-OpenSSL QUIC API. Do not assume compatibility with OpenSSL providers or another
-branch's HTTP/3 implementation.
+This option covers HTTP/1.1; it does not provide the OpenSSL QUIC API.
+The build rejects combining AWS-LC with `-Dhttp=true`; use the default OpenSSL
+backend for HTTP/2 and HTTP/3. OpenSSL providers are not supported by AWS-LC.
 
 Run `OPENSSL_CLI=/path/to/openssl3 python3 tests/tls-config.py /path/to/zhttpd`
 for SNI rejection, configured cipher/group restrictions and TLS 1.2/1.3 ticket

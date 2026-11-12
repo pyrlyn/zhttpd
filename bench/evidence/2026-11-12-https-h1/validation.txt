@@ -1,0 +1,10 @@
+Final measured build: 71cd276274950a17db742c7d881d8ea765a20d9c31d630a8f51bb8d6cd00daee
+29 production/build source files match the Linux build workspace.
+PASS: macOS/Linux unit tests with TLS disabled, OpenSSL and AWS-LC.
+PASS: macOS/Linux TLS I/O with OpenSSL and AWS-LC, including 100 MiB hashes, ETag 200/304 invalidation, backpressure and TLS 1.3 KeyUpdate.
+PASS: Linux AWS-LC TLS configuration and cross-worker resumption checks.
+PASS: 510 upstream crypto tests for pinned AWS-LC and CPU-detection patch; one upstream test disabled.
+PASS: final wire probes, AES-256-GCM / X25519MLKEM768 on all four servers, 0/10 resumed with cache/tickets off and 9/10 with them enabled.
+PASS: error-page regression checks, gate regression checks, shellcheck, Zig formatting, git diff --check.
+PASS: complete six-repeat acceptance matrix, 90 samples, zero HTTP/client errors.
+Owned TLS benchmark VM stopped after evidence collection.
