@@ -199,11 +199,68 @@ pub fn huffDecode(in: []const u8, out: []u8) Error!usize {
 /// Iterates over the field lines of one encoded field section. Huffman
 /// strings are decoded into `scratch`, which must hold at least 8/5 of the
 /// section size.
+/// Recently decoded Huffman strings of one connection. Clients without a
+/// dynamic table resend the same literals (authority, user-agent, accept
+/// headers) on every request; a hit replaces decoding with a compare and copy.
+pub const HuffCache = struct {
+    const sets = 8;
+    const ways = 2;
+    const slots = sets * ways;
+    const max_enc = 48;
+    const max_dec = 64;
+    /// Encoded length per slot; 0 = empty.
+    enc_len: [slots]u8 = @splat(0),
+    dec_len: [slots]u8 = undefined,
+    /// Way to replace next, per set.
+    victim: [sets]u1 = @splat(0),
+    enc: [slots][max_enc]u8 = undefined,
+    dec: [slots][max_dec]u8 = undefined,
+
+    fn set(raw: []const u8) usize {
+        var x: u64 = raw.len;
+        if (raw.len >= 8) {
+            x ^= std.mem.readInt(u64, raw[0..8], .little) ^ std.mem.readInt(u64, raw[raw.len - 8 ..][0..8], .little);
+        } else for (raw) |b| {
+            x = (x << 8) | b;
+        }
+        return @intCast((x *% 0x9E3779B97F4A7C15) >> 61);
+    }
+
+    fn find(c: *const HuffCache, raw: []const u8) ?usize {
+        const base = set(raw) * ways;
+        for (base..base + ways) |i| {
+            if (c.enc_len[i] == raw.len and std.mem.eql(u8, c.enc[i][0..raw.len], raw)) return i;
+        }
+        return null;
+    }
+
+    fn get(c: *const HuffCache, raw: []const u8, out: []u8) ?usize {
+        if (raw.len > max_enc) return null;
+        const i = c.find(raw) orelse return null;
+        const n = c.dec_len[i];
+        if (n > out.len) return null;
+        @memcpy(out[0..n], c.dec[i][0..n]);
+        return n;
+    }
+
+    fn put(c: *HuffCache, raw: []const u8, dec: []const u8) void {
+        if (raw.len == 0 or raw.len > max_enc or dec.len > max_dec) return;
+        const s = set(raw);
+        const i = s * ways + c.victim[s];
+        c.victim[s] +%= 1;
+        c.enc_len[i] = @intCast(raw.len);
+        c.dec_len[i] = @intCast(dec.len);
+        @memcpy(c.enc[i][0..raw.len], raw);
+        @memcpy(c.dec[i][0..dec.len], dec);
+    }
+};
+
 pub const Decoder = struct {
     buf: []const u8,
     pos: usize = 0,
     scratch: []u8,
     used: usize = 0,
+    cache: ?*HuffCache = null,
 
     pub fn init(block: []const u8, scratch: []u8) Error!Decoder {
         var d = Decoder{ .buf = block, .scratch = scratch };
@@ -221,8 +278,14 @@ pub const Decoder = struct {
         const raw = d.buf[d.pos..][0..@intCast(len)];
         d.pos += @intCast(len);
         if (!h) return raw;
-        const n = try huffDecode(raw, d.scratch[d.used..]);
-        const s = d.scratch[d.used..][0..n];
+        const out = d.scratch[d.used..];
+        if (d.cache) |c| if (c.get(raw, out)) |n| {
+            d.used += n;
+            return out[0..n];
+        };
+        const n = try huffDecode(raw, out);
+        if (d.cache) |c| c.put(raw, out[0..n]);
+        const s = out[0..n];
         d.used += n;
         return s;
     }
@@ -521,6 +584,36 @@ fn testHuffEncode(in: []const u8, out: []u8) usize {
         o += 1;
     }
     return o;
+}
+
+test "huffman cache returns the decoded string" {
+    var cache: HuffCache = .{};
+    var enc: [64]u8 = undefined;
+    var block: [80]u8 = undefined;
+    const value = "oha/1.16.0 some-user-agent";
+    const n = testHuffEncode(value, &enc);
+    // Literal with name reference to user-agent (95), Huffman value, twice.
+    var pos: usize = 0;
+    block[0] = 0;
+    block[1] = 0;
+    pos = 2;
+    for (0..2) |_| {
+        try writeInt(&block, &pos, 4, 0x50, 95);
+        try writeInt(&block, &pos, 7, 0x80, n);
+        @memcpy(block[pos..][0..n], enc[0..n]);
+        pos += n;
+    }
+    for (0..2) |_| {
+        var scratch: [128]u8 = undefined;
+        var d = try Decoder.init(block[0..pos], &scratch);
+        d.cache = &cache;
+        for (0..2) |_| {
+            const f = (try d.next()).?;
+            try std.testing.expectEqualStrings("user-agent", f.name);
+            try std.testing.expectEqualStrings(value, f.value);
+        }
+        try std.testing.expectEqual(@as(?Field, null), try d.next());
+    }
 }
 
 test "huffman decode round trip" {

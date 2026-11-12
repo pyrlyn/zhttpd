@@ -293,6 +293,7 @@ pub const Request = struct {
             r.session.fail(qpack.decompression_failed);
             return false;
         };
+        d.cache = &r.session.huff_cache;
         r.fields.clearRetainingCapacity();
         var regular = false;
         while (true) {
@@ -528,6 +529,7 @@ pub const Session = struct {
     goaway_id: ?u64 = null,
     /// Highest client bidirectional stream id seen plus 4.
     next_request_id: u64 = 0,
+    huff_cache: qpack.HuffCache = .{},
     prev: ?*Session = null,
     next: ?*Session = null,
 
