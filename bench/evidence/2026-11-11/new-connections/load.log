@@ -1,0 +1,84 @@
+--- rep 1 zhttpd-baseline 22:38:17 load=7.57
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 1 nginx 22:38:17 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 1 zhttpd 22:38:18 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 2 zhttpd 22:38:19 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 2 nginx 22:38:20 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 2 zhttpd-baseline 22:38:21 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 3 zhttpd-baseline 22:38:21 load=7.52
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 buildkitd
+ 0.0 rootlesskit
+--- rep 3 nginx 22:38:22 load=7.48
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 bash
+ 0.0 buildkitd
+--- rep 3 zhttpd 22:38:23 load=7.48
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 bash
+ 0.0 buildkitd
+--- rep 4 zhttpd 22:38:24 load=7.48
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 bash
+ 0.0 buildkitd
+--- rep 4 nginx 22:38:24 load=7.48
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 bash
+ 0.0 buildkitd
+--- rep 4 zhttpd-baseline 22:38:25 load=7.48
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 bash
+ 0.0 buildkitd

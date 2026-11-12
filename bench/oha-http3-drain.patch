@@ -1,0 +1,20 @@
+--- a/src/client_h3.rs
++++ b/src/client_h3.rs
+@@ -449,13 +449,10 @@
+             _ = shutdown_rx => {
+                 // Initiate shutdown
+                 h3_connection.shutdown(0).await?;
+-                // Wait for ongoing work to complete
+-                let closed = std::future::poll_fn(|cx| h3_connection.poll_close(cx)).await;
+-                if closed.is_h3_no_error() {
+-                    Ok(())
+-                } else {
+-                    Err(Http3Error::H3Connection(closed))
+-                }
++                // Request tasks have already drained and reported their results.
++                // Do not include the peer's connection idle/shutdown timeout in
++                // a completed load run. This does not cancel in-flight requests.
++                Ok(())
+             }
+         }
+     })

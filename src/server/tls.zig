@@ -1,8 +1,10 @@
 //! Nonblocking TLS. OpenSSL 3.x is the default; AWS-LC is an opt-in build backend.
 const std = @import("std");
 const build_options = @import("build_options");
-const config = @import("../conf/config.zig");
-const Diag = @import("../conf/diag.zig").Diag;
+const config = @import("../http/config.zig");
+const acme = @import("acme");
+const Diag = @import("../http/diag.zig").Diag;
+const PasswordFile = @import("password_file.zig").PasswordFile;
 const builtin = @import("builtin");
 
 pub const enabled = build_options.tls;
@@ -35,9 +37,12 @@ extern "c" fn BIO_get_callback_arg(bio: *const BIO) ?*anyopaque;
 extern "c" fn BIO_set_flags(bio: *BIO, flags: c_int) void;
 extern "c" fn BIO_clear_flags(bio: *BIO, flags: c_int) void;
 
+extern "c" fn OSSL_QUIC_server_method() *const SSL_METHOD;
 extern "c" fn TLS_server_method() *const SSL_METHOD;
 extern "c" fn SSL_CTX_new(m: *const SSL_METHOD) ?*SSL_CTX;
 extern "c" fn SSL_CTX_free(ctx: *SSL_CTX) void;
+extern "c" fn SSL_CTX_set_default_passwd_cb(ctx: *SSL_CTX, cb: *const fn ([*]u8, c_int, c_int, ?*anyopaque) callconv(.c) c_int) void;
+extern "c" fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *SSL_CTX, userdata: ?*anyopaque) void;
 extern "c" fn SSL_CTX_use_certificate_chain_file(ctx: *SSL_CTX, file: [*:0]const u8) c_int;
 extern "c" fn SSL_CTX_use_PrivateKey_file(ctx: *SSL_CTX, file: [*:0]const u8, typ: c_int) c_int;
 extern "c" fn SSL_CTX_check_private_key(ctx: *const SSL_CTX) c_int;
@@ -53,6 +58,11 @@ extern "c" fn SSL_shutdown(ssl: *SSL) c_int;
 extern "c" fn SSL_get_error(ssl: *const SSL, ret: c_int) c_int;
 extern "c" fn SSL_get_servername(ssl: *const SSL, typ: c_int) ?[*:0]const u8;
 extern "c" fn SSL_set_SSL_CTX(ssl: *SSL, ctx: *SSL_CTX) ?*SSL_CTX;
+const X509 = opaque {};
+const EVP_PKEY = opaque {};
+extern "c" fn SSL_CTX_get0_certificate(ctx: *const SSL_CTX) ?*X509;
+extern "c" fn SSL_CTX_get0_privatekey(ctx: *const SSL_CTX) ?*EVP_PKEY;
+extern "c" fn SSL_use_cert_and_key(ssl: *SSL, cert: *X509, key: *EVP_PKEY, chain: ?*anyopaque, override: c_int) c_int;
 extern "c" fn SSL_get_ex_data(ssl: *const SSL, idx: c_int) ?*anyopaque;
 extern "c" fn SSL_set_ex_data(ssl: *SSL, idx: c_int, data: ?*anyopaque) c_int;
 extern "c" fn SSL_get_version(ssl: *const SSL) [*:0]const u8;
@@ -93,6 +103,46 @@ pub fn clearWriteBufferCache() void {
     if (enabled and aws_lc) zhttpd_aws_buffer_cache_clear();
 }
 
+extern "c" fn SSL_CTX_set_alpn_select_cb(ctx: *SSL_CTX, cb: *const fn (*SSL, *[*]const u8, *u8, [*]const u8, c_uint, ?*anyopaque) callconv(.c) c_int, arg: ?*anyopaque) void;
+extern "c" fn SSL_get0_alpn_selected(ssl: *const SSL, data: *[*]const u8, len: *c_uint) void;
+extern "c" fn SSL_get_SSL_CTX(ssl: *const SSL) *SSL_CTX;
+
+pub fn isH2(ssl: *SSL) bool {
+    var data: [*]const u8 = undefined;
+    var len: c_uint = 0;
+    SSL_get0_alpn_selected(ssl, &data, &len);
+    return len == 2 and std.mem.eql(u8, data[0..len], "h2");
+}
+
+fn alpn(ssl: *SSL, out: *[*]const u8, outlen: *u8, input: [*]const u8, len: c_uint, arg: ?*anyopaque) callconv(.c) c_int {
+    const tbl: *SniTable = @ptrCast(@alignCast(arg.?));
+    var h2 = tbl.listen.opts.http2;
+    const ctx = SSL_get_SSL_CTX(ssl);
+    for (tbl.listen.entries) |e| {
+        if (tbl.ctxs[e.server.index] == ctx) h2 = h2 or e.server.http2;
+    }
+    for (tbl.managed) |managed| {
+        if (managed.ctx == ctx) h2 = h2 or managed.server.http2;
+    }
+    const wanted: []const u8 = if (tbl.listen.opts.quic) "h3" else if (@import("multiplex.zig").enabled and h2) "h2" else "http/1.1";
+    // Prefer h2 even if the client lists HTTP/1.1 first, with a normal fallback.
+    for ([_][]const u8{ wanted, if (tbl.listen.opts.quic) "h3" else "http/1.1" }) |protocol_name| {
+        var i: usize = 0;
+        while (i < len) {
+            const n = input[i];
+            i += 1;
+            if (n == 0 or i + n > len) return SSL_TLSEXT_ERR_ALERT_FATAL;
+            if (std.mem.eql(u8, input[i .. i + n], protocol_name)) {
+                out.* = input + i;
+                outlen.* = n;
+                return SSL_TLSEXT_ERR_OK;
+            }
+            i += n;
+        }
+    }
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+}
+
 const SSL_FILETYPE_PEM = 1;
 const SSL_CTRL_MODE = 33;
 const SSL_CTRL_SET_READ_AHEAD = 41;
@@ -125,7 +175,10 @@ const SSL_TLSEXT_ERR_ALERT_FATAL = 2;
 const SSL_TLSEXT_ERR_NOACK = 3;
 
 /// SNI context shared by every SSL_CTX of one listen socket.
+const ManagedContext = struct { server: *const config.Server, certificate: usize, ctx: *SSL_CTX };
 pub const SniTable = struct {
+    certificates: []const acme.Settings,
+    managed: []const ManagedContext,
     listen: *const config.Listen,
     ctxs: []?*SSL_CTX, // indexed by Server.index
     default_ctx: *SSL_CTX,
@@ -138,11 +191,65 @@ fn lastError(buf: []u8) []const u8 {
     return std.mem.sliceTo(buf, 0);
 }
 
+/// Validate each TLS virtual host even when an ACME certificate is pending.
+/// Only managed certificate loading is deferred; all other TLS options and
+/// unrelated certificate/key pairs are checked normally.
+pub fn validateConfig(gpa: std.mem.Allocator, cfg: *const config.Config, diag: *Diag) !void {
+    // Encryption must be ready before any ACME request, even without a cert yet.
+    for (cfg.acme) |ac| if (ac.encrypt_key) {
+        var passwords: PasswordFile = .{};
+        defer passwords.deinit();
+        passwords.read(gpa, ac.password_file orelse return error.TlsConfig) catch |err| {
+            diag.add(.emerg, null, 0, "cannot read encryption password for ACME certificate {s}: {s}", .{ ac.name, @errorName(err) });
+            return error.TlsConfig;
+        };
+    };
+    for (cfg.listens) |listener| {
+        if (!listener.opts.ssl) continue;
+        for (listener.entries) |entry| {
+            const srv = entry.server;
+            if (srv.tls.acme_certificates.len == 0) {
+                const ctx = try makeContext(gpa, &srv.tls, srv, diag, listener.opts.quic);
+                SSL_CTX_free(ctx);
+            } else for (srv.tls.acme_certificates) |index| {
+                const ac = cfg.acme[index];
+                var settings = managedSettings(srv.tls, ac);
+                if (!acme.ready(ac)) settings.reject_handshake = true;
+                const ctx = try makeContext(gpa, &settings, srv, diag, listener.opts.quic);
+                SSL_CTX_free(ctx);
+            }
+        }
+    }
+}
+
+fn managedSettings(base: config.Tls, certificate: acme.Settings) config.Tls {
+    var settings = base;
+    settings.certificate = certificate.certificate;
+    settings.certificate_key = certificate.key;
+    settings.password_file = certificate.password_file orelse base.password_file;
+    return settings;
+}
+
+// Configuration loading is unattended, including automatic reload. Never let
+// OpenSSL's default PEM callback block the master on an interactive prompt.
+pub fn noPassword(_: [*]u8, _: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+    return 0;
+}
+
+pub fn filePassword(buf: [*]u8, size: c_int, writing: c_int, userdata: ?*anyopaque) callconv(.c) c_int {
+    if (writing != 0 or size <= 0) return 0;
+    const password: *const []const u8 = @ptrCast(@alignCast(userdata orelse return 0));
+    if (password.len > @as(usize, @intCast(size))) return 0;
+    @memcpy(buf[0..password.len], password.*);
+    return @intCast(password.len);
+}
+
 /// Create an SSL_CTX for a server from its ssl_* directives.
-pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const config.Server, diag: *Diag) !*SSL_CTX {
+pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const config.Server, diag: *Diag, quic: bool) !*SSL_CTX {
     var ebuf: [256]u8 = undefined;
-    const ctx = SSL_CTX_new(TLS_server_method()) orelse return error.TlsInit;
+    const ctx = SSL_CTX_new(if (@import("multiplex.zig").enabled and quic) OSSL_QUIC_server_method() else TLS_server_method()) orelse return error.TlsInit;
     errdefer SSL_CTX_free(ctx);
+    SSL_CTX_set_default_passwd_cb(ctx, noPassword);
     if (!t.reject_handshake) {
         const cert = t.certificate orelse {
             diag.add(.emerg, srv.file, srv.line, "no \"ssl_certificate\" is defined for the \"listen ... ssl\" directive", .{});
@@ -160,7 +267,34 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
             diag.add(.emerg, srv.file, srv.line, "cannot load certificate \"{s}\": {s}", .{ cert, lastError(&ebuf) });
             return error.TlsConfig;
         }
-        if (SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) != 1 or SSL_CTX_check_private_key(ctx) != 1) {
+        var loaded = false;
+        if (t.password_file) |path| {
+            var passwords: PasswordFile = .{};
+            defer passwords.deinit();
+            passwords.read(gpa, path) catch |err| {
+                diag.add(.emerg, srv.file, srv.line, "cannot read TLS password file \"{s}\": {s}", .{ path, @errorName(err) });
+                return error.TlsConfig;
+            };
+            var password: []const u8 = &.{};
+            SSL_CTX_set_default_passwd_cb(ctx, filePassword);
+            SSL_CTX_set_default_passwd_cb_userdata(ctx, @ptrCast(&password));
+            defer {
+                // SSL_CTX outlives this stack frame: retain neither callback data
+                // nor passphrases once OpenSSL owns the decrypted private key.
+                SSL_CTX_set_default_passwd_cb_userdata(ctx, null);
+                SSL_CTX_set_default_passwd_cb(ctx, noPassword);
+            }
+            for (passwords.lines[0..passwords.count]) |value| {
+                password = value;
+                ERR_clear_error();
+                if (SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) == 1) {
+                    loaded = true;
+                    ERR_clear_error();
+                    break;
+                }
+            }
+        } else loaded = SSL_CTX_use_PrivateKey_file(ctx, kz, SSL_FILETYPE_PEM) == 1;
+        if (!loaded or SSL_CTX_check_private_key(ctx) != 1) {
             diag.add(.emerg, srv.file, srv.line, "cannot load certificate key \"{s}\": {s}", .{ key, lastError(&ebuf) });
             return error.TlsConfig;
         }
@@ -236,6 +370,16 @@ pub fn makeContext(gpa: std.mem.Allocator, t: *const config.Tls, srv: *const con
 const router = @import("router.zig");
 const Regex = @import("../regex.zig").Regex;
 
+fn selectContext(ssl: *SSL, ctx: *SSL_CTX, quic: bool) bool {
+    if (!@import("multiplex.zig").enabled or !quic) return SSL_set_SSL_CTX(ssl, ctx) != null;
+    // OpenSSL 3.5 does not support SSL_set_SSL_CTX on a QUIC SSL object.
+    // Install the already-loaded certificate/key/chain on this connection;
+    // SSL_use_cert_and_key supports QUIC and takes its own references.
+    var chain: ?*anyopaque = null;
+    if (SSL_CTX_ctrl(ctx, 115, 0, @ptrCast(&chain)) != 1) return false; // SSL_CTRL_GET_CHAIN_CERTS
+    return SSL_use_cert_and_key(ssl, SSL_CTX_get0_certificate(ctx) orelse return false, SSL_CTX_get0_privatekey(ctx) orelse return false, chain, 1) == 1;
+}
+
 fn sniCallback(ssl: *SSL, alert: *c_int, arg: ?*anyopaque) callconv(.c) c_int {
     _ = alert;
     const tbl: *SniTable = @ptrCast(@alignCast(arg orelse return SSL_TLSEXT_ERR_OK));
@@ -249,8 +393,21 @@ fn sniCallback(ssl: *SSL, alert: *c_int, arg: ?*anyopaque) callconv(.c) c_int {
     const local = tbl.listen.addr;
     const srv = router.selectServer(tbl.listen, local, std.mem.span(name), &caps, &hb);
     if (srv.tls.reject_handshake) return SSL_TLSEXT_ERR_ALERT_FATAL;
+    var best: ?*SSL_CTX = null;
+    var rank: u8 = 0;
+    for (tbl.managed) |managed| {
+        if (managed.server != srv) continue;
+        const candidate = acme.matchRank(tbl.certificates[managed.certificate].domains, std.mem.span(name));
+        if (candidate > rank) {
+            rank = candidate;
+            best = managed.ctx;
+        }
+    }
+    if (best) |ctx| {
+        return if (selectContext(ssl, ctx, tbl.listen.opts.quic)) SSL_TLSEXT_ERR_OK else SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
     if (srv.index < tbl.ctxs.len) {
-        if (tbl.ctxs[srv.index]) |ctx| _ = SSL_set_SSL_CTX(ssl, ctx);
+        if (tbl.ctxs[srv.index]) |ctx| if (!selectContext(ssl, ctx, tbl.listen.opts.quic)) return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
     return SSL_TLSEXT_ERR_OK;
 }
@@ -261,20 +418,54 @@ pub fn buildSni(gpa: std.mem.Allocator, cfg: *const config.Config, listen: *cons
     const ctxs = try gpa.alloc(?*SSL_CTX, cfg.servers.len);
     @memset(ctxs, null);
     var default_ctx: ?*SSL_CTX = null;
+    var managed: std.ArrayList(ManagedContext) = .empty;
+    errdefer {
+        // Each alternate context is unique; the first is also in ctxs.
+        for (managed.items) |item| if (ctxs[item.server.index] != item.ctx) SSL_CTX_free(item.ctx);
+        for (ctxs) |ctx| if (ctx) |value| SSL_CTX_free(value);
+        managed.deinit(gpa);
+        gpa.free(ctxs);
+        gpa.destroy(tbl);
+    }
     for (listen.entries) |e| {
         if (ctxs[e.server.index] != null) continue;
-        const ctx = try makeContext(gpa, &e.server.tls, e.server, diag);
+        const indices = e.server.tls.acme_certificates;
+        const first = if (indices.len > 0) managedSettings(e.server.tls, cfg.acme[indices[0]]) else e.server.tls;
+        const ctx = try makeContext(gpa, &first, e.server, diag, listen.opts.quic);
         ctxs[e.server.index] = ctx;
+        for (e.server.tls.acme_certificates, 0..) |index, i| {
+            const settings = managedSettings(e.server.tls, cfg.acme[index]);
+            const extra = if (i == 0) ctx else try makeContext(gpa, &settings, e.server, diag, listen.opts.quic);
+            managed.append(gpa, .{ .server = e.server, .certificate = index, .ctx = extra }) catch |err| {
+                if (i != 0) SSL_CTX_free(extra);
+                return err;
+            };
+        }
     }
     const def = listen.defaultFor(listen.addr);
     default_ctx = ctxs[def.index];
-    tbl.* = .{ .listen = listen, .ctxs = ctxs, .default_ctx = default_ctx.? };
+    tbl.* = .{ .listen = listen, .ctxs = ctxs, .default_ctx = default_ctx.?, .certificates = cfg.acme, .managed = try managed.toOwnedSlice(gpa) };
     for (ctxs) |maybe| {
         const ctx = maybe orelse continue;
+        SSL_CTX_set_alpn_select_cb(ctx, alpn, tbl);
         _ = SSL_CTX_callback_ctrl(ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, @ptrCast(&sniCallback));
         _ = SSL_CTX_ctrl(ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_ARG, 0, tbl);
     }
+    for (tbl.managed) |item| {
+        SSL_CTX_set_alpn_select_cb(item.ctx, alpn, tbl);
+        _ = SSL_CTX_callback_ctrl(item.ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, @ptrCast(&sniCallback));
+        _ = SSL_CTX_ctrl(item.ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_ARG, 0, tbl);
+    }
     return tbl;
+}
+
+/// Release a table that was never handed to a worker (failed reload).
+pub fn freeSni(gpa: std.mem.Allocator, tbl: *SniTable) void {
+    for (tbl.managed) |item| if (tbl.ctxs[item.server.index] != item.ctx) SSL_CTX_free(item.ctx);
+    for (tbl.ctxs) |ctx| if (ctx) |value| SSL_CTX_free(value);
+    gpa.free(tbl.managed);
+    gpa.free(tbl.ctxs);
+    gpa.destroy(tbl);
 }
 
 pub fn newConn(tbl: *SniTable, fd: c_int) ?*SSL {
@@ -286,8 +477,8 @@ pub fn newConn(tbl: *SniTable, fd: c_int) ?*SSL {
     return ssl;
 }
 
-/// Only persistent connections benefit; leave handshakes and single-request
-/// connections on the backend's ordinary I/O path.
+/// Persistent HTTP/1 connections benefit from tracked reads; handshakes and
+/// multiplexed transports retain OpenSSL's ordinary socket BIO path.
 pub fn trackReads(ssl: *SSL, read_state: *ReadState) void {
     if (track_read_ready) {
         const bio = SSL_get_rbio(ssl) orelse return;
@@ -491,4 +682,8 @@ test "TLS operations discard stale errors before nonblocking handshake retries" 
         try std.testing.expect(result == .want_read);
         try std.testing.expectEqual(@as(c_ulong, 0), ERR_get_error());
     }
+}
+
+test {
+    _ = @import("password_file.zig");
 }

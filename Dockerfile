@@ -14,6 +14,8 @@ RUN zarch="$TARGETARCH" \
 WORKDIR /src
 COPY build.zig build.zig.zon ./
 COPY src ./src
+COPY include ./include
+COPY examples ./examples
 RUN /opt/zig/zig build -Doptimize=ReleaseFast -Dtls=false
 
 FROM debian:bookworm-slim

@@ -1,5 +1,9 @@
 # zhttpd benchmark results
 
+These are the historical 2026-11-10 runs. The integrated HTTP/TLS optimization,
+comparison against the saved main baseline, p99 checks and committed raw
+evidence are documented in [TLS-OPTIMIZATION.md](TLS-OPTIMIZATION.md).
+
 Two official runs of the same plan (`DURATION=10` `REPS=2`, ABBA, ReleaseFast, shared `nginx.conf`, oha 1.16.0, HttpArena `dusty-tuned` at `5646c1d2`). nginx is the reference. HTTP/2 and HTTP/3 leaders are stubs.
 
 | Platform | Event backend | CPUs | Raw data | Exact nginx.conf |

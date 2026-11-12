@@ -1,0 +1,3 @@
+FAIL https-large-ka-c64: RPS 1.094x (required 1.500x), p99 0.933x nginx, 0.908x baseline (required <=1.000x)
+FAIL https-small-ka-c256: RPS 1.365x (required 1.500x), p99 0.775x nginx, 0.897x baseline (required <=1.000x)
+FAIL https-small-ka-c64: RPS 1.318x (required 1.500x), p99 0.735x nginx, 0.916x baseline (required <=1.000x)

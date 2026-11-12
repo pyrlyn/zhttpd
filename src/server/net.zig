@@ -2,7 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
-const Addr = @import("../conf/addr.zig").Addr;
+const Addr = @import("../http/addr.zig").Addr;
 const os = @import("../os.zig");
 
 pub const Io = union(enum) { ok: usize, again, eof, err: c_int };
@@ -12,7 +12,7 @@ pub fn errno() c_int {
 }
 
 fn isAgain(e: c_int) bool {
-    return e == @intFromEnum(c.E.AGAIN) or e == @intFromEnum(c.E.INTR);
+    return e == @backingInt(c.E.AGAIN) or e == @backingInt(c.E.INTR);
 }
 
 pub fn read(fd: c_int, buf: []u8) Io {
@@ -21,7 +21,7 @@ pub fn read(fd: c_int, buf: []u8) Io {
         if (n > 0) return .{ .ok = @intCast(n) };
         if (n == 0) return .eof;
         const e = errno();
-        if (e == @intFromEnum(c.E.INTR)) continue;
+        if (e == @backingInt(c.E.INTR)) continue;
         if (isAgain(e)) return .again;
         return .{ .err = e };
     }
@@ -32,7 +32,7 @@ pub fn write(fd: c_int, buf: []const u8) Io {
         const n = c.write(fd, buf.ptr, buf.len);
         if (n >= 0) return .{ .ok = @intCast(n) };
         const e = errno();
-        if (e == @intFromEnum(c.E.INTR)) continue;
+        if (e == @backingInt(c.E.INTR)) continue;
         if (isAgain(e)) return .again;
         return .{ .err = e };
     }
@@ -43,7 +43,7 @@ pub fn writev(fd: c_int, iov: []const c.iovec_const) Io {
         const n = c.writev(fd, iov.ptr, @intCast(iov.len));
         if (n >= 0) return .{ .ok = @intCast(n) };
         const e = errno();
-        if (e == @intFromEnum(c.E.INTR)) continue;
+        if (e == @backingInt(c.E.INTR)) continue;
         if (isAgain(e)) return .again;
         return .{ .err = e };
     }
@@ -178,6 +178,33 @@ pub fn listenSocket(a: Addr, backlog: i32, reuseport: bool, ipv6only: bool, err_
     return fd;
 }
 
+pub fn listenUdp(a: Addr, reuseport: bool, ipv6only: bool, err_out: *c_int) error{ Socket, Bind, Listen }!c_int {
+    const fam: c_uint = if (a.family == .v4) c.AF.INET else c.AF.INET6;
+    const fd = c.socket(fam, c.SOCK.DGRAM, 0);
+    if (fd < 0) {
+        err_out.* = errno();
+        return error.Socket;
+    }
+    errdefer close(fd);
+    setCloexec(fd);
+    if (reuseport and !setInt(fd, c.SOL.SOCKET, c.SO.REUSEPORT, 1)) {
+        err_out.* = errno();
+        return error.Socket;
+    }
+    if (a.family == .v6) _ = setInt(fd, c.IPPROTO.IPV6, IPV6_V6ONLY, if (ipv6only) 1 else 0);
+    var sa: SockAddr = undefined;
+    const len = toSockAddr(a, &sa);
+    if (c.bind(fd, &sa.any, len) != 0) {
+        err_out.* = errno();
+        return error.Bind;
+    }
+    if (!setNonblock(fd)) {
+        err_out.* = errno();
+        return error.Socket;
+    }
+    return fd;
+}
+
 const IPV6_V6ONLY: u32 = if (builtin.os.tag.isDarwin()) 27 else 26;
 
 pub const Accepted = struct { fd: c_int, peer: Addr };
@@ -194,7 +221,7 @@ pub fn accept(lfd: c_int) union(enum) { ok: Accepted, again, err: c_int } {
             return .{ .ok = .{ .fd = fd, .peer = fromSockAddr(&sa) } };
         }
         const e = errno();
-        if (e == @intFromEnum(c.E.INTR) or e == @intFromEnum(c.E.CONNABORTED)) continue;
+        if (e == @backingInt(c.E.INTR) or e == @backingInt(c.E.CONNABORTED)) continue;
         if (isAgain(e)) return .again;
         return .{ .err = e };
     }
@@ -216,7 +243,7 @@ pub fn connectStart(a: Addr, err_out: *c_int) ?c_int {
     const len = toSockAddr(a, &sa);
     if (c.connect(fd, &sa.any, len) != 0) {
         const e = errno();
-        if (e != @intFromEnum(c.E.INPROGRESS) and e != @intFromEnum(c.E.INTR)) {
+        if (e != @backingInt(c.E.INPROGRESS) and e != @backingInt(c.E.INTR)) {
             err_out.* = e;
             _ = c.close(fd);
             return null;

@@ -14,39 +14,37 @@ zig-out/bin/zhttpd -V
 ```
 
 TLS is disabled by default. The build produces `zig-out/bin/zhttpd` without
-requiring the comparison nginx or downloaded OpenSSL sources. See the
+requiring the comparison nginx or downloaded OpenSSL sources. HTTP/2 and HTTP/3 are also disabled. See the
 [README quick start](../README.md#quick-start) for a complete runnable example.
 
 ## Build with TLS
 
-With OpenSSL development libraries already available to the linker:
+The full build uses pinned OpenSSL, nghttp2 and nghttp3 libraries:
 
 ```bash
-zig build -Doptimize=ReleaseFast -Dtls=true
+mise trust
+mise install
+mise run build
+mise exec -- zig-out/bin/zhttpd -V
 ```
 
-Alternatively, use the repository's source-build scripts. They require a C
-build toolchain, make, Perl, curl, tar, and `shasum`:
+`mise run build` downloads and verifies the pinned sources, builds static TLS
+and codec libraries, and enables HTTP/2 and HTTP/3. For an HTTP/1.x TLS-only
+build with system OpenSSL development libraries, use
+`zig build -Doptimize=ReleaseFast -Dtls=true`.
+
+For a full build using existing dependency installations:
 
 ```bash
-scripts/fetch-deps.sh
-scripts/build-nginx.sh
-scripts/build-zhttpd.sh
-zig-out/bin/zhttpd -V
+mise exec -- zig build -Doptimize=ReleaseFast -Dtls=true -Dhttp=true \
+  -Dopenssl="$PWD/deps/openssl-install" -Dhttp-deps="$PWD/deps/http-install"
 ```
 
-`build-nginx.sh` builds both the static OpenSSL installation in
-`deps/openssl-install` and the comparison nginx in `tools/nginx`. The final
-script links zhttpd against that OpenSSL installation. To use another prefix:
-
-```bash
-OPENSSL=/absolute/path/to/openssl scripts/build-zhttpd.sh
-```
-
-That prefix must contain headers in `include/` and static `libssl.a` and
-`libcrypto.a` in `lib/`. For local smoke-test certificates, run
-`scripts/gen-certs.sh`; its output is written to the ignored `bench/certs/`
-directory. These self-signed certificates are for testing.
+The prefixes must contain headers in `include/` and static libraries in `lib/`.
+`mise run deps:nginx` builds the optional reference nginx. `mise run deps:certs`
+generates self-signed local certificates in the ignored `bench/certs/` directory.
+See [HTTP/2 and HTTP/3](../README.md#http2-and-http3) for listener configuration,
+ALPN, UDP reachability, and current protocol limitations.
 
 For the optional AWS-LC backend (C compiler, CMake, Ninja and git required):
 
@@ -69,18 +67,20 @@ the [HTTPS/TLS report](../bench/TLS-OPTIMIZATION.md).
 | `-h`, `-?` | Show usage |
 | `-v` | Show zhttpd version |
 | `-V` | Show version, Zig version, event backend and TLS build status |
-| `-c FILE` | Read a configuration file; default `/etc/nginx/nginx.conf` |
+| `-c FILE` | Read a configuration file; default `config.toml`; direct `.conf` files retain nginx parsing |
 | `-p DIRECTORY` | Set the prefix for relative runtime paths |
 | `-t` | Validate configuration, including certificates in a TLS build, then exit |
 | `-T` | Validate and dump the parsed configuration, then exit |
 | `-q` | Suppress validation success messages and ignored-directive warnings |
-| `--strict` | Treat unknown directives as errors |
+| `--strict` | Reject unknown and ignored nginx directives |
+| `--compatibility FORMAT` | Select a direct nginx, Apache, LiteSpeed or Caddy file |
 | `--directives` | Print the supported/ignored directive table as Markdown |
 | `-s SIGNAL` | Signal the master process using the configured PID file |
 | `-g DIRECTIVES` | Apply global overrides for workers and PID; daemon/master-process flags are accepted but do not change process mode |
 
-`--strict` does not reject known directives marked as ignored. Read the warnings
-and [compatibility notes](configuration.md#compatibility). `-t` does not prove
+TOML uses explicit module and compatibility settings; see
+[native configuration](configuration.md). For direct nginx files, read the
+[compatibility notes](nginx-configuration.md#compatibility). `-t` does not prove
 that a port can be bound or that a document root or upstream is reachable.
 
 ## Process lifecycle

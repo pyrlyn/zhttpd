@@ -2,6 +2,7 @@
 """The performance gate must never accept missing data or a p99 regression."""
 import csv
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,6 +36,19 @@ with tempfile.TemporaryDirectory(prefix='zhttpd-gate-') as tmp:
 
     write_rows(rows)
     check(0)
+    with tempfile.TemporaryDirectory(prefix='zhttpd-gate-external-') as external_dir:
+        external = Path(external_dir) / 'sample.json'
+        external.write_text((root / rows[0]['file']).read_text())
+        link = root / 'linked.json'
+        link.symlink_to(external)
+        for name in (str(external), os.path.relpath(external, root), link.name):
+            escaped = [dict(row) for row in rows]
+            escaped[0]['file'] = name
+            write_rows(escaped)
+            check(1)
+        link.unlink()
+    write_rows(rows)
+    check(0)
     sample = root / 'zhttpd.1.json'
     original = sample.read_text()
     for tail in (.004, .0025, float('inf')):
@@ -57,4 +71,4 @@ with tempfile.TemporaryDirectory(prefix='zhttpd-gate-') as tmp:
     with (root / 'scenarios.txt').open('a') as out:
         out.write('https-large-ka-c64|https|1|64|/static/large.bin\n')
     check(1)
-print('PASS: throughput, p99 vs nginx/baseline, errors, missing repetitions/scenarios')
+print('PASS: throughput, p99 vs nginx/baseline, errors, missing repetitions/scenarios, sample path confinement')

@@ -6,19 +6,26 @@
 //! from there (re-chunked for HTTP/1.1 clients when the length is unknown).
 const std = @import("std");
 const c = std.c;
-const config = @import("../conf/config.zig");
-const Addr = @import("../conf/addr.zig").Addr;
+const config = @import("../http/config.zig");
+const Addr = @import("../http/addr.zig").Addr;
 const net = @import("net.zig");
 const vars = @import("vars.zig");
 const handler = @import("handler.zig");
 const request = @import("../http/request.zig");
 const conn_mod = @import("conn.zig");
 const Conn = conn_mod.Conn;
+const fastcgi = @import("fastcgi.zig");
 
 pub const Phase = enum { idle, connecting, sending, reading_head, streaming };
 const Framing = enum { none, length, chunked, close };
 
 pub const Upstream = struct {
+    fcgi: bool = false,
+    request_owned: ?[]u8 = null,
+    fcgi_decoder: @import("fastcgi").Decoder = .{},
+    fcgi_buffer: [8192]u8 = undefined,
+    fcgi_pos: usize = 0,
+    fcgi_len: usize = 0,
     fd: c_int = -1,
     phase: Phase = .idle,
     writable: bool = false,
@@ -44,6 +51,13 @@ pub const Upstream = struct {
 };
 
 pub fn release(conn: *Conn) void {
+    disconnect(conn);
+    if (conn.up.request_owned) |bytes| {
+        conn.w.gpa.free(bytes);
+        conn.up.request_owned = null;
+    }
+}
+fn disconnect(conn: *Conn) void {
     const up = &conn.up;
     if (up.fd >= 0) {
         conn.w.loop.remove(up.fd);
@@ -63,11 +77,13 @@ pub fn start(conn: *Conn) void {
     if (p.dyn_host) |dh| {
         if (!resolveDynamic(conn, dh)) return;
     }
-    conn.up.req_head = buildRequest(conn, p) catch {
+    conn.up.fcgi = lc.gateway != .http;
+    conn.up.req_head = (if (conn.up.fcgi) fastcgi.request(conn) else buildRequest(conn, p)) catch {
         handler.finalize(conn, 500);
         conn.state = .sending;
         return;
     };
+    if (conn.up.fcgi) conn.up.request_owned = @constCast(conn.up.req_head);
     const ups = conn.up.ups.?;
     conn.up.first_addr = ups.rr;
     ups.rr +%= 1;
@@ -75,14 +91,14 @@ pub fn start(conn: *Conn) void {
 }
 
 /// `proxy_pass http://$var`: the value must name an upstream block or be IP[:port].
-fn resolveDynamic(conn: *Conn, dh: @import("../conf/expr.zig").Expr) bool {
+fn resolveDynamic(conn: *Conn, dh: @import("expression").Expr) bool {
     const hostport = vars.eval(conn.arena(), &conn.ctx, dh) catch "";
     for (conn.w.cfg.upstreams) |u| if (std.mem.eql(u8, u.name, hostport)) {
         conn.up.ups = u;
         conn.ctx.proxy_host = hostport;
         return true;
     };
-    const addr_mod = @import("../conf/addr.zig");
+    const addr_mod = @import("../http/addr.zig");
     if (addr_mod.parseHostPort(hostport, 80)) |hp| {
         const literal = std.mem.eql(u8, hp.host, "localhost") or addr_mod.parseIp4(hp.host) != null or (hp.host.len > 0 and hp.host[0] == '[');
         if (literal) {
@@ -180,7 +196,7 @@ pub fn drive(conn: *Conn) bool {
             const e = net.soError(up.fd);
             if (e != 0) {
                 logUpstreamError(conn, "connect() failed", e);
-                release(conn);
+                disconnect(conn);
                 connectNext(conn);
                 if (conn.state != .proxy) return true;
                 continue;
@@ -189,7 +205,7 @@ pub fn drive(conn: *Conn) bool {
             conn.deadline = conn.w.now_ms + lc.proxy_send_timeout_ms;
         },
         .sending => {
-            const body = conn.body.items;
+            const body = if (up.fcgi) "" else conn.body.items;
             while (up.head_off < up.req_head.len or up.body_off < body.len) {
                 const r = if (up.head_off < up.req_head.len and body.len > 0) blk: {
                     const iov = [_]c.iovec_const{
@@ -212,7 +228,7 @@ pub fn drive(conn: *Conn) bool {
                     .again => return false,
                     .eof, .err => {
                         logUpstreamError(conn, "writev() failed", net.errno());
-                        release(conn);
+                        disconnect(conn);
                         connectNext(conn);
                         if (conn.state != .proxy) return true;
                         break;
@@ -224,7 +240,7 @@ pub fn drive(conn: *Conn) bool {
             }
         },
         .reading_head => {
-            switch (net.read(up.fd, conn.wbuf[up.rlen..])) {
+            switch (readUpstream(conn, conn.wbuf[up.rlen..])) {
                 .ok => |n| up.rlen += n,
                 .again => return false,
                 .eof, .err => {
@@ -270,7 +286,7 @@ pub fn drive(conn: *Conn) bool {
                 return conn.state != .closed;
             }
             if (up.eof) {
-                if (up.framing == .close) {
+                if (up.framing == .close or (up.fcgi and up.fcgi_decoder.done and up.framing == .length and up.remaining == 0)) {
                     finishStream(conn);
                     continue;
                 }
@@ -282,17 +298,24 @@ pub fn drive(conn: *Conn) bool {
                 return false;
             }
             const room = conn.wbuf.len - 2;
-            switch (net.read(up.fd, conn.wbuf[0..room])) {
+            switch (readUpstream(conn, conn.wbuf[0..room])) {
                 .ok => |n| {
                     conn.deadline = conn.w.now_ms + lc.proxy_read_timeout_ms;
                     forward(conn, conn.wbuf[0..n]);
                 },
                 .again => return false,
                 .eof => up.eof = true,
-                .err => up.eof = true,
+                .err => {
+                    fail(conn, 502);
+                    return true;
+                },
             }
         },
     };
+}
+
+fn readUpstream(conn: *Conn, buf: []u8) net.Io {
+    return if (conn.up.fcgi) fastcgi.read(conn, buf) else net.read(conn.up.fd, buf);
 }
 
 /// Queue `data` (in wbuf) for the client according to the framing.
@@ -308,7 +331,7 @@ fn forward(conn: *Conn, data_in: []u8) void {
         .length => {
             if (data.len > up.remaining) data = data[0..@intCast(up.remaining)];
             up.remaining -= data.len;
-            if (up.remaining == 0) up.finished = true;
+            if (up.remaining == 0 and !up.fcgi) up.finished = true;
         },
         .chunked => {
             const r = up.decoder.feed(data) catch {
@@ -353,10 +376,23 @@ fn parseResponseHead(conn: *Conn) HeadResult {
     const head = buf[0..end];
     var lines = std.mem.splitScalar(u8, head, '\n');
     const sl = std.mem.trimEnd(u8, lines.next() orelse return .bad, "\r");
-    if (!std.mem.startsWith(u8, sl, "HTTP/1.") or sl.len < 12) return .bad;
-    const status = std.fmt.parseInt(u16, sl[9..12], 10) catch return .bad;
-    const upstream_reason = if (sl.len > 13) sl[13..] else "";
-    _ = upstream_reason;
+    var status: u16 = 200;
+    if (up.fcgi) {
+        lines = std.mem.splitScalar(u8, head, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            if (std.ascii.startsWithIgnoreCase(line, "Status:")) {
+                const value = std.mem.trim(u8, line[7..], " \t");
+                if (value.len < 3) return .bad;
+                status = std.fmt.parseInt(u16, value[0..3], 10) catch return .bad;
+                if (status < 200 or status > 599) return .bad;
+            }
+        }
+        lines = std.mem.splitScalar(u8, head, '\n');
+    } else {
+        if (!std.mem.startsWith(u8, sl, "HTTP/1.") or sl.len < 12) return .bad;
+        status = std.fmt.parseInt(u16, sl[9..12], 10) catch return .bad;
+    }
     conn.ctx.upstream_status = status;
 
     const lc = conn.ctx.conf;
@@ -379,6 +415,7 @@ fn parseResponseHead(conn: *Conn) HeadResult {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return .bad;
         const name = line[0..colon];
         const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        if (up.fcgi and std.ascii.eqlIgnoreCase(name, "status")) continue;
         if (std.ascii.eqlIgnoreCase(name, "content-length")) {
             length = std.fmt.parseInt(u64, value, 10) catch return .bad;
             continue;

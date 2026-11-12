@@ -1,2 +1,79 @@
 [tools]
+go = "1.27.1"
 zig = "0.17.1"
+python = "3.13.15"
+uv = "0.13.5"
+cmake = "3.31.12"
+ninja = "1.13.2"
+"conda:clang" = "23.1.4"
+"conda:llvm-tools" = "23.1.4"
+perl = "5.44.0.0"
+"conda:make" = "4.4.1"
+"github:go-acme/lego" = "5.6.0"
+
+[env]
+CC = "clang"
+CXX = "clang++"
+OPENSSL_BIN = "{{config_root}}/deps/openssl-install/bin/openssl"
+
+[tasks."deps:sources"]
+description = "Fetch and verify pinned C library sources"
+run = "bash scripts/fetch-deps.sh"
+
+[tasks."deps:tls"]
+description = "Build static OpenSSL from pinned sources"
+depends = ["deps:sources"]
+run = "bash scripts/build-openssl.sh"
+
+[tasks."deps:http"]
+description = "Build static HTTP/2 and HTTP/3 codecs"
+depends = ["deps:sources"]
+run = "bash scripts/build-http-deps.sh"
+
+[tasks."deps:python"]
+description = "Install locked E2E client dependencies"
+run = ["uv venv --allow-existing --python python3 .run/venv", "uv pip sync --python .run/venv/bin/python tests/requirements-e2e.lock"]
+
+[tasks.deps]
+description = "Prepare all project dependencies"
+depends = ["deps:tls", "deps:http", "deps:python"]
+
+[tasks.build]
+description = "Build with TLS, HTTP/2 and HTTP/3"
+depends = ["deps:tls", "deps:http"]
+run = "bash scripts/build-zhttpd.sh"
+
+[tasks."build:minimal"]
+run = "zig build"
+
+[tasks.test]
+run = "zig build test"
+
+[tasks."test:e2e"]
+depends = ["deps"]
+run = "zig build test-e2e -Dtls=true -Dhttp=true -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install -De2e-python=.run/venv/bin/python"
+
+[tasks."deps:nginx"]
+description = "Build the reference nginx for compatibility tests"
+depends = ["deps:tls"]
+run = "bash scripts/build-nginx.sh"
+
+[tasks.examples]
+run = "zig build examples"
+
+[tasks.wsgi]
+run = "python modules/wsgi/server.py"
+
+[tasks.serve]
+depends = ["build"]
+run = "zig-out/bin/zhttpd -c config.toml"
+
+[tasks."deps:certs"]
+depends = ["deps:tls"]
+run = "bash scripts/gen-certs.sh"
+
+[tasks."build:raft"]
+run = "bash scripts/build-raft.sh"
+
+[tasks."test:raft"]
+run = ["go -C modules/raft test -race ./...", "zig build test-raft-e2e"]

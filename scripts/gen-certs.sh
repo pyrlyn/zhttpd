@@ -3,8 +3,8 @@
 # The private key stays in bench/certs/ which is git-ignored: never commit it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OPENSSL="${OPENSSL:-$ROOT/deps/openssl-install/bin/openssl}"
-[ -x "$OPENSSL" ] || OPENSSL=openssl
+OPENSSL="${OPENSSL_BIN:-$ROOT/deps/openssl-install/bin/openssl}"
+[ -x "$OPENSSL" ] || { echo "run mise run deps:tls first" >&2; exit 1; }
 # the static OpenSSL build installs no openssl.cnf; use the one from its source tree
 for cnf in "$ROOT"/deps/openssl-*/apps/openssl.cnf; do [ -f "$cnf" ] && export OPENSSL_CONF="$cnf"; done
 mkdir -p "$ROOT/bench/certs"

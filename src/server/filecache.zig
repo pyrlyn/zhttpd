@@ -10,7 +10,7 @@ const std = @import("std");
 const c = std.c;
 const os = @import("../os.zig");
 const net = @import("net.zig");
-const config = @import("../conf/config.zig");
+const config = @import("../http/config.zig");
 
 pub const path_cap = 232;
 const ways = 4;
@@ -152,7 +152,7 @@ pub const Cache = struct {
             if (e.fd >= 0) net.close(e.fd);
             e.fd = -1;
             e.err = os.errnoInt();
-            if (e.err == 0) e.err = @intFromEnum(c.E.NOENT);
+            if (e.err == 0) e.err = @backingInt(c.E.NOENT);
             return;
         };
         if (e.err == 0 and m.kind == e.meta.kind and m.ino == e.meta.ino and m.mtime == e.meta.mtime and m.size == e.meta.size) return;
@@ -180,7 +180,7 @@ pub fn openUncached(path: [:0]const u8) Result {
     const meta = os.fstat(fd) orelse {
         const e = os.errnoInt();
         net.close(fd);
-        return .{ .err = if (e == 0) @intFromEnum(c.E.IO) else e };
+        return .{ .err = if (e == 0) @backingInt(c.E.IO) else e };
     };
     if (meta.kind != .file) {
         net.close(fd);

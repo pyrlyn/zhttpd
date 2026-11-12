@@ -2,10 +2,11 @@
 const std = @import("std");
 const filecache = @import("filecache.zig");
 const c = std.c;
-const config = @import("../conf/config.zig");
+const config = @import("../http/config.zig");
 const loop_mod = @import("loop.zig");
 const net = @import("net.zig");
 const tls = @import("tls.zig");
+const multiplex = @import("multiplex.zig");
 const vars = @import("vars.zig");
 const conn_mod = @import("conn.zig");
 const Conn = conn_mod.Conn;
@@ -18,9 +19,13 @@ pub const Listener = struct {
     fd: c_int,
     listen: *const config.Listen,
     sni: ?*tls.SniTable = null,
+    quic: ?*anyopaque = null,
+    pending: bool = false,
+    worker: ?*Worker = null,
 };
 
-pub const LogLevel = enum(u8) { emerg, alert, crit, err, warn, notice, info, debug };
+const logging = @import("logging");
+pub const LogLevel = logging.Level;
 
 /// Signals set these; the loop checks them after every wakeup.
 pub var sig_terminate: bool = false;
@@ -40,6 +45,7 @@ pub const Worker = struct {
     active: ?*Conn = null,
     nconns: u32 = 0,
     max_conns: u32,
+    balancer: @import("load_balancer").Runtime = .{},
     pool: ?*Conn = null,
     graveyard: ?*Conn = null,
     posted_head: ?*Conn = null,
@@ -59,7 +65,7 @@ pub const Worker = struct {
     next_id: u64 = 1,
     stopping: bool = false,
     page_buf: [response.page_buffer_size]u8 = undefined,
-    log_buf: [8192]u8 = undefined,
+    log_buf: [65536]u8 = undefined,
     accept_paused_until: i64 = 0,
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs
     current: ?*Conn = null,
@@ -79,10 +85,28 @@ pub const Worker = struct {
             .error_level = cfg.error_log.level,
             .max_conns = cfg.worker_connections,
         };
+        errdefer w.loop.deinit();
         w.files = try filecache.Cache.init(gpa, cfg.open_file_cache_max);
+        errdefer w.files.deinit(gpa);
+        w.balancer = try @import("load_balancer").Runtime.init(gpa, cfg.load_balancer, cfg.worker_processes);
         w.updateTime();
         w.gmtoff = localOffset(w.wall_sec);
         return w;
+    }
+
+    /// Release an embedded worker after run() returns.
+    pub fn deinit(w: *Worker) void {
+        w.balancer.deinit();
+        while (w.active) |cn| cn.close();
+        w.bury();
+        while (w.pool) |cn| {
+            w.pool = cn.next;
+            std.heap.page_allocator.destroy(cn);
+        }
+        for (w.logs.items) |l| if (l.fd > 2) net.close(l.fd);
+        w.logs.deinit(w.gpa);
+        w.files.deinit(w.gpa);
+        w.loop.deinit();
     }
 
     pub fn tokens(w: *Worker, t: config.ServerTokens) []const u8 {
@@ -154,7 +178,12 @@ pub const Worker = struct {
     }
 
     pub fn run(w: *Worker) void {
+        defer w.balancer.deinit();
         for (w.listeners) |*l| {
+            if (l.listen.opts.quic and !multiplex.startH3(l, w)) {
+                w.errlog(.emerg, "cannot initialize HTTP/3 listener", .{});
+                return;
+            }
             w.loop.addListen(l.fd, @intFromPtr(&l.tag)) catch {
                 w.errlog(.emerg, "cannot watch listen socket", .{});
                 return;
@@ -170,9 +199,24 @@ pub const Worker = struct {
             }
             if (sig_quit and !w.stopping) w.beginStop();
             if (w.stopping and w.nconns == 0) break;
-            const evs = w.loop.wait(&events, if (w.posted_head != null) 0 else 1000);
+            var modern = false;
+            var pending = w.posted_head != null;
+            for (w.listeners) |l| {
+                modern = modern or l.quic != null;
+                pending = pending or l.pending;
+            }
+            var cn_it = w.active;
+            while (cn_it) |cn| : (cn_it = cn.next) modern = modern or cn.multiplex != null;
+            const evs = w.loop.wait(&events, if (pending) 0 else if (modern) 5 else 1000);
             w.updateTime();
+            w.balancer.update(w.nconns);
             for (evs) |ev| w.dispatch(ev);
+            for (w.listeners) |*l| multiplex.driveH3(l);
+            cn_it = w.active;
+            while (cn_it) |cn| {
+                cn_it = cn.next;
+                if (cn.state == .multiplexed and !cn.posted) multiplex.driveH2(cn);
+            }
             w.runPosted();
             w.bury();
             if (w.now_ms - last_sweep >= 500) {
@@ -181,6 +225,7 @@ pub const Worker = struct {
                 w.bury();
             }
         }
+        for (w.listeners) |*l| multiplex.freeH3(l);
         // close everything
         while (w.active) |cn| cn.close();
         w.bury();
@@ -190,7 +235,8 @@ pub const Worker = struct {
 
     fn beginStop(w: *Worker) void {
         w.stopping = true;
-        for (w.listeners) |l| {
+        for (w.listeners) |*l| {
+            multiplex.freeH3(l);
             w.loop.remove(l.fd);
             net.close(l.fd);
         }
@@ -199,7 +245,7 @@ pub const Worker = struct {
         var it = w.active;
         while (it) |cn| {
             it = cn.next;
-            if (cn.state == .read_head and cn.rlen == 0) cn.close();
+            if ((cn.state == .read_head and cn.rlen == 0 and cn.requests > 0) or cn.state == .multiplexed) cn.close();
         }
         w.bury();
     }
@@ -237,10 +283,17 @@ pub const Worker = struct {
     fn dispatch(w: *Worker, ev: loop_mod.Event) void {
         const tag: *align(8) Tag = @ptrFromInt(ev.udata);
         switch (tag.kind) {
-            .listener => w.acceptAll(@alignCast(@fieldParentPtr("tag", tag))),
+            .listener => {
+                const l: *Listener = @alignCast(@fieldParentPtr("tag", tag));
+                if (l.quic != null) multiplex.driveH3(l) else w.acceptAll(l);
+            },
             .client => {
                 const cn: *Conn = @alignCast(@fieldParentPtr("tag", tag));
                 if (cn.state == .closed) return;
+                if (cn.stream_protocol != 0 and ev.eof) {
+                    cn.close();
+                    return;
+                }
                 if (ev.readable or ev.eof) cn.tls_read.ready = true;
                 if (ev.eof) cn.tls_read.eof = true;
                 w.current = cn;
@@ -307,7 +360,7 @@ pub const Worker = struct {
         }
     }
 
-    fn acquire(w: *Worker) ?*Conn {
+    pub fn acquire(w: *Worker) ?*Conn {
         const cn = if (w.pool) |p| blk: {
             w.pool = p.next;
             break :blk p;
@@ -321,6 +374,7 @@ pub const Worker = struct {
         if (w.active) |a| a.prev = cn;
         w.active = cn;
         w.nconns += 1;
+        w.balancer.update(w.nconns);
         return cn;
     }
 
@@ -329,14 +383,18 @@ pub const Worker = struct {
         if (cn.prev) |p| p.next = cn.next else w.active = cn.next;
         if (cn.next) |n| n.prev = cn.prev;
         w.nconns -= 1;
+        w.balancer.update(w.nconns);
         cn.prev = null;
-        cn.next = w.graveyard;
+        // Closing a codec also closes its request Conns. Preserve the active
+        // traversal's next pointers until the entire event batch is finished.
+        cn.grave_next = w.graveyard;
         w.graveyard = cn;
     }
 
     fn bury(w: *Worker) void {
         while (w.graveyard) |cn| {
-            w.graveyard = cn.next;
+            w.graveyard = cn.grave_next;
+            cn.grave_next = null;
             cn.next = w.pool;
             w.pool = cn;
         }
@@ -356,13 +414,13 @@ pub const Worker = struct {
     fn logFd(w: *Worker, path: []const u8) c_int {
         for (w.logs.items) |l| if (std.mem.eql(u8, l.path, path)) return l.fd;
         var fd: c_int = -1;
-        if (std.mem.eql(u8, path, "/dev/stdout")) fd = 1 else if (std.mem.eql(u8, path, "/dev/stderr")) fd = 2 else {
+        if (std.mem.eql(u8, path, "/dev/stdout")) fd = 1 else if ((std.mem.eql(u8, path, "/dev/stderr") or std.mem.eql(u8, path, "stderr"))) fd = 2 else {
             const z = w.gpa.dupeSentinel(u8, path, 0) catch return -1;
             defer w.gpa.free(z);
             fd = c.open(z, .{ .ACCMODE = .WRONLY, .APPEND = true, .CREAT = true, .CLOEXEC = true }, @as(c.mode_t, 0o644));
             if (fd < 0) {
-                const e = @import("../os.zig").errnoInt();
-                w.errlog(.err, "open() \"{s}\" failed ({d}: {s})", .{ path, e, @import("../os.zig").strerror(e) });
+                const message = "zhttpd: cannot open log file\n";
+                _ = c.write(2, message.ptr, message.len);
             }
         }
         w.logs.append(w.gpa, .{ .path = path, .fd = fd }) catch {};
@@ -370,6 +428,7 @@ pub const Worker = struct {
     }
 
     pub fn accessLog(w: *Worker, cn: *Conn) void {
+        if (!w.cfg.logging_enabled) return;
         const logs = cn.ctx.conf.access_logs orelse return;
         if (logs.len == 0) return;
         cn.ctx.now_ms = w.now_ms;
@@ -382,20 +441,24 @@ pub const Worker = struct {
             var fba: std.heap.FixedBufferAllocator = .init(cn.arena_mem[cn.fba.end_index..]);
             const a = fba.allocator();
             for (lg.format.expr.parts) |p| switch (p) {
-                .lit => |s| appendBounded(&line, s),
+                .lit => |s| logging.appendBounded(&line, s),
                 .v => |v| {
                     var tmp: std.ArrayList(u8) = .empty;
                     vars.appendVar(a, &cn.ctx, v, &tmp, 0) catch {};
-                    if (tmp.items.len == 0) appendBounded(&line, "-") else appendEscaped(&line, tmp.items);
+                    if (tmp.items.len == 0) logging.appendBounded(&line, "-") else logging.appendEscaped(&line, tmp.items, lg.format.escape);
                 },
             };
-            appendBounded(&line, "\n");
+            logging.appendBounded(&line, "\n");
             _ = c.write(fd, line.items.ptr, line.items.len);
         }
     }
 
     pub fn errlog(w: *Worker, level: LogLevel, comptime fmt: []const u8, args: anytype) void {
-        if (@backingInt(level) > w.error_level) return;
+        if (!w.cfg.logging_enabled) return;
+        const local_log = if (w.current) |cn| (if (cn.in_request) cn.ctx.conf.error_log else null) else null;
+        if (@backingInt(level) > (if (local_log) |l| l.level else w.error_level)) return;
+        const local_fd = if (local_log) |l| w.logFd(l.path) else w.error_fd;
+        const output_fd = if (local_fd >= 0) local_fd else 2;
         var buf: [2048]u8 = undefined;
         const cv = response.civil(w.wall_sec + w.gmtoff);
         var bw: std.Io.Writer = .fixed(&buf);
@@ -409,7 +472,7 @@ pub const Worker = struct {
         };
         bw.writeAll("\n") catch {};
         const out = bw.buffered();
-        _ = c.write(w.error_fd, out.ptr, out.len);
+        _ = c.write(output_fd, out.ptr, out.len);
     }
 
     fn reopenLogs(w: *Worker) void {
@@ -425,22 +488,6 @@ pub const Worker = struct {
         }
     }
 };
-
-fn appendBounded(line: *std.ArrayList(u8), s: []const u8) void {
-    const n = @min(s.len, line.capacity - line.items.len);
-    line.appendSliceAssumeCapacity(s[0..n]);
-}
-
-/// nginx escapes `"`, `\` and bytes outside printable ASCII as \xXX in access logs.
-fn appendEscaped(line: *std.ArrayList(u8), s: []const u8) void {
-    for (s) |ch| {
-        if (line.capacity - line.items.len < 4) return;
-        if (ch == '"' or ch == '\\' or ch < 0x20 or ch >= 0x7f) {
-            const hex = "0123456789ABCDEF";
-            line.appendSliceAssumeCapacity(&.{ '\\', 'x', hex[ch >> 4], hex[ch & 15] });
-        } else line.appendAssumeCapacity(ch);
-    }
-}
 
 extern "c" fn tzset() void;
 
@@ -510,4 +557,35 @@ pub fn localOffset(now: i64) i64 {
     const t: c.time_t = @intCast(now);
     if (localtime_r(&t, &tm) == null) return 0;
     return tm.gmtoff;
+}
+
+test "nested codec teardown preserves active traversal until batch recycling" {
+    var w: Worker = undefined;
+    w.active = null;
+    w.pool = null;
+    w.graveyard = null;
+    w.nconns = 0;
+    w.balancer = .{};
+    var conns: [4]Conn = @splat(.{});
+    for (&conns) |*cn| {
+        cn.next = w.pool;
+        w.pool = cn;
+    }
+    const tail = w.acquire().?;
+    const child = w.acquire().?;
+    const parent = w.acquire().?;
+    const head = w.acquire().?;
+    const saved_next = parent.next;
+    w.release(child);
+    w.release(parent);
+    try std.testing.expect(w.active == head);
+    try std.testing.expect(head.next == tail);
+    try std.testing.expect(saved_next == child and child.next == tail);
+    try std.testing.expect(w.pool == null and w.nconns == 2);
+    w.bury();
+    try std.testing.expect(w.graveyard == null);
+    const reused = w.acquire().?;
+    try std.testing.expect(reused == child);
+    try std.testing.expect(reused.grave_next == null);
+    try std.testing.expect(reused.next == head and head.prev == reused);
 }

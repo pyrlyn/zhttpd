@@ -8,7 +8,9 @@
 | --- | --- |
 | `src/main.zig` | CLI, configuration loading, master process, signals and worker lifecycle |
 | `src/root.zig` | Library entry point and test imports |
-| `src/conf/` | nginx-style parser, directive catalog, configuration, expressions and diagnostics |
+| `src/nginx/` | nginx parser, directive catalog and adapter |
+| `src/http/config.zig`, `src/app_config.zig` | Shared HTTP model and native TOML settings |
+| `src/apache.zig`, `src/litespeed.zig`, `src/caddy.zig` | Other configuration adapters |
 | `src/http/request.zig` | HTTP request parsing |
 | `src/http/response.zig` | Status reasons, response-page helpers and dates |
 | `src/http/error_page.zig`, `src/http/assets/` | Branded HTML, CSS and icon |
@@ -16,6 +18,9 @@
 | `src/server/router.zig`, `handler.zig`, `vars.zig` | Host/location matching, request phases and variables |
 | `src/server/proxy.zig` | HTTP upstream handling |
 | `src/server/tls.zig`, `aws_lc.c` | Nonblocking TLS and optional AWS-LC adapter |
+| `src/server/multiplex.zig`, `multiplex.c` | HTTP/2 and HTTP/3 stream transport |
+| `modules/raft/`, `scripts/build-raft.sh` | Optional durable Raft companion, state machine, TLS API and committed metrics/config exports |
+| `src/load_balancer.zig`, `src/load_balancer/backend.c` | Independent load policy, one-hop redirect URLs and background shared metrics |
 | `src/server/filecache.zig` | Open-file cache |
 | `src/os.zig`, `src/server/net.zig` | Platform and socket operations |
 | `tests/fixtures/` | nginx and Debian configuration fixtures |
@@ -63,6 +68,95 @@ As with the existing OpenSSL implementation, nginx's shared session cache is
 not a shared-memory cache in zhttpd. The performance report distinguishes fresh
 handshakes from resumption and does not claim complete nginx TLS compatibility.
 
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` runs on pushes to `main`, pull requests and manual
+workflow dispatch. It uses the versions in `mise.toml` and the locked Python
+E2E dependencies.
+
+- Linux and macOS build the release server and Raft companion, run Zig unit
+  tests, Go race/mTLS tests, and real load-balancer/Raft cluster E2E tests.
+- Nine parallel Linux E2E groups cover the full HTTP/1.1, HTTP/2, HTTP/3,
+  configuration/reload, TLS/password, ACME, gateway and WebSocket suite. Each
+  runner has isolated fixtures. ACME/DNS groups (`reload`, `acme`, `encryption`,
+  `rotation`, `acme_reload`, `acme_auto`) fan out by adapter: `self`, `nginx`,
+  `apache`, `litespeed`, `caddy`. At most five test processes run per runner,
+  sharing the compiled server but using separate temporary directories and local
+  CA/DNS servers. Every shard is required; HTTP-01/DNS-01 and manual/automatic
+  reload scenarios remain intact. The `core` group also builds the release server
+  and runs TLS/HTTP unit tests.
+  `fail-fast: false` lets all groups report failures.
+
+The ACME/DNS and Raft checks use local fixtures and require no production
+credentials. Mise toolchains, compiled protocol dependencies, Zig's local/global
+compilation caches, and Go's module/build caches are reused. Cache keys separate
+OS, architecture, native/protocol builds and pinned dependency versions. A new
+commit restores the previous compatible compilation cache; compilers validate
+source changes before reuse. Unit tests always execute (including Go's
+`-race -count=1`); cached test results never replace a check. Job timeouts and
+per-ref cancellation prevent obsolete runs from piling up. Manual and automatic runs use separate concurrency groups so manual checks
+do not cancel push/PR checks. The workflow token has read-only repository access.
+
+## Full protocol and module checks
+
+```bash
+mise run test:e2e
+```
+
+This prepares dependencies and tests actual HTTP/1.1, HTTP/2 and HTTP/3 clients,
+multiplexed streams, uploads, cancellation, virtual hosts, reload, configuration
+adapters, automatic config reload, logging, FastCGI/WSGI, local ACME
+issuance/renewal/reload and WebSocket examples.
+ACME tests use a local CA; they do not request public certificates.
+`zig build test-e2e` still runs every E2E check sequentially. To select the same
+subset as a CI runner, add `-De2e-group=core`, `reload`, `tls`, `sni`, `acme`,
+`encryption`, `rotation`, `acme_reload` or `acme_auto`. No group is selected by
+default; an invalid group is rejected. Add `-De2e-parallel-adapters=true -j5`
+to use CI's adapter parallelism; omit it for the original sequential execution.
+The `core`, `tls` and `sni` groups retain their existing execution order.
+
+After preparing dependencies, run just the protocol checks with:
+
+```bash
+mise exec -- zig build test-protocols -Dtls=true -Dhttp=true \
+  -Dopenssl=deps/openssl-install -Dhttp-deps=deps/http-install \
+  -De2e-python=.run/venv/bin/python
+```
+
+After building with TLS and HTTP/2+HTTP/3, run just the ACME reload checks with:
+
+```bash
+mise exec -- .run/venv/bin/python tests/acme_reload_e2e.py zig-out/bin/zhttpd
+mise exec -- .run/venv/bin/python tests/acme_reload_e2e.py zig-out/bin/zhttpd --auto
+```
+
+Optional trailing mode names (`self`, `nginx`, `apache`, `litespeed`, `caddy`)
+select adapters; the default tests all five with both HTTP-01 and DNS-01.
+The suite checks certificate additions/removals, SAN changes, cached re-addition,
+atomic failure, superseded issuance and timeout recovery without restarting master.
+`--auto` runs the same scenarios by saving configuration files instead of sending
+reload signals.
+
+The configuration watcher checks also run with a minimal build:
+
+```bash
+mise exec -- .run/venv/bin/python tests/auto_reload_e2e.py zig-out/bin/zhttpd
+```
+
+They cover all five adapters, native includes/imports, glob membership, invalid
+and missing files, atomic saves, debounce, and disabling/re-enabling the watcher.
+
+With TLS and HTTP/2+HTTP/3 enabled, check certificate/key and DNS env rotation:
+
+```bash
+mise exec -- .run/venv/bin/python tests/tls_files_e2e.py zig-out/bin/zhttpd
+mise exec -- .run/venv/bin/python tests/dns_env_reload_e2e.py zig-out/bin/zhttpd
+```
+
+Both accept optional trailing adapter names. These checks cover mismatched,
+missing and encrypted keys, atomic and symlink replacement, independent DNS
+credential retries, changes during issuance, and prevention of reload loops.
+
 ## HTTP error regression checks
 
 ```bash
@@ -87,6 +181,8 @@ TLS 1.3 KeyUpdate checks (older CLIs explicitly skip this check).
 ETag checks change file size and timestamp independently, revalidate metadata,
 and verify conditional 200/304 responses. Unit tests also verify that unrelated
 queued TLS errors do not corrupt nonblocking handshake/read/write retries.
+`OPENSSL_BIN` is also supported, so the normal mise environment uses the pinned OpenSSL.
+These TLS checks and the benchmark-gate checks below run in `test-e2e` as well.
 
 `python3 tests/bench-target.py` verifies that the performance gate rejects p99
 regressions against nginx or a saved baseline, incomplete samples, errors, and
@@ -141,7 +237,7 @@ benchmark setup is described in [bench/lima/README.md](../bench/lima/README.md).
 Keep runnable commands rooted at the repository directory, and distinguish
 implemented behavior from ignored compatibility directives. Check example
 configs with the current binary's `-t --strict` command. The directive catalog
-in `src/conf/directives.zig` is the source for `zhttpd --directives`; use it rather
+in `src/nginx/directives.zig` is the source for `zhttpd --directives`; use it rather
 than maintaining a separate full directive list. When adding a built-in status
 page, update its explanation, the documented code list, and the buffer/length
 checks.

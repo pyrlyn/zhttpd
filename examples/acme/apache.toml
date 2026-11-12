@@ -1,0 +1,10 @@
+[server]
+compatibility = "apache"
+config = "apache.conf"
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-apache"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

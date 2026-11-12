@@ -1,0 +1,1 @@
+nginx: [emerg] invalid socket number "/home/listepo.guest/zhttpd-tools/nginx-ktls/sbin/nginx" in NGINX environment variable, ignoring

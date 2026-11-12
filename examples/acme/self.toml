@@ -1,0 +1,14 @@
+[server]
+compatibility = "self"
+
+[http]
+listen = "0.0.0.0:443"
+root = "site"
+http2 = true
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-self"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

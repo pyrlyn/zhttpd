@@ -4,8 +4,8 @@
 //! (proxy_pass or static files) -> error_page / default error page.
 const std = @import("std");
 const c = std.c;
-const config = @import("../conf/config.zig");
-const expr = @import("../conf/expr.zig");
+const config = @import("../http/config.zig");
+const expr = @import("expression");
 const Regex = @import("../regex.zig").Regex;
 const request = @import("../http/request.zig");
 const response = @import("../http/response.zig");
@@ -27,6 +27,22 @@ fn eql(a: []const u8, b: []const u8) bool {
 pub fn process(conn: *Conn) void {
     const ctx = &conn.ctx;
     if (eql(ctx.uri, "*")) return finalize(conn, 400);
+    if (conn.w.cfg.load_balancer.enabled) {
+        const lb = @import("load_balancer");
+        if (lb.redirectedTarget(conn.req.target)) |clean| {
+            conn.req.target = clean;
+            conn.req.args = if (std.mem.indexOfScalar(u8, clean, '?')) |q| clean[q + 1 ..] else "";
+            ctx.args = conn.req.args;
+        } else if (conn.w.balancer.destination(conn.w.now_ms, ctx.scheme_https)) |origin| {
+            if (lb.location(conn.arena(), origin, conn.req.target) catch null) |target| {
+                // Send the final response immediately, including Expect: 100-continue.
+                // Never consume/execute a non-idempotent request before redirecting it.
+                conn.close_after = true;
+                writeSimpleLoc(conn, 307, null, "", "Cache-Control: no-store\r\n", target);
+                return;
+            }
+        }
+    }
     switch (runStmts(conn, ctx.srv.stmts) catch return finalize(conn, 500)) {
         .done => return,
         .cont, .brk, .last => {},
@@ -243,14 +259,15 @@ fn content(conn: *Conn) void {
 
 fn contentHandler(conn: *Conn) void {
     const lc = conn.ctx.conf;
+    if (lc.websocket) |callbacks| return @import("websocket.zig").upgrade(conn, callbacks);
+    if (lc.unsupported_handler) |h| {
+        conn.w.errlog(.err, "\"{s}\" is not supported by zhttpd", .{h});
+        return finalize(conn, 502);
+    }
     if (lc.proxy != null) {
         conn.after_body = .proxy;
         conn.body_store = true;
         return;
-    }
-    if (lc.unsupported_handler) |h| {
-        conn.w.errlog(.err, "\"{s}\" is not supported by zhttpd", .{h});
-        return finalize(conn, 502);
     }
     staticFile(conn);
 }

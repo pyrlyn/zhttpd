@@ -145,7 +145,7 @@ def key_updates(openssl, port, body, large):
 
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/zhttpd").resolve()
-openssl = os.environ.get('OPENSSL_CLI', 'openssl')
+openssl = os.environ.get('OPENSSL_CLI', os.environ.get('OPENSSL_BIN', 'openssl'))
 with tempfile.TemporaryDirectory(prefix="zhttpd-tls-") as tmp:
     root = Path(tmp)
     subprocess.run([

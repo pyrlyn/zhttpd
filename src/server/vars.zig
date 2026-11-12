@@ -1,11 +1,11 @@
 //! Evaluation of nginx variables / complex values for one request.
 const std = @import("std");
-const expr = @import("../conf/expr.zig");
-const config = @import("../conf/config.zig");
+const expr = @import("expression");
+const config = @import("../http/config.zig");
 const Regex = @import("../regex.zig").Regex;
 const Request = @import("../http/request.zig").Request;
 const response = @import("../http/response.zig");
-const Addr = @import("../conf/addr.zig").Addr;
+const Addr = @import("../http/addr.zig").Addr;
 const os = @import("../os.zig");
 
 pub const version = "0.1.0";
@@ -43,6 +43,7 @@ pub const Ctx = struct {
     upstream_status: u16 = 0,
     // connection facts
     scheme_https: bool = false,
+    stream_protocol: u8 = 0,
     local: Addr = .{},
     peer: Addr = .{},
     conn_id: u64 = 0,
@@ -99,8 +100,8 @@ pub fn appendVar(a: std.mem.Allocator, c: *Ctx, v: expr.Var, out: *std.ArrayList
         .args => c.args,
         .is_args => if (c.args.len > 0) "?" else "",
         .request_method => if (c.method_override_get) "GET" else r.method_raw,
-        .request => r.line,
-        .server_protocol => if (r.version == .http10) "HTTP/1.0" else "HTTP/1.1",
+        .request => if (c.stream_protocol != 0) try std.fmt.allocPrint(a, "{s} {s} HTTP/{d}.0", .{ r.method_raw, r.target, c.stream_protocol }) else r.line,
+        .server_protocol => if (c.stream_protocol == 2) "HTTP/2.0" else if (c.stream_protocol == 3) "HTTP/3.0" else if (r.version == .http10) "HTTP/1.0" else "HTTP/1.1",
         .scheme => if (c.scheme_https) "https" else "http",
         .https => if (c.scheme_https) "on" else "",
         .host => blk: {
@@ -120,6 +121,7 @@ pub fn appendVar(a: std.mem.Allocator, c: *Ctx, v: expr.Var, out: *std.ArrayList
         .document_root => c.document_root,
         .realpath_root => c.document_root,
         .request_filename => c.request_filename,
+        .fastcgi_script_name => if (std.mem.endsWith(u8, c.uri, "/")) try std.fmt.allocPrint(a, "{s}{s}", .{ c.uri, c.conf.fastcgi_index }) else c.uri,
         .content_type => r.header("content-type") orelse "",
         .content_length => r.header("content-length") orelse "",
         .request_length => try std.fmt.allocPrint(a, "{d}", .{c.request_length}),

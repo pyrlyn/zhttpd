@@ -1,0 +1,4 @@
+FAIL h3-large-ka-c4-p16: RPS 0.757x (required 1.500x), p99 0.700x nginx, 0.700x baseline (required <=1.000x)
+FAIL h3-small-ka-c16-p16: RPS 0.525x (required 1.500x), p99 2.555x nginx, 2.555x baseline (required <=1.000x)
+FAIL h3-small-ka-c4-p16: RPS 0.568x (required 1.500x), p99 2.299x nginx, 2.299x baseline (required <=1.000x)
+target_exit_code=1

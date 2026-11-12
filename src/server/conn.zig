@@ -7,12 +7,13 @@
 //! bounded by `client_max_body_size`.
 const std = @import("std");
 const c = std.c;
-const config = @import("../conf/config.zig");
-const Addr = @import("../conf/addr.zig").Addr;
+const config = @import("../http/config.zig");
+const Addr = @import("../http/addr.zig").Addr;
 const request = @import("../http/request.zig");
 const Request = request.Request;
 const net = @import("net.zig");
 const tls = @import("tls.zig");
+const multiplex = @import("multiplex.zig");
 const vars = @import("vars.zig");
 const handler = @import("handler.zig");
 const proxy = @import("proxy.zig");
@@ -30,7 +31,7 @@ pub const path_size = 8 * 1024;
 pub const Kind = enum(u8) { listener, client, upstream };
 pub const Tag = struct { kind: Kind };
 
-pub const State = enum { handshake, read_head, read_body, sending, proxy, lingering, closed };
+pub const State = enum { handshake, multiplexed, websocket, read_head, read_body, sending, proxy, lingering, closed };
 pub const BodyMode = enum { none, length, chunked };
 pub const AfterBody = enum { respond, proxy };
 
@@ -42,6 +43,10 @@ pub const Conn = struct {
     w: *Worker = undefined,
     fd: c_int align(8) = -1,
     ssl: ?*tls.SSL = null,
+    multiplex: ?*anyopaque = null,
+    transport_stream: ?*anyopaque = null,
+    stream_protocol: u8 = 0,
+    websocket: ?*@import("websocket").Session = null,
     tls_read: tls.ReadState align(8) = .{},
     listen: *const config.Listen = undefined,
     local: Addr align(8) = .{},
@@ -52,6 +57,7 @@ pub const Conn = struct {
     state: State align(8) = .read_head,
     prev: ?*Conn = null,
     next: ?*Conn = null,
+    grave_next: ?*Conn = null,
     posted: bool align(8) = false,
     posted_prev: ?*Conn = null,
     posted_next: ?*Conn = null,
@@ -117,9 +123,13 @@ pub const Conn = struct {
         conn.fd = fd;
         conn.peer = peer;
         conn.listen = listen;
-        conn.local = if (listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
+        conn.local = if (fd >= 0 and listen.addr.isWildcard()) net.localAddr(fd) else listen.addr;
         conn.ssl = null;
         conn.tls_write_buf = null;
+        conn.multiplex = null;
+        conn.transport_stream = null;
+        conn.stream_protocol = 0;
+        conn.websocket = null;
         conn.tls_read = .{};
         conn.state = .read_head;
         conn.requests = 0;
@@ -129,7 +139,12 @@ pub const Conn = struct {
         conn.seg_i = 0;
         conn.file_fd = -1;
         conn.in_request = false;
-        conn.up = .{};
+        // Proxy start initializes its full state when needed. Idle teardown
+        // only reads these fields; avoid copying the unused 8 KiB FastCGI buffer
+        // for every HTTP/2 or HTTP/3 request that acquires a pooled Conn.
+        conn.up.fd = -1;
+        conn.up.phase = .idle;
+        conn.up.request_owned = null;
         conn.body.clearRetainingCapacity();
         conn.start_ms = 0;
         conn.deadline = w.now_ms + defaultServer(conn).client_header_timeout_ms;
@@ -142,6 +157,7 @@ pub const Conn = struct {
     // ------------------------------------------------------------- raw I/O (TLS aware)
 
     pub fn recv(conn: *Conn, buf: []u8) net.Io {
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.readStream(stream, buf);
         if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
             if (!conn.tls_read.ready and !conn.tls_read.eof and !conn.tls_read.want_write and !tls.hasPending(ssl)) return .again;
         };
@@ -161,6 +177,7 @@ pub const Conn = struct {
     }
 
     pub fn sendRaw(conn: *Conn, buf: []const u8) net.Io {
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.writeStream(stream, buf);
         if (tls.enabled) if (conn.ssl) |ssl| return switch (tls.write(ssl, buf)) {
             .ok => |n| .{ .ok = n },
             .want_read, .want_write => .again,
@@ -187,7 +204,7 @@ pub const Conn = struct {
     }
 
     pub fn prepareFileBuffer(conn: *Conn, size: u64) void {
-        if (conn.ssl != null and size >= 64 * 1024 and conn.file_buf == null)
+        if (conn.transport_stream == null and conn.ssl != null and size >= 64 * 1024 and conn.file_buf == null)
             conn.file_buf = conn.w.acquireFileBuffer(@intCast(@min(size, file_read_size))) catch null;
     }
 
@@ -206,7 +223,7 @@ pub const Conn = struct {
         while (true) {
             while (conn.seg_i < conn.nsegs) {
                 const r = blk: {
-                    if (conn.ssl == null and conn.nsegs - conn.seg_i > 1) {
+                    if (conn.ssl == null and conn.transport_stream == null and conn.nsegs - conn.seg_i > 1) {
                         var iov: [4]c.iovec_const = undefined;
                         var n: usize = 0;
                         for (conn.segs[conn.seg_i..conn.nsegs]) |s| {
@@ -250,6 +267,20 @@ pub const Conn = struct {
                 };
                 return .done;
             }
+            if (multiplex.enabled) if (conn.transport_stream) |stream| {
+                // Read into the codec's bounded output buffer directly, avoiding
+                // a second userspace copy through the HTTP/1 write buffer.
+                switch (multiplex.sendFile(stream, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
+                    .ok => |n| {
+                        conn.file_off += n;
+                        conn.ctx.bytes_sent += n;
+                        conn.deadline = conn.w.now_ms + conn.ctx.conf.send_timeout_ms;
+                    },
+                    .again => return .again,
+                    .eof, .err => return .err,
+                }
+                continue;
+            };
             // A fast reader may keep a large file writable indefinitely. Bound
             // this turn, as nginx's write filter does, and explicitly post the
             // continuation: an edge-triggered socket need not signal again.
@@ -272,7 +303,7 @@ pub const Conn = struct {
                 conn.w.post(conn);
                 return .again;
             }
-            if (conn.file_sendfile and conn.ssl == null) {
+            if (conn.file_sendfile and conn.ssl == null and conn.transport_stream == null) {
                 const r = net.sendFile(conn.fd, conn.file_fd, conn.file_off, @min(budget, conn.file_end - conn.file_off));
                 switch (r) {
                     .ok => |n| {
@@ -304,6 +335,14 @@ pub const Conn = struct {
         while (true) {
             const progressed = switch (conn.state) {
                 .handshake => conn.doHandshake(),
+                .multiplexed => blk: {
+                    multiplex.driveH2(conn);
+                    break :blk false;
+                },
+                .websocket => blk: {
+                    @import("websocket.zig").drive(conn);
+                    break :blk false;
+                },
                 .read_head => conn.readHead(),
                 .read_body => conn.readBody(),
                 .sending => conn.doSend(),
@@ -329,7 +368,14 @@ pub const Conn = struct {
         if (!tls.enabled) unreachable;
         switch (tls.handshake(conn.ssl.?)) {
             .ok => {
-                conn.state = .read_head;
+                if (multiplex.enabled and tls.isH2(conn.ssl.?)) {
+                    if (!multiplex.startH2(conn)) {
+                        conn.close();
+                        return false;
+                    }
+                    conn.state = .multiplexed;
+                    conn.deadline = 0; // per-stream request deadlines remain active
+                } else conn.state = .read_head;
                 return true;
             },
             .want_read, .want_write => return false,
@@ -350,6 +396,13 @@ pub const Conn = struct {
                     return true;
                 };
                 if (st == .complete) {
+                    if (conn.stream_protocol != 0) {
+                        // Internal wire framing is HTTP/1.1 for request bodies,
+                        // HTTP/1.0 for close-delimited responses. User variables
+                        // retain the actual client protocol separately.
+                        conn.req.version = .http10;
+                        conn.req.keep_alive = false;
+                    }
                     conn.startRequest();
                     return true;
                 }
@@ -408,7 +461,8 @@ pub const Conn = struct {
             .req = &conn.req,
             .uri = conn.req.path,
             .args = conn.req.args,
-            .scheme_https = conn.ssl != null,
+            .scheme_https = conn.ssl != null or conn.stream_protocol != 0,
+            .stream_protocol = conn.stream_protocol,
             .local = conn.local,
             .peer = conn.peer,
             .conn_id = conn.id,
@@ -445,6 +499,7 @@ pub const Conn = struct {
 
     /// The handler queued a response or a proxy action; decide about the body.
     pub fn afterHandler(conn: *Conn) void {
+        if (conn.state == .websocket) return;
         if (conn.body_mode != .none and !conn.close_after and !conn.drop) {
             if (conn.req.expect_continue and conn.body_pos == conn.rlen) {
                 if (conn.body_store) {
@@ -627,6 +682,10 @@ pub const Conn = struct {
     /// Half-close and drain the client's unread body for a while, so it sees our response
     /// instead of a reset (nginx `lingering_close`).
     fn startLinger(conn: *Conn) void {
+        if (conn.transport_stream != null) {
+            conn.close();
+            return;
+        }
         _ = c.shutdown(conn.fd, 1);
         conn.state = .lingering;
         conn.deadline = conn.w.now_ms + 5000;
@@ -669,12 +728,22 @@ pub const Conn = struct {
         conn.w.unpost(conn);
         conn.closeFile();
         proxy.release(conn);
+        multiplex.freeH2(conn);
+        if (conn.websocket) |session| {
+            session.deinit();
+            conn.w.gpa.destroy(session);
+            conn.websocket = null;
+        }
         if (tls.enabled) if (conn.ssl) |ssl| {
             tls.free(ssl);
             conn.ssl = null;
             conn.tls_write_buf = null;
         };
-        net.close(conn.fd);
+        if (multiplex.enabled) if (conn.transport_stream) |stream| {
+            multiplex.finishStream(stream);
+            conn.transport_stream = null;
+        };
+        if (conn.fd >= 0) net.close(conn.fd);
         conn.fd = -1;
         conn.state = .closed;
         conn.w.release(conn);

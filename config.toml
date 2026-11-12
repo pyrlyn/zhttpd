@@ -1,0 +1,36 @@
+# See docs/configuration.md for the complete native format and compatibility modes.
+[modules]
+http = true
+self = true
+nginx = true
+apache = true
+litespeed = true
+caddy = true
+websocket = true
+fastcgi = true
+wsgi = true
+logging = true
+acme = true
+
+[server]
+compatibility = "self"
+
+[http]
+listen = "127.0.0.1:8080"
+response = "zhttpd\n"
+http2 = false
+http3 = false
+max_body_size = 1_048_576
+keepalive_timeout_ms = 75_000
+
+[[http.routes]]
+path = "/health"
+match = "exact"
+response = "ok\n"
+status = 200
+
+[logging]
+access = "stdout"
+format = "combined"
+error = "stderr"
+level = "error"

@@ -1,0 +1,10 @@
+[server]
+compatibility = "caddy"
+config = "Caddyfile"
+
+[acme]
+domain = "example.com"
+email = "admin@example.com"
+accept_terms = false
+storage = ".acme-caddy"
+directory = "https://acme-staging-v02.api.letsencrypt.org/directory"

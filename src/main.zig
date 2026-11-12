@@ -3,10 +3,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = std.c;
 const z = @import("zhttpd");
-const config = z.conf.config;
-const Diag = z.conf.diag.Diag;
+const config = z.nginx.config;
+const Diag = z.http.diag.Diag;
 const net = z.server.net;
 const tls = z.server.tls;
+const multiplex = z.server.multiplex;
 const worker_mod = z.server.worker;
 const os = z.os;
 
@@ -21,8 +22,9 @@ const usage =
     \\  -T            : test configuration, dump it and exit
     \\  -q            : suppress non-error messages during configuration testing
     \\  -s signal     : send signal to a master process: stop, quit, reopen, reload
+    \\  --compatibility name : direct file format: nginx/apache/litespeed/caddy
     \\  -p prefix     : set prefix path (default: see README)
-    \\  -c filename   : set configuration file (default: /etc/nginx/nginx.conf)
+    \\  -c filename   : set configuration file (default: config.toml)
     \\  -g directives : set global directives out of configuration file (daemon/master_process/worker_processes/pid)
     \\  --strict      : unknown directives are errors instead of warnings
     \\  --directives  : print the supported/ignored directive table (Markdown) and exit
@@ -30,7 +32,8 @@ const usage =
 ;
 
 const Opts = struct {
-    conf: []const u8 = "/etc/nginx/nginx.conf",
+    conf: []const u8 = "config.toml",
+    compatibility: z.app_config.Compatibility = .nginx,
     prefix: ?[]const u8 = null,
     test_only: bool = false,
     dump: bool = false,
@@ -88,7 +91,7 @@ pub fn main(init: std.process.Init) u8 {
             eprint("zhttpd version: zhttpd/{s}\n", .{z.server.vars.version});
             return 0;
         } else if (std.mem.eql(u8, a, "-V")) {
-            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, tls.backend_name });
+            eprint("zhttpd version: zhttpd/{s}\nbuilt with Zig {s}, event backend {s}, TLS {s}, HTTP/2+HTTP/3 {s}\n", .{ z.server.vars.version, builtin.zig_version_string, z.server.loop.name, tls.backend_name, if (multiplex.enabled) "enabled" else "disabled" });
             return 0;
         } else if (std.mem.eql(u8, a, "-t")) {
             o.test_only = true;
@@ -105,6 +108,12 @@ pub fn main(init: std.process.Init) u8 {
             z.conf.directives.writeMarkdown(&w) catch {};
             outWrite(w.buffered());
             return 0;
+        } else if (std.mem.eql(u8, a, "--compatibility")) {
+            const mode = nextArg(argv, &i, a) orelse return 1;
+            o.compatibility = std.meta.stringToEnum(z.app_config.Compatibility, mode) orelse {
+                eprint("zhttpd: compatibility must be self, nginx, apache, litespeed or caddy\n", .{});
+                return 1;
+            };
         } else if (std.mem.eql(u8, a, "-c")) {
             o.conf = nextArg(argv, &i, a) orelse return 1;
         } else if (std.mem.eql(u8, a, "-p")) {
@@ -135,7 +144,9 @@ pub fn main(init: std.process.Init) u8 {
 
     var diag: Diag = .{ .gpa = gpa, .echo = true };
     defer diag.deinit();
-    const cfg = config.load(gpa, conf_path, copts, &diag) catch {
+    var sources: z.http.config_watch.Sources = .{ .gpa = gpa };
+    defer sources.deinit();
+    const cfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility, .sources = &sources }, &diag) catch {
         if (o.test_only) eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
         return 1;
     };
@@ -146,14 +157,21 @@ pub fn main(init: std.process.Init) u8 {
 
     if (o.signal) |sig| return sendSignal(cfg, sig);
 
+    cfg.load_balancer.validateWorkers(cfg.worker_processes) catch {
+        eprint("zhttpd: [emerg] load_balancer supports at most 256 workers\n", .{});
+        return 1;
+    };
+
+    multiplex.validate(cfg) catch |err| {
+        eprint("zhttpd: [emerg] HTTP protocol configuration: {s} (HTTP/2 and HTTP/3 require -Dtls=true -Dhttp=true)\n", .{@errorName(err)});
+        return 1;
+    };
     if (o.test_only) {
         // also verify certificates like nginx -t does
         if (tls.enabled) {
-            for (cfg.listens) |*l| if (l.opts.ssl) {
-                _ = tls.buildSni(gpa, cfg, l, &diag) catch {
-                    eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
-                    return 1;
-                };
+            tls.validateConfig(gpa, cfg, &diag) catch {
+                eprint("zhttpd: configuration file {s} test failed\n", .{conf_path});
+                return 1;
             };
         } else for (cfg.listens) |l| if (l.opts.ssl) {
             eprint("zhttpd: [emerg] this zhttpd binary was built without TLS (-Dtls=true) but \"listen ... ssl\" is used\n", .{});
@@ -169,7 +187,7 @@ pub fn main(init: std.process.Init) u8 {
         if (o.dump) {
             var buf: [1024 * 1024]u8 = undefined;
             var w: std.Io.Writer = .fixed(&buf);
-            for (cfg.ast.files) |f| {
+            for (cfg.source_files) |f| {
                 w.print("# configuration file {s}:\n", .{f}) catch {};
                 var e: c_int = 0;
                 const text = os.readFileAlloc(gpa, f, &e) catch continue;
@@ -182,7 +200,7 @@ pub fn main(init: std.process.Init) u8 {
         }
         return 0;
     }
-    return master(gpa, cfg, copts, conf_path, o);
+    return master(gpa, cfg, copts, conf_path, o, &sources);
 }
 
 fn absPath(a: std.mem.Allocator, p: []const u8) ![]const u8 {
@@ -300,9 +318,12 @@ const Generation = struct {
     sni: []?*tls.SniTable,
     pids: []c.pid_t,
     error_fd: c_int,
+    encrypted_snapshots: []?z.http.server.acme_encrypted.Snapshot,
+    cleanup_retries: []z.http.server.acme_encrypted.CleanupRetry,
+    protected_tls_inodes: []u64,
 };
 
-const Sock = struct { addr: z.conf.addr.Addr, fd: c_int, used: bool };
+const Sock = struct { addr: z.http.addr.Addr, fd: c_int, used: bool, quic: bool };
 
 fn openErrorLog(cfg: *config.Config) c_int {
     const p = cfg.error_log.path;
@@ -318,19 +339,70 @@ fn openErrorLog(cfg: *config.Config) c_int {
     return fd;
 }
 
+fn protectedTlsInodes(gpa: std.mem.Allocator, cfg: *const config.Config) ![]u64 {
+    var inodes: std.ArrayList(u64) = .empty;
+    errdefer inodes.deinit(gpa);
+    var needed = false;
+    for (cfg.acme) |ac| needed = needed or ac.encrypt_key;
+    if (tls.enabled and needed) for (cfg.servers) |server| {
+        for ([_]?[]const u8{ server.tls.certificate, server.tls.certificate_key }) |maybe| if (maybe) |path| {
+            const meta = os.stat(path) orelse return error.ActiveTlsFileUnavailable;
+            try inodes.append(gpa, meta.ino);
+        };
+    };
+    return inodes.toOwnedSlice(gpa);
+}
+
 fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag) !Generation {
+    try multiplex.validate(cfg);
+    const protected_inodes = try protectedTlsInodes(gpa, cfg);
+    errdefer gpa.free(protected_inodes);
+    const snapshots = try gpa.alloc(?z.http.server.acme_encrypted.Snapshot, cfg.acme.len);
+    errdefer gpa.free(snapshots);
+    const retries = try gpa.alloc(z.http.server.acme_encrypted.CleanupRetry, cfg.acme.len);
+    errdefer gpa.free(retries);
+    @memset(retries, .{});
+    @memset(snapshots, null);
+    if (tls.enabled) for (cfg.acme, snapshots) |ac, *saved| {
+        if (ac.encrypt_key) saved.* = try z.http.server.acme_encrypted.snapshot(gpa, ac);
+    };
+    try cfg.load_balancer.validateWorkers(cfg.worker_processes);
     const nw = @max(cfg.worker_processes, 1);
     const fds = try gpa.alloc([]c_int, cfg.listens.len);
+    errdefer gpa.free(fds);
+    @memset(fds, &.{});
     const sni = try gpa.alloc(?*tls.SniTable, cfg.listens.len);
+    @memset(sni, null);
+    errdefer {
+        for (sni) |table| if (table) |t| {
+            if (tls.enabled) tls.freeSni(gpa, t);
+        };
+        gpa.free(sni);
+        for (fds) |list| {
+            for (list) |fd| {
+                if (fd < 0) continue;
+                var reused = false;
+                for (old) |socket| {
+                    if (socket.fd == fd) {
+                        reused = true;
+                        break;
+                    }
+                }
+                if (!reused) net.close(fd);
+            }
+            gpa.free(list);
+        }
+    }
     for (cfg.listens, 0..) |*l, li| {
         const per_worker = builtin.os.tag == .linux and l.opts.reuseport;
         const n: usize = if (per_worker) nw else 1;
         fds[li] = try gpa.alloc(c_int, n);
+        @memset(fds[li], -1);
         for (0..n) |k| {
             // reuse a socket from the previous generation (reload) when possible
             var reused: ?c_int = null;
             if (!per_worker) for (old) |*s| {
-                if (!s.used and s.addr.eql(l.addr)) {
+                if (!s.used and s.quic == l.opts.quic and s.addr.eql(l.addr)) {
                     s.used = true;
                     reused = s.fd;
                     break;
@@ -341,7 +413,7 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
                 continue;
             }
             var e: c_int = 0;
-            fds[li][k] = net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e) catch |err| {
+            fds[li][k] = (if (l.opts.quic) net.listenUdp(l.addr, per_worker, l.opts.ipv6only, &e) else net.listenSocket(l.addr, l.opts.backlog, per_worker or l.opts.reuseport, l.opts.ipv6only, &e)) catch |err| {
                 var ab: [64]u8 = undefined;
                 const what = switch (err) {
                     error.Socket => "socket()",
@@ -361,13 +433,20 @@ fn prepare(gpa: std.mem.Allocator, cfg: *config.Config, old: []Sock, diag: *Diag
             sni[li] = tls.buildSni(gpa, cfg, l, diag) catch return error.Tls;
         }
     }
-    return .{ .cfg = cfg, .fds = fds, .sni = sni, .pids = try gpa.alloc(c.pid_t, nw), .error_fd = openErrorLog(cfg) };
+    if (tls.enabled) for (cfg.acme, snapshots) |ac, saved| {
+        if (saved) |expected| if (!z.http.server.acme_encrypted.sameSnapshot(expected, try z.http.server.acme_encrypted.snapshot(gpa, ac))) return error.EncryptedGenerationChanged;
+    };
+    const after_inodes = try protectedTlsInodes(gpa, cfg);
+    defer gpa.free(after_inodes);
+    if (!std.mem.eql(u64, protected_inodes, after_inodes)) return error.ActiveTlsFilesChanged;
+    return .{ .cfg = cfg, .fds = fds, .sni = sni, .pids = try gpa.alloc(c.pid_t, nw), .error_fd = openErrorLog(cfg), .encrypted_snapshots = snapshots, .cleanup_retries = retries, .protected_tls_inodes = protected_inodes };
 }
 
-fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize) c.pid_t {
+fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize, acme_lock: ?c_int) c.pid_t {
     const pid = c.fork();
     if (pid != 0) return pid;
-    // child
+    // Workers must not retain the ACME staging lock across future renewals.
+    if (acme_lock) |fd| _ = c.close(fd);
     installSignals(workerSignal);
     var listeners: std.ArrayList(worker_mod.Listener) = .empty;
     for (gen.cfg.listens, 0..) |*l, li| {
@@ -376,6 +455,12 @@ fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize) c.pid_t {
         if (fds.len > 1) for (fds, 0..) |other, k| {
             if (k != idx % fds.len) net.close(other);
         };
+        // Each QUIC socket has exactly one engine. Linux reuseport hashes a
+        // client's UDP tuple to its worker; a shared socket stays on worker 0.
+        if (l.opts.quic and fds.len == 1 and idx != 0) {
+            net.close(fd);
+            continue;
+        }
         listeners.append(gpa, .{ .fd = fd, .listen = l, .sni = gen.sni[li] }) catch c.exit(2);
     }
     var w = worker_mod.Worker.init(gpa, gen.cfg, listeners.items, gen.error_fd, @intCast(idx)) catch c.exit(2);
@@ -435,19 +520,190 @@ fn raiseNofile(want: ?u64) void {
     eprint("zhttpd: [alert] setrlimit(RLIMIT_NOFILE, {d}) failed\n", .{target});
 }
 
-fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts) u8 {
-    _ = o;
+fn destroyConfig(gpa: std.mem.Allocator, cfg: *config.Config) void {
+    cfg.deinit();
+    gpa.destroy(cfg);
+}
+
+fn validateReload(gpa: std.mem.Allocator, cfg: *config.Config, active: *const config.Config, globals: ?[]const u8, diag: *Diag) !void {
+    if (globals) |g| try applyGlobals(cfg, g, diag);
+    try multiplex.validate(cfg);
+    try cfg.load_balancer.validateWorkers(cfg.worker_processes);
+    if (tls.enabled) {
+        try tls.validateConfig(gpa, cfg, diag);
+    } else {
+        for (cfg.listens) |l| if (l.opts.ssl) {
+            return error.Tls;
+        };
+    }
+    for (cfg.acme) |ac| {
+        if (ac.challenge != .@"http-01") continue;
+        for (active.listens) |l| {
+            if (!l.opts.quic and l.addr.port == ac.http_port) {
+                diag.add(.emerg, null, 0, "ACME HTTP-01 port {d} is occupied by the active configuration", .{ac.http_port});
+                return error.AcmePortConflict;
+            }
+        }
+    }
+}
+
+const EncryptedJob = z.http.server.acme_encrypted.Job;
+fn startAcme(gpa: std.mem.Allocator, ac: z.http.acme.Settings, error_fd: c_int, job: *?EncryptedJob) !c.pid_t {
+    if (ac.encrypt_key) {
+        job.* = try z.http.server.acme_encrypted.start(gpa, ac, error_fd);
+        return job.*.?.pid;
+    }
+    return z.http.acme.start(gpa, ac, error_fd);
+}
+fn finishAcme(job: *?EncryptedJob, status: *c_int, publish: bool) void {
+    if (job.*) |*encrypted| {
+        if (status.* == 0 and publish) encrypted.publish() catch |err| {
+            eprint("zhttpd: [error] encrypted ACME publication {s} failed: {s}; keeping the old certificate\n", .{ encrypted.settings.name, @errorName(err) });
+            status.* = 1;
+        };
+        encrypted.deinit();
+    }
+    job.* = null;
+}
+fn stopAcme(pid: c.pid_t, job: ?EncryptedJob) void {
+    // Encrypted jobs isolate lego and its DNS hooks in a process group so no
+    // descendant can keep writing plaintext staging after timeout/termination.
+    _ = kill(if (job != null) -pid else pid, 9);
+}
+
+fn prepareEncryptedCertificates(gpa: std.mem.Allocator, cfg: *config.Config) !void {
+    if (!tls.enabled) return;
+    for (cfg.acme) |ac| {
+        if (!ac.encrypt_key) continue;
+        if (z.http.acme.ready(ac)) {
+            const rotated = z.http.server.acme_encrypted.reencrypt(gpa, ac) catch |err| {
+                eprint("zhttpd: [error] ACME password rotation {s} failed: {s}\n", .{ ac.name, @errorName(err) });
+                return err;
+            };
+            if (rotated) eprint("zhttpd: re-encrypted ACME key {s} locally; certificate unchanged\n", .{ac.name});
+            continue;
+        }
+        const migrated = z.http.server.acme_encrypted.migrate(gpa, ac) catch |err| {
+            eprint("zhttpd: [error] ACME cache migration {s} failed: {s}\n", .{ ac.name, @errorName(err) });
+            return err;
+        };
+        if (migrated) eprint("zhttpd: migrated ACME certificate {s} locally; legacy cache retained until activation\n", .{ac.name});
+    }
+}
+fn deferMigratedCheck(gpa: std.mem.Allocator, job: *z.http.acme.Renewal) void {
+    if (job.next_check_ms == 0 and z.http.acme.migrationPending(gpa, job.settings)) {
+        job.next_check_ms = z.server.loop.nowMs() + @as(i64, job.settings.check_interval_seconds) * 1000;
+    }
+}
+fn retryEncryptedCleanup(gpa: std.mem.Allocator, gen: *Generation, now: i64, writer: ?z.http.config_watch.Writer) void {
+    if (!tls.enabled) return;
+    for (gen.pids) |pid| if (pid <= 0) return;
+    for (gen.cfg.acme, gen.encrypted_snapshots, gen.cleanup_retries) |ac, saved, *retry| {
+        if (!ac.encrypt_key or !retry.due(now)) continue;
+        if (writer) |w| if (std.mem.eql(u8, ac.certificate, w.certificate)) continue;
+        if (saved) |snapshot| {
+            const result = z.http.server.acme_encrypted.cleanupGenerations(gpa, ac, gen.cfg, snapshot, gen.protected_tls_inodes) catch |err|
+                z.http.server.acme_encrypted.CleanupResult{ .deferred = err };
+            const changed = retry.record(result, z.server.loop.nowMs());
+            if (changed) {
+                if (result.deferred) |err| {
+                    eprint("zhttpd: [warn] encrypted generation cleanup {s} deferred: {s}\n", .{ ac.name, @errorName(err) });
+                } else eprint("zhttpd: encrypted generation cleanup {s} completed after retry\n", .{ac.name});
+            }
+            if (result.removed > 0) eprint("zhttpd: removed {d} retired encrypted generation(s) for {s} after activation\n", .{ result.removed, ac.name });
+        }
+    }
+}
+fn cleanupActivatedCaches(gpa: std.mem.Allocator, gen: *Generation, watcher: *z.http.config_watch.Watcher) void {
+    retryEncryptedCleanup(gpa, gen, z.server.loop.nowMs(), null);
+    if (!tls.enabled) return;
+    for (gen.pids) |pid| if (pid <= 0) return;
+    for (gen.cfg.acme) |ac| {
+        if (!ac.encrypt_key) continue;
+        const pending_cleanup = z.http.acme.migrationPending(gpa, ac);
+        z.http.server.acme_encrypted.cleanupLegacy(gpa, ac, gen.cfg) catch |err| {
+            eprint("zhttpd: [warn] legacy ACME cache cleanup {s} deferred: {s}\n", .{ ac.name, @errorName(err) });
+            continue;
+        };
+        for (z.http.acme.cache_suffixes) |suffix| {
+            const path = z.http.acme.legacyPath(gpa, ac, suffix) catch continue;
+            defer gpa.free(path);
+            watcher.active.forgetLegacy(path);
+            watcher.attempt.forgetLegacy(path);
+        }
+        if (pending_cleanup) eprint("zhttpd: removed migrated legacy ACME cache {s} after activation\n", .{ac.name});
+    }
+}
+
+fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, conf_path: []const u8, o: Opts, sources: *z.http.config_watch.Sources) u8 {
+    var watcher: z.http.config_watch.Watcher = .{ .active = sources.*, .attempt = .{ .gpa = gpa } };
+    sources.* = .{ .gpa = gpa };
+    defer watcher.deinit();
     // worker_rlimit_nofile, or as high as the hard limit allows (bounded) when unset
     raiseNofile(cfg0.worker_rlimit_nofile);
     installSignals(masterSignal);
     var diag: Diag = .{ .gpa = gpa, .echo = true };
+    if (tls.enabled) tls.validateConfig(gpa, cfg0, &diag) catch return 1;
+    prepareEncryptedCertificates(gpa, cfg0) catch return 1;
+    for (cfg0.acme) |ac| if (!z.http.acme.ready(ac)) {
+        if (!tls.enabled) {
+            eprint("zhttpd: [emerg] automatic ACME requires a TLS-enabled build\n", .{});
+            return 1;
+        }
+        tls.validateConfig(gpa, cfg0, &diag) catch return 1;
+        eprint("zhttpd: issuing initial ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
+        var initial_job: ?EncryptedJob = null;
+        defer if (initial_job) |*job| job.deinit();
+        const child = startAcme(gpa, ac, 2, &initial_job) catch |err| {
+            eprint("zhttpd: [emerg] cannot start ACME issuance: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        var status: c_int = 0;
+        const started = z.server.loop.nowMs();
+        while (c.waitpid(child, &status, c.W.NOHANG) == 0) {
+            if (m_terminate or m_quit or z.server.loop.nowMs() - started > @as(i64, ac.operation_timeout_seconds) * 1000) {
+                stopAcme(child, initial_job);
+                _ = c.waitpid(child, &status, 0);
+                return 1;
+            }
+            sleepMs(100);
+        }
+        if (initial_job != null) stopAcme(child, initial_job);
+        finishAcme(&initial_job, &status, true);
+        if (status != 0 or !z.http.acme.ready(ac)) {
+            eprint("zhttpd: [emerg] initial ACME issuance failed; HTTPS was not started\n", .{});
+            return 1;
+        }
+    };
+    for (cfg0.acme) |ac| watcher.acknowledgeTls(.{ .certificate = ac.certificate, .key = ac.key });
+    var acme_jobs = z.http.acme.renewals(gpa, cfg0.acme, &.{}) catch return 1;
+    defer gpa.free(acme_jobs);
+    for (acme_jobs) |*job| deferMigratedCheck(gpa, job);
     var gen = prepare(gpa, cfg0, &.{}, &diag) catch return 1;
     writePid(cfg0);
     var ab: [64]u8 = undefined;
-    for (cfg0.listens) |l| eprint("zhttpd: listening on {s}{s}{s}:{d}{s}\n", .{ if (l.addr.family == .v6) "[" else "", l.addr.formatIp(&ab), if (l.addr.family == .v6) "]" else "", l.addr.port, if (l.opts.ssl) " (ssl)" else "" });
-    for (gen.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &gen, k);
+    for (cfg0.listens) |l| eprint("zhttpd: listening on {s}{s}{s}:{d}{s}\n", .{ if (l.addr.family == .v6) "[" else "", l.addr.formatIp(&ab), if (l.addr.family == .v6) "]" else "", l.addr.port, if (l.opts.quic) " (quic)" else if (l.opts.ssl) " (ssl)" else "" });
+    for (gen.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &gen, k, null);
     eprint("zhttpd: master {d} started {d} worker(s), event method {s}\n", .{ c.getpid(), gen.pids.len, z.server.loop.name });
+    cleanupActivatedCaches(gpa, &gen, &watcher);
 
+    var acme_pid: c.pid_t = 0;
+    var encrypted_job: ?EncryptedJob = null;
+    defer if (encrypted_job) |*job| job.deinit();
+    var acme_started: i64 = 0;
+    var acme_before: ?[32]u8 = null;
+    var acme_before_key: ?[32]u8 = null;
+    var acme_revision: u64 = 0;
+    var acme_active_revision: u64 = 0;
+    var acme_active: z.http.acme.Settings = undefined;
+    // A candidate owns its settings until activated or discarded. An obsolete
+    // issuer may finish cleanup, but cannot activate its superseded candidate.
+    var pending: ?*config.Config = null;
+    var pending_validated = false;
+    var retired: ?*config.Config = null;
+    var acme_pending = false;
+    var acme_cancelled = false;
+    var refresh_tls = false;
     var old: std.ArrayList(c.pid_t) = .empty; // workers of previous generations, shutting down
     while (true) {
         sleepMs(100);
@@ -456,6 +712,45 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             var status: c_int = 0;
             const pid = c.waitpid(-1, &status, c.W.NOHANG);
             if (pid <= 0) break;
+            if (pid == acme_pid) {
+                // Discard failed, cancelled and shutting-down jobs before
+                // acknowledging files or refreshing any worker generation.
+                if (encrypted_job != null) stopAcme(acme_pid, encrypted_job);
+                finishAcme(&encrypted_job, &status, !acme_cancelled and !m_terminate and !m_quit);
+                acme_pid = 0;
+                watcher.acknowledgeTls(.{ .certificate = acme_active.certificate, .key = acme_active.key });
+                if (acme_cancelled) {
+                    acme_cancelled = false;
+                    if (retired) |cfg| destroyConfig(gpa, cfg);
+                    retired = null;
+                    continue;
+                }
+                if (acme_pending) {
+                    acme_pending = false;
+                    if (status != 0 or !z.http.acme.ready(acme_active)) {
+                        eprint("zhttpd: [error] ACME reload issuance {s} failed; keeping the old configuration\n", .{acme_active.name});
+                        destroyConfig(gpa, pending.?);
+                        pending = null;
+                    }
+                    continue;
+                }
+                // Use the settings of the completed child, never an array index
+                // from a configuration that may have been reordered during reload.
+                const ac = acme_active;
+                for (acme_jobs) |*job| {
+                    if (!std.mem.eql(u8, job.settings.certificate, ac.certificate)) continue;
+                    if (status == 0) {
+                        const after = z.http.acme.fingerprint(ac.certificate);
+                        const after_key = z.http.acme.fingerprint(ac.key);
+                        if ((after != null and (acme_before == null or !std.mem.eql(u8, &after.?, &acme_before.?))) or
+                            (after_key != null and (acme_before_key == null or !std.mem.eql(u8, &after_key.?, &acme_before_key.?)))) refresh_tls = true;
+                    } else eprint("zhttpd: [error] ACME renewal {s} failed (wait status {d}); current HTTPS configuration remains active\n", .{ ac.name, status });
+                    // A child using old credentials must not postpone the new check.
+                    if (job.revision != acme_active_revision) continue;
+                    job.next_check_ms = z.server.loop.nowMs() + @as(i64, if (status == 0) job.settings.check_interval_seconds else @min(job.settings.check_interval_seconds, 3600)) * 1000;
+                }
+                continue;
+            }
             var respawn: ?usize = null;
             for (gen.pids, 0..) |p, k| if (p == pid) {
                 respawn = k;
@@ -469,11 +764,12 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
                     gen.pids[k] = 0;
                 } else {
                     eprint("zhttpd: [alert] worker process {d} exited with status {d}, respawning\n", .{ pid, status });
-                    gen.pids[k] = spawnWorker(gpa, &gen, k);
+                    gen.pids[k] = spawnWorker(gpa, &gen, k, if (encrypted_job) |job| job.lock_fd else null);
                 }
             }
         }
         if (m_terminate or m_quit) {
+            if (acme_pid > 0) stopAcme(acme_pid, encrypted_job);
             const sig: c_int = if (m_terminate) SIGTERM else SIGQUIT;
             signalAll(&gen, sig);
             for (old.items) |p| _ = kill(p, sig);
@@ -486,35 +782,158 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             removePid(cfg0);
             return 0;
         }
+        const now = z.server.loop.nowMs();
+        if (acme_pid > 0 and now - acme_started > @as(i64, acme_active.operation_timeout_seconds) * 1000) stopAcme(acme_pid, encrypted_job);
         if (m_reopen) {
             m_reopen = false;
             signalAll(&gen, SIGUSR1);
         }
+        const writer: ?z.http.config_watch.Writer = if (acme_pid > 0) .{ .certificate = acme_active.certificate, .key = acme_active.key } else null;
+        if (gen.cfg.auto_reload and watcher.poll(now, writer)) {
+            eprint("zhttpd: [notice] watched files changed, scheduling reload\n", .{});
+            m_reload = true;
+        }
         if (m_reload) {
             m_reload = false;
+            watcher.beginAttempt(writer);
             eprint("zhttpd: [notice] reconfiguring\n", .{});
-            const ncfg = config.load(gpa, conf_path, copts, &diag) catch {
+            if (pending) |cfg| {
+                if (acme_pending) {
+                    retired = cfg;
+                    acme_cancelled = true;
+                    acme_pending = false;
+                } else destroyConfig(gpa, cfg);
+                pending = null;
+            }
+            const ncfg = z.app_config.load(gpa, conf_path, .{ .prefix = copts.prefix, .conf_prefix = copts.conf_prefix, .strict = copts.strict, .quiet_ignored = copts.quiet_ignored, .compatibility = o.compatibility, .sources = &watcher.attempt }, &diag) catch {
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            pending = ncfg;
+            pending_validated = false;
+        }
+        const writing_candidate = if (writer) |w| pending != null and watcher.attempt.usesWriter(w) else false;
+        if (pending) |cfg| {
+            if (!pending_validated and !writing_candidate and !watcher.unsettled()) {
+                validateReload(gpa, cfg, gen.cfg, o.globals, &diag) catch {
+                    destroyConfig(gpa, cfg);
+                    pending = null;
+                    eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
+                    continue;
+                };
+                prepareEncryptedCertificates(gpa, cfg) catch {
+                    for (cfg.acme) |ac| if (ac.encrypt_key) watcher.acknowledgeTls(.{ .certificate = ac.certificate, .key = ac.key });
+                    destroyConfig(gpa, cfg);
+                    pending = null;
+                    eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
+                    continue;
+                };
+                for (cfg.acme) |ac| if (ac.encrypt_key) watcher.acknowledgeTls(.{ .certificate = ac.certificate, .key = ac.key });
+                pending_validated = true;
+            }
+        }
+        var missing: ?z.http.acme.Settings = null;
+        if (pending) |cfg| {
+            for (cfg.acme) |ac| {
+                if (!z.http.acme.ready(ac)) {
+                    missing = ac;
+                    break;
+                }
+            }
+        }
+        // Keep serving the active generation throughout issuance. Activation is
+        // one transaction after every certificate has passed TLS validation.
+        if (!watcher.unsettled() and ((pending != null and pending_validated and !writing_candidate and missing == null and !acme_pending) or (pending == null and refresh_tls))) {
+            const ncfg = pending orelse gen.cfg;
+            const owns_candidate = pending != null;
+            pending = null;
+            refresh_tls = false;
             var socks: std.ArrayList(Sock) = .empty;
+            defer socks.deinit(gpa);
             for (gen.cfg.listens, 0..) |l, li| if (gen.fds[li].len == 1) {
-                socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false }) catch {};
+                socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false, .quic = l.opts.quic }) catch {};
+            };
+            const next_jobs = z.http.acme.renewals(gpa, ncfg.acme, acme_jobs) catch {
+                if (owns_candidate) destroyConfig(gpa, ncfg);
+                eprint("zhttpd: [emerg] cannot allocate ACME renewal schedule\n", .{});
+                continue;
             };
             const ngen = prepare(gpa, ncfg, socks.items, &diag) catch {
+                gpa.free(next_jobs);
+                if (owns_candidate) destroyConfig(gpa, ncfg);
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            acme_revision += 1;
+            for (next_jobs) |*job| {
+                var previous: ?z.http.acme.Renewal = null;
+                for (acme_jobs) |prior| if (std.mem.eql(u8, prior.settings.certificate, job.settings.certificate)) {
+                    previous = prior;
+                    break;
+                };
+                const credentials_changed = if (job.settings.dns_env_file) |path| watcher.credentialsChanged(path) else false;
+                const policy_changed = previous != null and (previous.?.settings.renew_before_days != job.settings.renew_before_days or
+                    previous.?.settings.check_interval_seconds != job.settings.check_interval_seconds);
+                if (previous == null or !z.http.acme.sameCredentials(previous.?.settings, job.settings) or (owns_candidate and credentials_changed) or policy_changed) {
+                    job.next_check_ms = 0;
+                    job.revision = acme_revision;
+                }
+                if (previous == null) deferMigratedCheck(gpa, job);
+            }
+            gpa.free(acme_jobs);
+            acme_jobs = next_jobs;
             var next = ngen;
-            for (next.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &next, k);
+            // Close obsolete master descriptors before fork. Otherwise new
+            // workers retain the old reuseport sockets without servicing them,
+            // leaving UDP packets assigned to an abandoned receive queue.
+            // Old workers retain their own descriptors until they shut down.
+            for (socks.items) |s| if (!s.used) net.close(s.fd);
+            for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
+            for (next.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &next, k, if (encrypted_job) |job| job.lock_fd else null);
             for (gen.pids) |p| if (p > 0) {
                 _ = kill(p, SIGQUIT);
                 old.append(gpa, p) catch {};
             };
-            // close sockets the new generation does not use
-            for (socks.items) |s| if (!s.used) net.close(s.fd);
-            for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
+            gpa.free(gen.encrypted_snapshots);
+            gpa.free(gen.cleanup_retries);
+            gpa.free(gen.protected_tls_inodes);
             gen = next;
+            if (owns_candidate) watcher.accept();
+            eprint("zhttpd: [notice] reload complete\n", .{});
+            cleanupActivatedCaches(gpa, &gen, &watcher);
+        }
+        // Only the active generation can authorize retries. A pending/rejected
+        // rotation cannot make its new on-disk generation eligible for deletion.
+        if (pending == null and !refresh_tls and !watcher.unsettled()) retryEncryptedCleanup(gpa, &gen, now, writer);
+        if (acme_pid == 0 and missing != null and pending_validated and !watcher.unsettled()) {
+            const ac = missing.?;
+            eprint("zhttpd: issuing reload ACME certificate {s} for {s}\n", .{ ac.name, ac.domain });
+            acme_active = ac;
+            acme_started = now;
+            acme_pid = startAcme(gpa, ac, gen.error_fd, &encrypted_job) catch 0;
+            acme_pending = acme_pid > 0;
+            if (!acme_pending) {
+                eprint("zhttpd: [error] cannot start ACME reload issuance; keeping the old configuration\n", .{});
+                destroyConfig(gpa, pending.?);
+                pending = null;
+            }
+        }
+        if (acme_pid == 0 and pending == null and !watcher.unsettled()) {
+            var due: ?usize = null;
+            for (acme_jobs, 0..) |job, i| {
+                if (now >= job.next_check_ms and (due == null or job.next_check_ms < acme_jobs[due.?].next_check_ms)) due = i;
+            }
+            if (due) |i| {
+                const ac = acme_jobs[i].settings;
+                acme_active = ac;
+                acme_before = z.http.acme.fingerprint(ac.certificate);
+                acme_before_key = z.http.acme.fingerprint(ac.key);
+                acme_active_revision = acme_jobs[i].revision;
+                acme_pid = startAcme(gpa, ac, gen.error_fd, &encrypted_job) catch 0;
+                acme_started = now;
+                acme_jobs[i].next_check_ms = now + @as(i64, @min(ac.check_interval_seconds, 3600)) * 1000;
+                if (acme_pid == 0) eprint("zhttpd: [error] cannot start ACME renewal {s}\n", .{ac.name});
+            }
         }
     }
 }
