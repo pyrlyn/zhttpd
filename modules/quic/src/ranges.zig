@@ -141,6 +141,8 @@ pub fn RangeSet(comptime cap: usize) type {
 
         /// Removes [start, end) from the set.
         pub fn remove(s: *Self, start: u64, end: u64) void {
+            // An empty range removes nothing; it must not split a range.
+            if (start >= end) return;
             var i: usize = 0;
             while (i < s.n) {
                 const r = s.r[i];
@@ -215,4 +217,78 @@ test "range set add merge remove" {
     try std.testing.expectEqual(Range{ .start = 50, .end = 56 }, s.r[3]);
     s.addCover(0, 1);
     try std.testing.expectEqual(Range{ .start = 0, .end = 21 }, s.r[0]);
+    // Removing an empty range inside a range changes nothing, even when full.
+    const before = s;
+    s.remove(52, 52);
+    s.remove(53, 51);
+    try std.testing.expectEqualSlices(Range, before.items(), s.items());
+}
+
+test "range set matches a bitmap model under random operations" {
+    // Large enough capacity that nothing is forgotten: every operation must
+    // agree exactly with a plain membership array.
+    const span = 512;
+    var prng = std.Random.DefaultPrng.init(0x5eed_3a9e);
+    const rnd = prng.random();
+    for (0..50) |_| {
+        var s = RangeSet(span){};
+        var model: [span]bool = @splat(false);
+        for (0..300) |_| {
+            const a = rnd.uintLessThan(u64, span);
+            const b = @min(span, a + rnd.uintLessThan(u64, 40));
+            switch (rnd.uintLessThan(u8, 4)) {
+                0, 1 => {
+                    var fresh = false;
+                    for (a..b) |x| fresh = fresh or !model[x];
+                    try std.testing.expectEqual(fresh, s.add(a, b));
+                    for (a..b) |x| model[x] = true;
+                },
+                2 => {
+                    s.remove(a, b);
+                    for (a..b) |x| model[x] = false;
+                },
+                else => if (rnd.uintLessThan(u8, 8) == 0) {
+                    s.removeBelow(a);
+                    for (0..a) |x| model[x] = false;
+                },
+            }
+            // Ranges stay sorted, non-empty and separated by gaps.
+            for (s.items(), 0..) |r, i| {
+                try std.testing.expect(r.start < r.end);
+                if (i > 0) try std.testing.expect(s.items()[i - 1].end < r.start);
+            }
+            for (0..span) |x| try std.testing.expectEqual(model[x], s.contains(x));
+            const x = rnd.uintLessThan(u64, span);
+            var run: u64 = 0;
+            while (x + run < span and model[x + run]) run += 1;
+            try std.testing.expectEqual(run, s.runFrom(x));
+        }
+    }
+}
+
+test "tryAdd never forgets and addCover only over-covers" {
+    var prng = std.Random.DefaultPrng.init(0x7a11);
+    const rnd = prng.random();
+    for (0..200) |_| {
+        var exact = RangeSet(4){};
+        var cover = RangeSet(4){};
+        var model: [256]bool = @splat(false);
+        for (0..40) |_| {
+            const a = rnd.uintLessThan(u64, 250);
+            const b = a + 1 + rnd.uintLessThan(u64, 6);
+            switch (exact.tryAdd(a, b)) {
+                .full => {},
+                .added, .present => for (a..b) |x| {
+                    model[x] = true;
+                },
+            }
+            cover.addCover(a, b);
+            try std.testing.expect(exact.n <= 4 and cover.n <= 4);
+            // Everything tryAdd accepted is still there.
+            for (0..256) |x| if (model[x]) try std.testing.expect(exact.contains(x));
+            // addCover holds every byte ever added.
+            for (a..b) |x| try std.testing.expect(cover.contains(x));
+        }
+        for (0..256) |x| if (exact.contains(x)) try std.testing.expect(model[x]);
+    }
 }

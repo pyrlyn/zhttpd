@@ -647,3 +647,85 @@ test "huffman decode round trip" {
         if (n > 0) try std.testing.expectError(error.NoSpace, huffDecode(enc[0..m], dec[0 .. n - 1]));
     }
 }
+
+test "every status code round trips" {
+    var buf: [16]u8 = undefined;
+    var scratch: [16]u8 = undefined;
+    for (100..1000) |code| {
+        var e = try Encoder.init(&buf);
+        try e.status(@intCast(code));
+        var d = try Decoder.init(e.bytes(), &scratch);
+        const f = (try d.next()).?;
+        try std.testing.expectEqualStrings(":status", f.name);
+        try std.testing.expectEqual(code, try std.fmt.parseInt(u16, f.value, 10));
+        try std.testing.expect(try d.next() == null);
+    }
+}
+
+test "static table fields round trip by index and by name" {
+    var buf: [128]u8 = undefined;
+    var scratch: [128]u8 = undefined;
+    for (static_table) |sf| {
+        if (sf.name[0] == ':') continue;
+        // Exact matches become one indexed byte or two.
+        var e = try Encoder.init(&buf);
+        try e.field(sf.name, sf.value);
+        var d = try Decoder.init(e.bytes(), &scratch);
+        var f = (try d.next()).?;
+        try std.testing.expectEqualStrings(sf.name, f.name);
+        try std.testing.expectEqualStrings(sf.value, f.value);
+        try std.testing.expect(e.bytes().len <= 2 + 2);
+        // Another value keeps the name reference.
+        e = try Encoder.init(&buf);
+        try e.field(sf.name, "zz-other");
+        d = try Decoder.init(e.bytes(), &scratch);
+        f = (try d.next()).?;
+        try std.testing.expectEqualStrings(sf.name, f.name);
+        try std.testing.expectEqualStrings("zz-other", f.value);
+        try std.testing.expect(e.bytes().len < 2 + 2 + 1 + "zz-other".len + 1);
+    }
+}
+
+test "encoder reports NoSpace at every cut and decoder rejects truncation" {
+    const long_value = "a value that is long enough to need a two byte length prefix " ++
+        "because it is over one hundred and twenty seven bytes long, padded out here";
+    const Enc = struct {
+        /// Encodes the section into `out`, recording where each field ends.
+        fn run(out: []u8, ends: *[3]usize) Error!usize {
+            var e = try Encoder.init(out);
+            try e.status(200);
+            ends[0] = e.pos;
+            try e.field("content-type", "text/html");
+            ends[1] = e.pos;
+            try e.field("x-long-custom-name", long_value);
+            ends[2] = e.pos;
+            return e.pos;
+        }
+    };
+    var full: [256]u8 = undefined;
+    var ends: [3]usize = undefined;
+    const len = try Enc.run(&full, &ends);
+    const whole = full[0..len];
+    try std.testing.expect(len > 128 + 2);
+    for (0..len) |cut| {
+        var small: [256]u8 = undefined;
+        var e2: [3]usize = undefined;
+        try std.testing.expectError(error.NoSpace, Enc.run(small[0..cut], &e2));
+    }
+    // A section cut inside a field fails to decode; it never yields a
+    // partial value.
+    var scratch: [256]u8 = undefined;
+    for (2..len + 1) |cut| {
+        var d = try Decoder.init(whole[0..cut], &scratch);
+        var fields: usize = 0;
+        const res: Error!void = while (true) {
+            _ = (d.next() catch |err| break err) orelse break {};
+            fields += 1;
+        };
+        if (res) |_| {
+            // Clean ends are exactly the field boundaries.
+            const at: usize = if (fields == 0) 2 else ends[fields - 1];
+            try std.testing.expectEqual(at, cut);
+        } else |err| try std.testing.expectEqual(error.Decompression, err);
+    }
+}
