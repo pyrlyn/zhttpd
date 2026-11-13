@@ -1,0 +1,37 @@
+  Success rate:	100.00%
+  Requests/sec:	413504.0552
+    12.15%  zhttpd   [kernel.kallsyms]  [k] __wake_up_sync_key
+     7.41%  zhttpd   zhttpd             [.] server.conn.Conn.sendRaw
+     7.20%  zhttpd   zhttpd             [.] server.conn.Conn.drive
+     5.40%  zhttpd   zhttpd             [.] compiler_rt.memcpy.memcpyFast
+     4.10%  zhttpd   zhttpd             [.] aes_gcm_enc_256_kernel
+     3.31%  zhttpd   [kernel.kallsyms]  [k] el0_svc
+     2.07%  zhttpd   zhttpd             [.] h3.Server.streamReadable
+     1.79%  zhttpd   zhttpd             [.] endpoint.Endpoint.flushConn
+     1.61%  zhttpd   zhttpd             [.] udp.Socket.receive
+     1.47%  zhttpd   [kernel.kallsyms]  [k] __arch_copy_to_user
+     1.47%  zhttpd   zhttpd             [.] server.h3.onRequest
+     1.45%  zhttpd   zhttpd             [.] qpack.Encoder.field
+     1.40%  zhttpd   libc.so.6          [.] __libc_pread
+     1.22%  zhttpd   zhttpd             [.] conn.Conn.peerStream
+     1.17%  zhttpd   zhttpd             [.] conn.Conn.ackRange
+     1.11%  zhttpd   zhttpd             [.] server.handler.writeHeadTo
+     1.10%  zhttpd   [kernel.kallsyms]  [k] __arch_copy_from_user
+     1.06%  zhttpd   [kernel.kallsyms]  [k] __fget_light
+     1.06%  zhttpd   zhttpd             [.] qpack.Decoder.next
+     0.99%  zhttpd   zhttpd             [.] server.handler.serveOpenFile
+     0.96%  zhttpd   [kernel.kallsyms]  [k] invoke_syscall
+     0.88%  zhttpd   zhttpd             [.] http.request.normalizePath
+     0.87%  zhttpd   zhttpd             [.] server.conn.Conn.init
+     0.76%  zhttpd   [kernel.kallsyms]  [k] memset
+     0.74%  zhttpd   zhttpd             [.] mem.eqlBytes
+     0.73%  zhttpd   [kernel.kallsyms]  [k] get_random_u16
+     0.65%  zhttpd   [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     0.64%  zhttpd   zhttpd             [.] server.router.selectServer
+     0.57%  zhttpd   zhttpd             [.] h3.peekFrame
+     0.57%  zhttpd   zhttpd             [.] server.conn.Conn.recv
+     0.55%  zhttpd   zhttpd             [.] aes_gcm_dec_256_kernel
+     0.55%  zhttpd   zhttpd             [.] qpack.HuffCache.get
+     0.53%  zhttpd   zhttpd             [.] Io.Writer.alignBufferOptions
+     0.53%  zhttpd   zhttpd             [.] server.handler.contentHandler
+     0.53%  zhttpd   zhttpd             [.] server.handler.contentType

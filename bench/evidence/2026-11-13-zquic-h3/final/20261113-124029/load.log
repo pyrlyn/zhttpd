@@ -1,0 +1,84 @@
+--- rep 1 zhttpd-baseline 12:40:29 load=0.76
+%CPU COMMAND
+ 0.4 lima-guestagent
+ 0.1 systemd
+ 0.1 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd-journal
+--- rep 1 nginx 12:41:06 load=1.73
+%CPU COMMAND
+ 0.4 lima-guestagent
+ 0.1 systemd
+ 0.1 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd-journal
+--- rep 1 zhttpd 12:41:43 load=2.18
+%CPU COMMAND
+ 0.4 lima-guestagent
+ 0.1 containerd
+ 0.1 systemd
+ 0.0 rcu_preempt
+ 0.0 systemd-journal
+--- rep 2 zhttpd 12:42:22 load=3.09
+%CPU COMMAND
+ 0.4 lima-guestagent
+ 0.1 containerd
+ 0.1 systemd
+ 0.0 rcu_preempt
+ 0.0 systemd-journal
+--- rep 2 nginx 12:43:00 load=3.75
+%CPU COMMAND
+ 0.4 lima-guestagent
+ 0.1 containerd
+ 0.0 systemd
+ 0.0 rcu_preempt
+ 0.0 systemd-journal
+--- rep 2 zhttpd-baseline 12:43:37 load=3.07
+%CPU COMMAND
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 rcu_preempt
+ 0.0 bash
+--- rep 3 zhttpd-baseline 12:44:14 load=2.80
+%CPU COMMAND
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 rcu_preempt
+ 0.0 bash
+--- rep 3 nginx 12:44:51 load=2.46
+%CPU COMMAND
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+ 0.0 rcu_preempt
+ 0.0 bash
+--- rep 3 zhttpd 12:45:29 load=3.30
+%CPU COMMAND
+ 100 zig
+98.1 zig
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+--- rep 4 zhttpd 12:46:07 load=4.42
+%CPU COMMAND
+99.6 zig
+99.6 zig
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 systemd
+--- rep 4 nginx 12:46:45 load=4.87
+%CPU COMMAND
+99.3 zig
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd
+--- rep 4 zhttpd-baseline 12:47:23 load=4.37
+%CPU COMMAND
+ 0.5 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd
+ 0.0 bash

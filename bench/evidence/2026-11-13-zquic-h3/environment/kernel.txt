@@ -1,0 +1,6 @@
+Linux lima-zhttpd-bench 6.8.0-149-generic #149-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:37:55 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+BOOT_IMAGE=/vmlinuz-6.8.0-149-generic root=UUID=ce347aeb-963e-4e80-bee5-61b0a5774bae ro console=tty1 console=ttyAMA0
+8
+               total        used        free      shared  buff/cache   available
+Mem:            3904         483        1885           1        1703        3420
+Swap:              0           0           0

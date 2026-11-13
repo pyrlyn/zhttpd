@@ -1,0 +1,77 @@
+{
+ "h3-large-ka-c4-p16": {
+  "zhttpd-baseline": {
+   "rps": 960.7285748224683,
+   "p99_ms": 72.4375225,
+   "peak_pss_mib": 26.966796875,
+   "server_cpu_cores": 0.9960339758717167,
+   "samples": 4
+  },
+  "nginx": {
+   "rps": 555.8165433428694,
+   "p99_ms": 226.2091485,
+   "peak_pss_mib": 31.953125,
+   "server_cpu_cores": 0.9948252067431282,
+   "samples": 4
+  },
+  "zhttpd": {
+   "rps": 2076.1728733560544,
+   "p99_ms": 43.6390245,
+   "peak_pss_mib": 14.79736328125,
+   "server_cpu_cores": 0.994753118028461,
+   "samples": 4
+  },
+  "gate": true,
+  "run": "20261113-124029"
+ },
+ "h3-small-ka-c16-p16": {
+  "zhttpd-baseline": {
+   "rps": 165542.37630527111,
+   "p99_ms": 2.7914735,
+   "peak_pss_mib": 13.435546875,
+   "server_cpu_cores": 0.9719030693685013,
+   "samples": 4
+  },
+  "nginx": {
+   "rps": 237051.98109787615,
+   "p99_ms": 1.6080174999999999,
+   "peak_pss_mib": 21.890625,
+   "server_cpu_cores": 0.9654152610059585,
+   "samples": 4
+  },
+  "zhttpd": {
+   "rps": 533617.3711347464,
+   "p99_ms": 0.7731410000000001,
+   "peak_pss_mib": 9.42822265625,
+   "server_cpu_cores": 0.9237739031600019,
+   "samples": 4
+  },
+  "gate": true,
+  "run": "20261113-124029"
+ },
+ "h3-small-ka-c4-p16": {
+  "zhttpd-baseline": {
+   "rps": 164500.25436984596,
+   "p99_ms": 0.6467320000000001,
+   "peak_pss_mib": 9.455078125,
+   "server_cpu_cores": 0.9758735529281419,
+   "samples": 4
+  },
+  "nginx": {
+   "rps": 247684.88765869217,
+   "p99_ms": 0.41511549999999997,
+   "peak_pss_mib": 16.28125,
+   "server_cpu_cores": 0.960775067788961,
+   "samples": 4
+  },
+  "zhttpd": {
+   "rps": 440692.34376928007,
+   "p99_ms": 0.2430605,
+   "peak_pss_mib": 8.21142578125,
+   "server_cpu_cores": 0.9085738588064303,
+   "samples": 4
+  },
+  "gate": true,
+  "run": "20261113-124029"
+ }
+}

@@ -1,0 +1,11 @@
+           2040757      raw_syscalls:sys_enter                                                
+            127329      syscalls:sys_enter_sendmmsg                                           
+            100703      syscalls:sys_enter_recvmmsg                                           
+                 0      syscalls:sys_enter_sendmsg                                            
+                 0      syscalls:sys_enter_recvmsg                                            
+            100704      syscalls:sys_enter_epoll_pwait                                        
+           1712020      syscalls:sys_enter_pread64                                            
+                 0      syscalls:sys_enter_openat                                             
+                 0      syscalls:sys_enter_io_uring_enter                                      
+       4.000844036 seconds time elapsed
+zhttpd rps 429888
