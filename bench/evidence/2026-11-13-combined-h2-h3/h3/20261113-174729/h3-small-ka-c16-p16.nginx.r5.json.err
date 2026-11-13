@@ -1,0 +1,1 @@
+{"elapsed": 10.349279435002245, "client_cpu_cores": 1.406991287794602, "server_cpu_cores": 0.9623858416958319, "server_memory": {"samples": 204, "processes": 2, "interval_ms": 50, "peak_rss_kib": 29532, "median_rss_kib": 29220.0, "peak_pss_kib": 22050, "median_pss_kib": 21738.0}}
