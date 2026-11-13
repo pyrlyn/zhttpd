@@ -1,6 +1,6 @@
 # HTTP/2 userspace TLS record sealing — 2026-11-13
 
-This report compares the working tree of branch `perf/h2-userspace-tls-tx`
+This report compares branch `perf/h2-userspace-tls-tx`
 (based on main `a539d24`) with main `a539d24` and nginx 1.30.6. The target
 requires successful RPS at least 1.6 times nginx in every HTTP/2 scenario,
 and median sample p99 no worse than both nginx and the saved main baseline.
