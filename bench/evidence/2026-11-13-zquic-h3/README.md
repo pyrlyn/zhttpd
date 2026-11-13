@@ -14,6 +14,7 @@ built from an identical `src/` + `build.zig` tree (see `environment/source-commi
   an earlier two-repetition screen. Paired A/B ratios in the report come from shorter scratch runs
   that are not part of the final matrix.
 - `validation/`: Linux Debug and ReleaseFast protocol-suite logs, and the example `h3-server`
-  under aioquic and oha. macOS ReleaseFast was not run (see the report).
+  under aioquic and oha; macOS ReleaseFast protocol suite on Homebrew OpenSSL 3.6.4
+  (Linux on the pinned 3.5.9 is authoritative).
 
 Every measurement ran under `flock ~/zhttpd-bench.lock`, so no other session's build or bench overlapped it.

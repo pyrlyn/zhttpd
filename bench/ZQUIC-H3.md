@@ -57,11 +57,10 @@ for HTTP/3; nghttp2 remains for HTTP/2.
   duplicates, migration, reload and shutdown, plus TLS 1.3 KeyUpdate in both
   modes.
 
-macOS ReleaseFast has not been run yet. The host's Python has no `aioquic` or
-`h2` (the protocol suite imports both), and installing them needs a download
-approval that is still pending. nghttp2 1.71.0 for the macOS build was
-downloaded with approval, verified by sha256 and built into
-`deps/http-install`.
+macOS ReleaseFast (arm64) passes the same protocol suite, including both
+KeyUpdate modes. It was checked against Homebrew OpenSSL 3.6.4, not the pinned
+3.5.9, with nghttp2 1.71.0, aioquic 1.7.2 and h2 4.4.1. The Linux runs on
+OpenSSL 3.5.9 are the authoritative result.
 
 ## Method
 
