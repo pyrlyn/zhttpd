@@ -13,6 +13,7 @@ const Drive = *const fn (*anyopaque) callconv(.c) void;
 extern "c" fn zhttp_h2_new(*tls.SSL, *anyopaque, Open, Drive, Drive, *const net.SockAddr, *const net.SockAddr) ?*anyopaque;
 extern "c" fn zhttp_h2_drive(*anyopaque) c_int;
 extern "c" fn zhttp_h2_free(*anyopaque) void;
+extern "c" fn zhttp_tx_attach(*tls.SSL) c_int;
 extern "c" fn zhttp_h3_new(*tls.SSL_CTX, c_int, *anyopaque, Open, Drive, Drive, c_uint) ?*anyopaque;
 extern "c" fn zhttp_h3_drive(*anyopaque) c_int;
 extern "c" fn zhttp_h3_wait_ms(*anyopaque) c_int;
@@ -86,6 +87,11 @@ pub fn sendFile(stream: *anyopaque, fd: c_int, offset: u64, remaining: u64) net.
     if (!enabled) unreachable;
     const n = zhttp_stream_file(stream, fd, offset, remaining);
     return if (n > 0) .{ .ok = @intCast(n) } else if (n == -1) .again else .{ .err = 0 };
+}
+/// Seal HTTP/2 output records in userspace (tls_tx.c). Must run before the
+/// application write keys exist, i.e. during ALPN selection.
+pub fn attachTx(ssl: *tls.SSL) void {
+    if (enabled) _ = zhttp_tx_attach(ssl);
 }
 pub fn startH2(cn: *Conn) bool {
     if (!enabled) return false;

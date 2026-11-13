@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
@@ -23,6 +24,11 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "quic_output.h"
+
+int zhttp_tx_attached(SSL *ssl); /* tls_tx.c */
+int zhttp_tx_ready(SSL *ssl);
+void zhttp_tx_prepare_write(SSL *ssl);
+int zhttp_tx_seal_frame(SSL *ssl, const uint8_t *head, size_t hn, const uint8_t *data, size_t n);
 
 #define STREAMS 32
 #define INPUT_CAP (64 * 1024)
@@ -55,6 +61,10 @@ struct stream {
     int file_active, file_offer, file_fd;
     uint64_t file_offset, file_left;
     size_t file_sent;
+    /* Read-only window of the borrowed file, sealed straight into TLS records. */
+    uint8_t *map;
+    uint64_t map_off;
+    size_t map_len;
     char method[32], authority[1024], content_length[32], path[8193];
 };
 struct session {
@@ -65,6 +75,9 @@ struct session {
     uint8_t *h2_output;
     size_t h2_output_len, h2_output_pos;
     int h2_write_blocked;
+    /* tx: records are sealed by tls_tx.c, which batches socket writes.
+     * h2_large selects the larger per-turn budget for that path. */
+    int tx, h2_large;
     BIO *h2_buffer;
     stream *streams;
     unsigned nstreams;
@@ -104,7 +117,38 @@ static _Thread_local size_t cached_output_bytes;
 static _Thread_local unsigned quic_listeners;
 #endif
 
+#define MAP_WINDOW ((size_t)4 << 20)
+static void unmap_file(stream *p) {
+#ifdef __linux__
+    if (p->map) munmap(p->map, p->map_len);
+#endif
+    p->map = NULL; p->map_len = 0;
+}
+/* The mapping outlives a close of the descriptor, so ownership of the window
+ * stays with the stream. NULL selects the pread path. */
+static const uint8_t *map_file(stream *p, size_t n) {
+#ifdef __linux__
+    uint64_t at = p->file_offset;
+    if (p->map && at >= p->map_off && at + n <= p->map_off + p->map_len)
+        return p->map + (at - p->map_off);
+    unmap_file(p);
+    static size_t page;
+    if (!page) page = (size_t)sysconf(_SC_PAGESIZE);
+    uint64_t start = at & ~(uint64_t)(page - 1);
+    uint64_t want = at - start + p->file_left;
+    size_t len = want < MAP_WINDOW ? (size_t)want : MAP_WINDOW;
+    if (at - start + n > len) return NULL;
+    void *m = mmap(NULL, len, PROT_READ, MAP_SHARED | MAP_POPULATE, p->file_fd, (off_t)start);
+    if (m == MAP_FAILED) return NULL;
+    p->map = m; p->map_off = start; p->map_len = len;
+    return p->map + (at - start);
+#else
+    (void)p; (void)n;
+    return NULL;
+#endif
+}
 static void free_stream(stream *p) {
+    unmap_file(p);
     free(p->headers); free(p->input); free(p->output); free(p);
 }
 
@@ -172,6 +216,7 @@ static void sweep(session *s) {
             nghttp3_conn_set_max_client_streams_bidi(s->h3, STREAMS + s->completed_bidi);
         }
         SSL_free(p->quic);
+        unmap_file(p);
         if (p->headers && cached_streams < STREAMS && p->output_cap <= OUTPUT_CACHE_CAP - cached_output_bytes) {
             p->next = stream_cache; stream_cache = p; ++cached_streams;
             cached_output_bytes += p->output_cap;
@@ -327,6 +372,7 @@ void zhttp_stream_finish(void *ptr) {
             nghttp2_submit_rst_stream(p->owner->h2, 0, (int32_t)p->id, NGHTTP2_INTERNAL_ERROR);
         p->file_active = 0; p->file_fd = -1;
     }
+    unmap_file(p);
     p->request = NULL; p->eof = 1; p->owner->activity = 1;
 }
 /* -1 waits for flow control, -2 reports an I/O error. Positive values
@@ -419,43 +465,45 @@ static int hop_header(const char *name, size_t len) {
 /* The Zig stream connection emits HTTP/1.0 framing: no chunked response body.
  * Libraries copy these header fields before this scratch buffer is reused. */
 static int response_headers(stream *p) {
-    uint8_t *end = NULL;
-    for (size_t i = 3; i < p->output_len && i < OUTPUT_CAP; ++i)
-        if (!memcmp(p->output + i - 3, "\r\n\r\n", 4)) { end = p->output + i + 1; break; }
-    if (!end) return p->output_len >= OUTPUT_CAP ? -1 : 0;
-    p->output[p->output_len] = 0;
-    size_t head = (size_t)(end - p->output);
-    if (head < 16 || memcmp(p->output, "HTTP/1.", 7)) return -1;
+    size_t scan = p->output_len < OUTPUT_CAP ? p->output_len : OUTPUT_CAP;
+    uint8_t *lim = p->output + scan;
+    /* One memchr per line; the block ends at the first empty CRLF line.
+     * Names are lowercased in place, which is idempotent if incomplete. */
+    uint8_t *nl = memchr(p->output, '\n', scan);
+    if (!nl) return p->output_len >= OUTPUT_CAP ? -1 : 0;
+    if (nl - p->output < 13 || nl[-1] != '\r' || memcmp(p->output, "HTTP/1.", 7)) return -1;
     char status[4]; memcpy(status, p->output + 9, 3); status[3] = 0;
-    if (status[0] == '1') { /* discard informational headers (Expect is stripped) */
-        memmove(p->output, end, p->output_len - head); p->output_len -= head;
+    /* Informational headers are discarded (Expect is stripped), not parsed. */
+    int h2 = p->owner->h2 != NULL, info = status[0] == '1';
+    nghttp2_nv n2[100]; nghttp3_nv n3[100]; size_t count = 1;
+    if (h2) n2[0] = (nghttp2_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
+    else n3[0] = (nghttp3_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
+    for (;;) {
+        uint8_t *line = nl + 1;
+        if (lim - line < 2) return p->output_len >= OUTPUT_CAP ? -1 : 0;
+        if (line[0] == '\r' && line[1] == '\n') { nl = line + 1; break; }
+        nl = memchr(line, '\n', (size_t)(lim - line));
+        if (!nl) return p->output_len >= OUTPUT_CAP ? -1 : 0;
+        if (nl[-1] != '\r') return -1;
+        if (info) continue;
+        uint8_t *v = memchr(line, ':', (size_t)(nl - 1 - line)); if (!v) return -1;
+        size_t name_len = (size_t)(v - line);
+        ++v; while (v < nl - 1 && (*v == ' ' || *v == '\t')) ++v;
+        size_t value_len = (size_t)(nl - 1 - v);
+        for (size_t i = 0; i < name_len; ++i) if (line[i] >= 'A' && line[i] <= 'Z') line[i] += 'a' - 'A';
+        if (hop_header((const char *)line, name_len)) continue;
+        if (count == 100) return -1;
+        if (h2) n2[count] = (nghttp2_nv){line, v, name_len, value_len, 0};
+        else n3[count] = (nghttp3_nv){line, v, name_len, value_len, 0};
+        ++count;
+    }
+    size_t head = (size_t)(nl + 1 - p->output);
+    if (info) {
+        memmove(p->output, nl + 1, p->output_len - head); p->output_len -= head;
         return response_headers(p);
     }
-    nghttp2_nv n2[100]; nghttp3_nv n3[100]; size_t count = 1;
-    n2[0] = (nghttp2_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
-    n3[0] = (nghttp3_nv){(uint8_t *)":status", (uint8_t *)status, 7, 3, 0};
-    char *line = strstr((char *)p->output, "\r\n");
-    if (!line) return -1;
-    line += 2;
-    while ((uint8_t *)line < end - 2) {
-        char *nl = strstr(line, "\r\n");
-        if (!nl) return -1;
-        *nl = 0;
-        char *v = strchr(line, ':'); if (!v) return -1;
-        size_t name_len = (size_t)(v - line);
-        *v++ = 0; while (*v == ' ' || *v == '\t') ++v;
-        size_t value_len = (size_t)(nl - v);
-        for (char *c = line; *c; ++c) if (*c >= 'A' && *c <= 'Z') *c += 'a' - 'A';
-        if (!hop_header(line, name_len)) {
-            if (count == 100) return -1;
-            n2[count] = (nghttp2_nv){(uint8_t *)line, (uint8_t *)v, name_len, value_len, 0};
-            n3[count] = (nghttp3_nv){(uint8_t *)line, (uint8_t *)v, name_len, value_len, 0};
-            ++count;
-        }
-        line = nl + 2;
-    }
     int rv;
-    if (p->owner->h2) {
+    if (h2) {
         nghttp2_data_provider2 dr = {{.ptr = p}, h2_read};
         rv = nghttp2_submit_response2(p->owner->h2, (int32_t)p->id, n2, count, &dr);
     } else {
@@ -464,7 +512,7 @@ static int response_headers(stream *p) {
     }
     if (rv) return -1;
     p->submitted = 1;
-    memmove(p->output, end, p->output_len - head); p->output_len -= head;
+    memmove(p->output, nl + 1, p->output_len - head); p->output_len -= head;
     return 0;
 }
 static int pump_backend(stream *p) {
@@ -550,10 +598,25 @@ static int h2_send_data(nghttp2_session *h, nghttp2_frame *frame, const uint8_t 
     if (p->file_offer && p->file_fd < 0) return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
     if (s->h2_write_blocked || H2_OUTPUT_CAP - s->h2_output_len < n + 9)
         return NGHTTP2_ERR_WOULDBLOCK;
+    /* With every earlier byte already handed to SSL_write, a file DATA frame
+     * becomes one record sealed from the page cache: no pread, no plaintext copy. */
+    int direct = p->file_offer && s->tx && !s->h2_output_len && zhttp_tx_ready(s->ssl);
+    const uint8_t *src = direct ? map_file(p, n) : NULL;
+    if (src) {
+        int r = zhttp_tx_seal_frame(s->ssl, head, 9, src, n);
+        if (!r) return NGHTTP2_ERR_WOULDBLOCK;
+        if (r < 0) { unmap_file(p); return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE; }
+        s->h2_large = 1;
+        p->file_offset += n; p->file_left -= n; p->file_sent += n;
+        p->file_offer = 0; p->offered = 0; s->activity = 1;
+        if (!p->file_left) unmap_file(p);
+        return 0;
+    }
     /* Large responses otherwise issue one socket write per TLS record.
      * Buffer ciphertext below SSL, so KeyUpdate and record retry ownership
      * remain with OpenSSL. Small-only connections allocate no extra buffer. */
-    if (!s->h2_buffer) {
+    if (s->tx) s->h2_large = 1;
+    else if (!s->h2_buffer) {
         BIO *buffer = BIO_new(BIO_f_buffer());
         if (!buffer) return NGHTTP2_ERR_CALLBACK_FAILURE;
         if (!BIO_set_write_buffer_size(buffer, 96 * 1024)) {
@@ -578,11 +641,13 @@ static int h2_send_data(nghttp2_session *h, nghttp2_frame *frame, const uint8_t 
         }
         p->file_offset += n; p->file_left -= n; p->file_sent += n;
         p->file_offer = 0;
+        if (!p->file_left) unmap_file(p);
     } else memcpy(body_out, p->output + p->output_pos - n, n);
     s->h2_output_len += n + 9; s->activity = 1; p->offered = 0;
     return 0;
 }
 static int flush_h2(session *s) {
+    if (s->tx && s->h2_output_pos < s->h2_output_len) zhttp_tx_prepare_write(s->ssl);
     while (s->h2_output_pos < s->h2_output_len) {
         ERR_clear_error();
         int r = SSL_write(s->ssl, s->h2_output + s->h2_output_pos,
@@ -601,6 +666,7 @@ void *zhttp_h2_new(SSL *ssl, void *user, open_request open, drive_request drive,
                    const struct sockaddr *peer, const struct sockaddr *local) {
     session *s = calloc(1, sizeof(*s)); if (!s) return NULL;
     s->ssl = ssl; s->user = user; s->open = open; s->drive = drive; s->close = close;
+    s->tx = zhttp_tx_attached(ssl);
     memcpy(&s->peer, peer, peer->sa_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
     memcpy(&s->local, local, local->sa_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
     nghttp2_session_callbacks *cb = NULL; nghttp2_option *opt = NULL;
@@ -626,6 +692,20 @@ void *zhttp_h2_new(SSL *ssl, void *user, open_request open, drive_request drive,
 fail:
     nghttp2_session_callbacks_del(cb); nghttp2_option_del(opt); nghttp2_session_del(s->h2);
     free(s->h2_output); free(s); return NULL;
+}
+/* Sealed records wait in the write BIO's batch until the end of the turn. */
+static __attribute__((noinline)) int finish_tx_h2(session *s, int activity) {
+    BIO *b = SSL_get_wbio(s->ssl);
+    size_t pending = (size_t)BIO_wpending(b);
+    if (pending) {
+        ERR_clear_error();
+        if (BIO_flush(b) <= 0 && !BIO_should_retry(b)) return 0;
+        size_t remaining = (size_t)BIO_wpending(b);
+        activity |= remaining < pending;
+        pending = remaining;
+    }
+    if (!pending && !s->nstreams && !s->h2_output_len && !s->h2_write_blocked) s->h2_large = 0;
+    return pending || s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
 }
 /* Keep large-response BIO bookkeeping out of the small-response hot path. */
 static __attribute__((noinline)) int finish_buffered_h2(session *s, int activity) {
@@ -656,7 +736,7 @@ int zhttp_h2_drive(void *ptr) {
     int activity = s->activity;
     /* Select the budget once. A newly buffered connection gets the larger
      * budget on its next active turn; short responses keep the fixed loop. */
-    const int passes = s->h2_buffer ? 64 : 4;
+    const int passes = s->h2_buffer || s->h2_large ? 64 : 4;
     for (int pass = 0; pass < passes; ++pass) {
         s->activity = 0;
         if (flush_h2(s)) return 0;
@@ -667,6 +747,7 @@ int zhttp_h2_drive(void *ptr) {
         activity |= s->activity;
         if (!s->activity) break;
     }
+    if (s->tx) return finish_tx_h2(s, activity);
     if (s->h2_buffer) return finish_buffered_h2(s, activity);
     return s->h2_output_len || nghttp2_session_want_read(s->h2) || nghttp2_session_want_write(s->h2) ? 1 + activity : 0;
 }

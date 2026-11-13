@@ -135,6 +135,7 @@ fn alpn(ssl: *SSL, out: *[*]const u8, outlen: *u8, input: [*]const u8, len: c_ui
             if (std.mem.eql(u8, input[i .. i + n], protocol_name)) {
                 out.* = input + i;
                 outlen.* = n;
+                if (std.mem.eql(u8, protocol_name, "h2")) @import("multiplex.zig").attachTx(ssl);
                 return SSL_TLSEXT_ERR_OK;
             }
             i += n;
