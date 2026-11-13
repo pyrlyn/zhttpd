@@ -12,17 +12,14 @@ const multiplex = @import("multiplex.zig");
 const Conn = @import("conn.zig").Conn;
 const Worker = @import("worker.zig").Worker;
 const Listener = @import("worker.zig").Listener;
+const hd = @import("h3_head.zig");
 
 const zh3 = zquic.h3;
 const QAddr = zquic.conn.Addr;
 const Request = zh3.Request;
 
-/// Request head conversion limits (match the HTTP/2 bridge).
-const max_fields = 96;
-const head_cap = 14 * 1024;
-const input_cap = 64 * 1024;
 /// Largest HTTP/1.x response head accepted from the engine.
-const response_head_cap = 32 * 1024;
+const response_head_cap = hd.response_head_cap;
 /// Receive batches (32 datagrams each) per readiness event.
 const receive_batches = 8;
 const pool_max = 256;
@@ -57,6 +54,11 @@ pub const Stream = struct {
     /// Declared request Content-Length still expected.
     body_left: ?u64 = null,
     submitted: bool = false,
+    /// Upper bound of the validated request head not yet handed to the
+    /// engine (0: none). It is written straight into the engine's buffer.
+    head_bound: usize = 0,
+    authority: []const u8 = "",
+    content_length: ?[]const u8 = null,
 };
 
 // ---------------------------------------------------------------- addresses
@@ -260,92 +262,37 @@ fn onAborted(_: ?*anyopaque, r: *Request, _: u64) void {
 
 // ---------------------------------------------------------------- request head
 
-fn eqlAny(name: []const u8, comptime list: []const []const u8) bool {
-    inline for (list) |x| if (name.len == x.len and std.mem.eql(u8, name, x)) return true;
-    return false;
-}
-
-const request = @import("../http/request.zig");
-
-/// No NUL, CR or LF: a value copied into the HTTP/1.1 text cannot split a line.
-fn safeValue(v: []const u8) bool {
-    return !request.anyByte(v, isLineBreak);
-}
-
-fn isLineBreak(x: anytype) @TypeOf(x == x) {
-    const T = @TypeOf(x);
-    return request.isNulOrCr(x) | (x == @as(T, @splat('\n')));
-}
-
-/// No control characters, space or DEL in the request target.
-fn safePath(v: []const u8) bool {
-    return !request.anyByte(v, request.isCtlOrSpace);
-}
-
-/// Converts the decoded request into HTTP/1.1 text. False: malformed.
+/// Validates the decoded request for conversion into HTTP/1.1 text, which
+/// `read` writes later. False: malformed.
 fn convert(st: *Stream, r: *Request) bool {
-    const a = st.server.alloc;
-    if (r.method.len == 0 or r.method.len >= 32 or r.path.len == 0 or r.path.len > 8192) return false;
-    if (!std.mem.eql(u8, r.scheme, "https")) return false;
-    if (!safeValue(r.method) or !safeValue(r.authority)) return false;
-    if (!safePath(r.path)) return false;
-    var authority = r.authority;
-    var content_length: ?[]const u8 = null;
-    var size: usize = r.method.len + r.path.len + authority.len + 64;
-    const fields = r.headers();
-    if (fields.len + 4 > max_fields) return false;
-    for (fields) |f| {
-        if (!safeValue(f.value)) return false;
-        if (eqlAny(f.name, &.{ "connection", "transfer-encoding", "upgrade", "keep-alive", "proxy-connection" })) return false;
-        if (eqlAny(f.name, &.{"host"})) {
-            if (authority.len == 0) {
-                authority = f.value;
-            } else if (!std.mem.eql(u8, authority, f.value)) return false;
-        } else if (eqlAny(f.name, &.{"te"})) {
-            if (!std.mem.eql(u8, f.value, "trailers")) return false;
-        } else if (eqlAny(f.name, &.{"content-length"})) {
-            if (content_length != null or f.value.len == 0 or f.value.len >= 20) return false;
-            for (f.value) |ch| if (ch < '0' or ch > '9') return false;
-            content_length = f.value;
-        }
-        size += f.name.len + f.value.len + 4;
-    }
-    if (authority.len == 0 or authority.len >= 1024) return false;
-    if (size > head_cap) return false;
-    const ended = r.ended();
-    st.chunked = content_length == null and !ended;
-    if (content_length) |cl| st.body_left = std.fmt.parseInt(u64, cl, 10) catch return false;
-    st.body_end = content_length == null and ended;
-
-    st.input.ensureTotalCapacity(a, size + 64) catch return false;
-    const out = &st.input;
-    out.appendSliceAssumeCapacity(r.method);
-    out.appendAssumeCapacity(' ');
-    out.appendSliceAssumeCapacity(r.path);
-    out.appendSliceAssumeCapacity(" HTTP/1.1\r\nHost: ");
-    out.appendSliceAssumeCapacity(authority);
-    out.appendSliceAssumeCapacity("\r\nConnection: close\r\n");
-    if (st.chunked) out.appendSliceAssumeCapacity("Transfer-Encoding: chunked\r\n");
-    if (content_length) |cl| {
-        out.appendSliceAssumeCapacity("Content-Length: ");
-        out.appendSliceAssumeCapacity(cl);
-        out.appendSliceAssumeCapacity("\r\n");
-    }
-    for (fields) |f| {
-        if (eqlAny(f.name, &.{ "host", "te", "content-length", "expect" })) continue;
-        out.appendSliceAssumeCapacity(f.name);
-        out.appendSliceAssumeCapacity(": ");
-        out.appendSliceAssumeCapacity(f.value);
-        out.appendSliceAssumeCapacity("\r\n");
-    }
-    out.appendSliceAssumeCapacity("\r\n");
+    const p = hd.plan(r) orelse return false;
+    st.chunked = p.chunked;
+    st.body_left = p.body_left;
+    st.body_end = p.body_end;
+    st.authority = p.authority;
+    st.content_length = p.content_length;
+    st.head_bound = p.bound;
     return true;
+}
+
+/// Writes the HTTP/1.1 request head; `out` holds at least `st.head_bound` bytes.
+fn emitHead(st: *Stream, r: *Request, out: []u8) usize {
+    const n = hd.emit(r, st.authority, st.chunked, st.content_length, out[0..st.head_bound]);
+    st.head_bound = 0;
+    return n;
 }
 
 // ---------------------------------------------------------------- engine I/O
 
 pub fn read(st: *Stream, buf: []u8) net.Io {
     const r = st.req orelse return .{ .err = 0 };
+    if (st.head_bound != 0) {
+        if (buf.len >= st.head_bound) return .{ .ok = emitHead(st, r, buf) };
+        // Smaller engine buffer: stage the head and hand it over in parts.
+        st.input.ensureUnusedCapacity(st.server.alloc, st.head_bound) catch return .{ .err = 0 };
+        const n = emitHead(st, r, st.input.unusedCapacitySlice());
+        st.input.items.len += n;
+    }
     if (st.input_pos < st.input.items.len) {
         const n = @min(buf.len, st.input.items.len - st.input_pos);
         @memcpy(buf[0..n], st.input.items[st.input_pos..][0..n]);
@@ -416,6 +363,17 @@ pub fn write(st: *Stream, data: []const u8) net.Io {
 
 /// Collects the HTTP/1.x response head; consumes bytes up to its end only.
 fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
+    // The engine normally writes the whole head at once: submit it from its
+    // buffer in one pass. Anything else takes the collecting path below.
+    if (st.head.items.len == 0) switch (submitDirect(r, data)) {
+        .sent => |end| {
+            st.submitted = true;
+            return .{ .ok = end };
+        },
+        .blocked => return .again,
+        .invalid => return .{ .err = 0 },
+        .fallback => {},
+    };
     const a = st.server.alloc;
     const old = st.head.items.len;
     const take = @min(data.len, response_head_cap - old);
@@ -423,7 +381,7 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     if (st.head.capacity - old >= take) {
         st.head.appendSliceAssumeCapacity(data[0..take]);
     } else st.head.appendSlice(a, data[0..take]) catch return .{ .err = 0 };
-    const end = headEnd(st.head.items, old -| 3) orelse return .{ .ok = take };
+    const end = hd.headEnd(st.head.items, old -| 3) orelse return .{ .ok = take };
     st.head.shrinkRetainingCapacity(end);
     const accepted = end - old;
     switch (submit(st, r)) {
@@ -441,71 +399,31 @@ fn writeHead(st: *Stream, r: *Request, data: []const u8) net.Io {
     return .{ .ok = accepted };
 }
 
-const ByteIter = request.ByteIter;
+const Direct = union(enum) { sent: usize, blocked, invalid, fallback };
 
-/// Offset just past the first "\r\n\r\n" at or after `from`.
-fn headEnd(h: []const u8, from: usize) ?usize {
-    var nl: ByteIter = .{ .h = h, .c = '\n' };
-    var i = from;
-    while (nl.next(i)) |j| {
-        if (j >= 3 and h[j - 1] == '\r' and h[j - 2] == '\n' and h[j - 3] == '\r' and j - 3 >= from) return j + 1;
-        i = j + 1;
-    }
-    return null;
-}
-
-/// ASCII-lowercases `h[at..][0..len]`, 16 bytes at a time; whole vectors
-/// may cover bytes past the name (written back unchanged).
-fn lower(h: []u8, at: usize, len: usize) void {
-    const V = @Vector(16, u8);
-    var i = at;
-    const end = at + len;
-    while (i < end and i + 16 <= h.len) : (i += 16) {
-        const v: V = h[i..][0..16].*;
-        const idx = std.simd.iota(u8, 16);
-        const room: V = @splat(@intCast(@min(end - i, 16)));
-        const up = (v -% @as(V, @splat('A'))) < @as(V, @splat(26));
-        const lowered = @select(u8, up, v | @as(V, @splat(0x20)), v);
-        h[i..][0..16].* = @select(u8, idx < room, lowered, v);
-    }
-    while (i < end) : (i += 1) h[i] = std.ascii.toLower(h[i]);
-}
-
-fn hopHeader(name: []const u8) bool {
-    return eqlAny(name, &.{ "connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "trailer" });
+/// Submits a complete, well-formed final response head found at the start of
+/// `data` without collecting it (see `hd.parseDirect`). `.fallback` sends
+/// nothing; the collecting path then applies the same rules as before. A
+/// field section the transport rejects is `.invalid`, as on that path.
+fn submitDirect(r: *Request, data: []const u8) Direct {
+    var fields: [hd.max_response_fields]zh3.Field = undefined;
+    var names: [hd.names_cap + 16]u8 = undefined;
+    const f = hd.parseDirect(zh3.Field, data, &fields, &names) orelse return .fallback;
+    r.sendHeaders(f.status, fields[0..f.count], false) catch |e| return switch (e) {
+        error.WouldBlock => .blocked,
+        else => .invalid,
+    };
+    return .{ .sent = f.end };
 }
 
 fn submit(st: *Stream, r: *Request) enum { sent, informational, blocked, invalid } {
-    const h = st.head.items;
-    if (h.len < 16 or !std.mem.startsWith(u8, h, "HTTP/1.")) return .invalid;
-    const status = std.fmt.parseInt(u16, h[9..12], 10) catch return .invalid;
-    if (status < 100 or status > 999) return .invalid;
-    if (status < 200) return .informational;
-    var fields: [100]zh3.Field = undefined;
-    var count: usize = 0;
-    // Lowercasing names below changes no '\n' or ':' byte, so the iterators'
-    // cached masks stay valid.
-    var nls: ByteIter = .{ .h = h, .c = '\n' };
-    var colons: ByteIter = .{ .h = h, .c = ':' };
-    var pos = (nls.next(0) orelse return .invalid) + 1;
-    while (pos + 2 < h.len) {
-        const nl = nls.next(pos) orelse return .invalid;
-        if (nl == pos or h[nl - 1] != '\r') return .invalid;
-        const line = h[pos .. nl - 1];
-        const at = colons.next(pos) orelse return .invalid;
-        if (at >= nl - 1) return .invalid;
-        const colon = at - pos;
-        pos = nl + 1;
-        const name = line[0..colon];
-        lower(h, nl - 1 - line.len, colon);
-        var v = colon + 1;
-        while (v < line.len and (line[v] == ' ' or line[v] == '\t')) v += 1;
-        if (hopHeader(name)) continue;
-        if (count == fields.len) return .invalid;
-        fields[count] = .{ .name = name, .value = line[v..] };
-        count += 1;
-    }
-    r.sendHeaders(status, fields[0..count], false) catch |e| return switch (e) {
+    var fields: [hd.max_response_fields]zh3.Field = undefined;
+    const f = switch (hd.parseCollected(zh3.Field, st.head.items, &fields)) {
+        .final => |f| f,
+        .informational => return .informational,
+        .invalid => return .invalid,
+    };
+    r.sendHeaders(f.status, fields[0..f.count], false) catch |e| return switch (e) {
         error.WouldBlock => .blocked,
         else => .invalid,
     };

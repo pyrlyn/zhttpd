@@ -127,3 +127,50 @@ test "varint round trip (RFC 9000 A.1)" {
     var r = Reader{ .buf = &[_]u8{0x40} };
     try std.testing.expectError(error.Truncated, r.varint());
 }
+
+test "reader reports truncation instead of reading past the end" {
+    // Every varint length, cut at every shorter prefix.
+    var out: [8]u8 = undefined;
+    for ([_]u64{ 37, 15293, 494878333, 151288809941952652 }) |v| {
+        const n = putVarint(&out, v);
+        for (0..n) |cut| {
+            var r = Reader{ .buf = out[0..cut] };
+            try std.testing.expectError(error.Truncated, r.varint());
+            try std.testing.expectEqual(@as(usize, 0), r.pos);
+        }
+    }
+    var r = Reader{ .buf = &.{ 1, 2, 3 } };
+    try std.testing.expectError(error.Truncated, r.int(u32));
+    try std.testing.expectEqual(@as(u16, 0x0102), try r.int(u16));
+    try std.testing.expectError(error.Truncated, r.bytes(2));
+    try std.testing.expectEqualSlices(u8, &.{3}, try r.bytes(1));
+    try std.testing.expect(r.done());
+    try std.testing.expectError(error.Truncated, r.byte());
+    try std.testing.expectEqual(@as(usize, 0), (Reader{ .buf = &.{} }).left());
+}
+
+test "fixed-width varints decode to the same value" {
+    var buf: [32]u8 = undefined;
+    for ([_]u64{ 0, 1, 63 }) |v| for ([_]usize{ 1, 2, 4, 8 }) |width| {
+        var w = Writer{ .buf = &buf };
+        w.varintWidth(v, width);
+        w.byte(0xee);
+        try std.testing.expectEqual(width + 1, w.pos);
+        var r = Reader{ .buf = buf[0..w.pos] };
+        try std.testing.expectEqual(v, try r.varint());
+        try std.testing.expectEqual(@as(u8, 0xee), try r.byte());
+    };
+    // Mixed writer output reads back in order.
+    var w = Writer{ .buf = &buf };
+    w.varint(max_varint);
+    w.int(u16, 0xbeef);
+    w.bytes("ok");
+    w.varint(16384);
+    try std.testing.expectEqual(@as(usize, 8 + 2 + 2 + 4), w.pos);
+    var r = Reader{ .buf = buf[0..w.pos] };
+    try std.testing.expectEqual(max_varint, try r.varint());
+    try std.testing.expectEqual(@as(u16, 0xbeef), try r.int(u16));
+    try std.testing.expectEqualStrings("ok", try r.bytes(2));
+    try std.testing.expectEqual(@as(u64, 16384), try r.varint());
+    try std.testing.expect(r.done());
+}

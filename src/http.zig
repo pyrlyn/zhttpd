@@ -34,6 +34,7 @@ pub const server = struct {
     pub const proxy = @import("server/proxy.zig");
     pub const worker = @import("server/worker.zig");
     pub const filecache = @import("server/filecache.zig");
+    pub const h3_head = @import("server/h3_head.zig");
 };
 test {
     std.testing.refAllDecls(server);

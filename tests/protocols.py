@@ -23,7 +23,7 @@ from aioquic.buffer import encode_uint_var
 from aioquic.h3.events import HeadersReceived, DataReceived
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.connection import QuicConnection
-from aioquic.quic.events import ConnectionTerminated
+from aioquic.quic.events import ConnectionTerminated, StreamReset
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get('ZHTTPD', ROOT / 'zig-out/bin/zhttpd')).resolve()
@@ -44,6 +44,15 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == '/proxy/echo':
+            body = b'echo'
+            self.send_response(200)
+            self.send_header('X-Echo', self.headers.get('X-Custom', ''))
+            self.send_header('X-Mixed-Case', 'Keep Case')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header('Transfer-Encoding', 'chunked')
         self.end_headers()
@@ -284,7 +293,7 @@ class H3Client(QuicConnectionProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.http = ClientH3Connection(self._quic)
-        self.results, self.waiters = {}, {}
+        self.results, self.waiters, self.fields = {}, {}, {}
         self.terminated = asyncio.Event()
         self.close_code = None
 
@@ -295,8 +304,13 @@ class H3Client(QuicConnectionProtocol):
             for f in self.waiters.values():
                 if not f.done():
                     f.set_exception(AssertionError(event))
+        if isinstance(event, StreamReset) and event.stream_id in self.waiters:
+            f = self.waiters[event.stream_id]
+            if not f.done():
+                f.set_result((-event.error_code, b''))
         for e in self.http.handle_event(event):
             if isinstance(e, HeadersReceived):
+                self.fields[e.stream_id] = e.headers
                 hs = dict(e.headers)
                 self.results[e.stream_id][0] = int(hs[b':status'])
                 assert b'connection' not in hs and b'transfer-encoding' not in hs
@@ -305,13 +319,13 @@ class H3Client(QuicConnectionProtocol):
             if isinstance(e, (HeadersReceived, DataReceived)) and e.stream_ended:
                 self.waiters[e.stream_id].set_result(self.results[e.stream_id])
 
-    def request(self, path, method='GET', data=b'', length=True, host='localhost'):
+    def request(self, path, method='GET', data=b'', length=True, host='localhost', extra=()):
         sid = self._quic.get_next_available_stream_id()
         self.results[sid] = [0, bytearray()]
         self.waiters[sid] = asyncio.get_running_loop().create_future()
         if method == "HEAD":
             self.http.head_streams.add(sid)
-        self.http.send_headers(sid, headers(path, method, data, length, host), end_stream=not data)
+        self.http.send_headers(sid, headers(path, method, data, length, host) + list(extra), end_stream=not data)
         if data:
             self.http.send_data(sid, data, end_stream=True)
         self.transmit()
@@ -342,6 +356,41 @@ async def h3_exchange(port):
         assert status == 200 and body == LARGE
         await asyncio.wait_for(client.terminated.wait(), 5)
         assert client.close_code == 0x100, client.close_code
+
+
+async def h3_headers(port):
+    """Response fields come back lowercased without hop-by-hop fields, request
+    fields reach the engine, and a malformed request resets only its stream."""
+    cfg = QuicConfiguration(is_client=True, alpn_protocols=['h3'], verify_mode=ssl.CERT_NONE)
+    async with connect('127.0.0.1', port, configuration=cfg, create_protocol=H3Client) as client:
+        sid = client._quic.get_next_available_stream_id()
+        status, body = await asyncio.wait_for(client.request('/large'), 10)
+        assert status == 200 and body == LARGE
+        fields = client.fields[sid]
+        names = [n for n, _ in fields]
+        assert all(n == n.lower() for n in names), names
+        hs = dict(fields)
+        assert hs[b'content-length'] == str(len(LARGE)).encode(), hs
+        assert b'content-type' in hs and b'last-modified' in hs, hs
+        for hop in (b'connection', b'keep-alive', b'transfer-encoding', b'upgrade', b'proxy-connection'):
+            assert hop not in hs, (hop, hs)
+
+        sid = client._quic.get_next_available_stream_id()
+        status, body = await asyncio.wait_for(client.request(
+            '/proxy/echo', extra=[(b'x-custom', b'hello h3'), (b'te', b'trailers')]), 10)
+        assert status == 200 and body == b'echo', (status, body)
+        hs = dict(client.fields[sid])
+        assert hs[b'x-echo'] == b'hello h3', hs
+        assert hs[b'x-mixed-case'] == b'Keep Case', hs
+
+        # Connection-specific request fields are malformed (RFC 9114 4.2):
+        # H3_MESSAGE_ERROR on that stream, and the connection stays usable.
+        for bad in ([(b'connection', b'close')], [(b'transfer-encoding', b'chunked')],
+                    [(b'te', b'gzip')], [(b'content-length', b'1'), (b'content-length', b'2')]):
+            status, _ = await asyncio.wait_for(client.request('/', extra=bad), 10)
+            assert status == -0x10e, (bad, status)
+        status, body = await asyncio.wait_for(client.request('/'), 10)
+        assert status == 200 and body == b'HTTP/3.0 https 127.0.0.1'
 
 
 async def h3_loss_and_reordering(port):
@@ -622,6 +671,7 @@ http {{
             h2_truncated_file(port, temp / 'truncated')
             h2_invalid_streams(port)
             asyncio.run(h3_exchange(port))
+            asyncio.run(h3_headers(port))
             asyncio.run(h3_loss_backpressure(port))
             asyncio.run(h3_loss_and_reordering(port))
             asyncio.run(h3_workers(port))
