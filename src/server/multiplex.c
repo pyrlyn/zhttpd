@@ -600,8 +600,9 @@ static int h2_send_data(nghttp2_session *h, nghttp2_frame *frame, const uint8_t 
         return NGHTTP2_ERR_WOULDBLOCK;
     /* With every earlier byte already handed to SSL_write, a file DATA frame
      * becomes one record sealed from the page cache: no pread, no plaintext copy. */
-    const uint8_t *src;
-    if (p->file_offer && s->tx && !s->h2_output_len && zhttp_tx_ready(s->ssl) && (src = map_file(p, n))) {
+    int direct = p->file_offer && s->tx && !s->h2_output_len && zhttp_tx_ready(s->ssl);
+    const uint8_t *src = direct ? map_file(p, n) : NULL;
+    if (src) {
         int r = zhttp_tx_seal_frame(s->ssl, head, 9, src, n);
         if (!r) return NGHTTP2_ERR_WOULDBLOCK;
         if (r < 0) { unmap_file(p); return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE; }
