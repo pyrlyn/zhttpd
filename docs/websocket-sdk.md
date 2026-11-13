@@ -18,7 +18,7 @@ mise exec -- zig cc -I zig-out/include examples/websocket/echo.c \
 ```
 
 Если SDK собран с TLS/HTTP2/HTTP3, при внешней C/C++ компоновке дополнительно
-подключите libssl, libcrypto, libnghttp2, libnghttp3 той же сборки. Примеры
+подключите libssl, libcrypto и libnghttp2 той же сборки. Примеры
 в build.zig делают это автоматически.
 
 Для Zig подключите экспортированный build-модуль `websocket_sdk`; API:

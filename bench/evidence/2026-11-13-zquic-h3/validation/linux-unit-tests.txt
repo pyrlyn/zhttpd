@@ -1,0 +1,12 @@
++- run test 23 pass (23 total) 86ms MaxRSS:9M
+   +- compile test debug native success 2s MaxRSS:425M
+      +- options cached
+
+module_exit=0
+|  +- compile test debug native cached 9ms MaxRSS:36M
++- run test 1 pass (1 total) 10ms MaxRSS:3M
+|  +- compile test debug native cached 3ms MaxRSS:38M
++- run test 1 pass (1 total) 10ms MaxRSS:3M
+   +- compile test debug native cached 4ms MaxRSS:38M
+
+zhttpd_exit=0

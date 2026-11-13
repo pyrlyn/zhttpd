@@ -1,0 +1,7 @@
+.{
+    .name = .zquic,
+    .version = "0.1.0",
+    .fingerprint = 0x947d823db0cfc8d2,
+    .minimum_zig_version = "0.17.1",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "README.md" },
+}

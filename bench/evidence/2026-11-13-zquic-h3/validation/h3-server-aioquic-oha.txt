@@ -1,0 +1,28 @@
+50 responses, 0 bad, status=b'200', body=612
+  Success rate:	100.00%
+  Slowest:	3.7587 ms
+  Fastest:	0.0764 ms
+  Requests/sec:	464324.5840
+  0.076 ms [1]       |
+  0.445 ms [1395250] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.813 ms [197]     |
+  1.181 ms [81]      |
+  1.549 ms [39]      |
+  1.918 ms [48]      |
+  2.286 ms [17]      |
+  2.654 ms [15]      |
+h3-server listening on udp/9443, body 612 bytes
+50 responses, 0 bad, status=b'200', body=1048576
+  Success rate:	100.00%
+  Slowest:	48.5855 ms
+  Fastest:	17.0639 ms
+  Requests/sec:	2182.1702
+  17.064 ms [1]    |
+  20.216 ms [100]  |■
+  23.368 ms [626]  |■■■■■■■■■■■■
+  26.520 ms [1353] |■■■■■■■■■■■■■■■■■■■■■■■■■■
+  29.673 ms [1617] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  32.825 ms [1345] |■■■■■■■■■■■■■■■■■■■■■■■■■■
+  35.977 ms [844]  |■■■■■■■■■■■■■■■■
+  39.129 ms [373]  |■■■■■■■
+h3-server listening on udp/9443, body 1048576 bytes

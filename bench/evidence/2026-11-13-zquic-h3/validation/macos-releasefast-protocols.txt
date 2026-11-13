@@ -1,0 +1,7 @@
+# macOS 27.0.1 arm64, ReleaseFast, Homebrew OpenSSL 3.6.4, nghttp2 1.71.0
+# python venv: aioquic 1.7.2,cryptography 50.0.2,h2 4.4.1,pylsqpack 1.1.1
+zhttpd: the configuration file $TMPDIR/zhttpd-protocols-h2spqf11/nginx.conf syntax is ok
+zhttpd: configuration file $TMPDIR/zhttpd-protocols-h2spqf11/nginx.conf test is successful
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/2 large bodies across TLS 1.3 KeyUpdate in both modes
+PASS: HTTP/1.1, HTTP/2, HTTP/3, multiplexing, uploads, static/HEAD, proxy, limits, ACL, vhosts, reuse, loss/reordering/duplicates, migration, reload, shutdown

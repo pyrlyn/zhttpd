@@ -204,7 +204,7 @@ pub const Conn = struct {
     // ------------------------------------------------------------- raw I/O (TLS aware)
 
     pub fn recv(conn: *Conn, buf: []u8) net.Io {
-        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.readStream(stream, buf);
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.readStream(stream, conn.stream_protocol, buf);
         if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
             if (!conn.tls_read.ready and !conn.tls_read.eof and !conn.tls_read.want_write and !tls.hasPending(ssl)) return .again;
         };
@@ -224,7 +224,7 @@ pub const Conn = struct {
     }
 
     pub fn sendRaw(conn: *Conn, buf: []const u8) net.Io {
-        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.writeStream(stream, buf);
+        if (multiplex.enabled) if (conn.transport_stream) |stream| return multiplex.writeStream(stream, conn.stream_protocol, buf);
         if (tls.enabled) if (conn.ssl) |ssl| return switch (tls.write(ssl, buf)) {
             .ok => |n| .{ .ok = n },
             .want_read, .want_write => .again,
@@ -317,7 +317,7 @@ pub const Conn = struct {
             if (multiplex.enabled) if (conn.transport_stream) |stream| {
                 // Read into the codec's bounded output buffer directly, avoiding
                 // a second userspace copy through the HTTP/1 write buffer.
-                switch (multiplex.sendFile(stream, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
+                switch (multiplex.sendFile(stream, conn.stream_protocol, conn.file_fd, conn.file_off, conn.file_end - conn.file_off)) {
                     .ok => |n| {
                         conn.file_off += n;
                         conn.ctx.bytes_sent += n;
@@ -805,7 +805,7 @@ pub const Conn = struct {
             conn.tls_write_buf = null;
         };
         if (multiplex.enabled) if (conn.transport_stream) |stream| {
-            multiplex.finishStream(stream);
+            multiplex.finishStream(stream, conn.stream_protocol);
             conn.transport_stream = null;
         };
         if (conn.fd >= 0) net.close(conn.fd);

@@ -101,7 +101,17 @@ password_file="{password}"
                     end = time.monotonic()+12
                     while time.monotonic() < end:
                         if predicate(): return
-                        healthy(); time.sleep(.05)
+                        try: healthy()
+                        except AssertionError:
+                            # The awaited reload can take effect between the predicate
+                            # check and this probe, before its log line is visible. Allow
+                            # only that; callers re-check health after wait() returns.
+                            grace = time.monotonic()+2
+                            while time.monotonic() < grace:
+                                if predicate(): return
+                                time.sleep(.05)
+                            raise
+                        time.sleep(.05)
                     raise AssertionError(message)
                 def stable(seconds=.8):
                     end = time.monotonic()+seconds
