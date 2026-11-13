@@ -15,6 +15,7 @@ const Drive = *const fn (*anyopaque) callconv(.c) void;
 extern "c" fn zhttp_h2_new(*tls.SSL, *anyopaque, Open, Drive, Drive, *const net.SockAddr, *const net.SockAddr) ?*anyopaque;
 extern "c" fn zhttp_h2_drive(*anyopaque) c_int;
 extern "c" fn zhttp_h2_free(*anyopaque) void;
+extern "c" fn zhttp_tx_attach(*tls.SSL) c_int;
 extern "c" fn zhttp_stream_read(*anyopaque, [*]u8, usize) isize;
 extern "c" fn zhttp_stream_write(*anyopaque, [*]const u8, usize) isize;
 extern "c" fn zhttp_stream_finish(*anyopaque) void;
@@ -89,6 +90,11 @@ pub fn sendFile(stream: *anyopaque, protocol: u8, fd: c_int, offset: u64, remain
     if (protocol == 3) return h3.sendFile(@ptrCast(@alignCast(stream)), fd, offset, remaining);
     const n = zhttp_stream_file(stream, fd, offset, remaining);
     return if (n > 0) .{ .ok = @intCast(n) } else if (n == -1) .again else .{ .err = 0 };
+}
+/// Seal HTTP/2 output records in userspace (tls_tx.c). Must run before the
+/// application write keys exist, i.e. during ALPN selection.
+pub fn attachTx(ssl: *tls.SSL) void {
+    if (enabled) _ = zhttp_tx_attach(ssl);
 }
 pub fn startH2(cn: *Conn) bool {
     if (!enabled) return false;

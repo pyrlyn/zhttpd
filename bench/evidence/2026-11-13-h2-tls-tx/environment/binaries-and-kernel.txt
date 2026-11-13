@@ -1,0 +1,5 @@
+7b0cd38c08c343414c0d9b14f7341ec4c6d72ad2fe50e39fd9593b7395123d19  candidate/bin/zhttpd
+350d2b30c71d2612fc887d1a67289ec56b936e5bc7c044a615e229a1d8b21096  main-a539d24/bin/zhttpd
+29ba2175e0c2978f33dd21116170af43ff007f58c5c34638e609bac791dafdf4  nginx/sbin/nginx
+90e2c783f84a61fa6cbdf8399025e9a12aa73111ea28962e5d5e62b820a856af  oha-drain/bin/oha
+Linux 6.8.0-149-generic #149-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:37:55 UTC 2026 aarch64

@@ -76,6 +76,7 @@ pub fn build(b: *std.Build) void {
 
     if (http) {
         http_mod.addCSourceFile(.{ .file = b.path("src/server/multiplex.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        http_mod.addCSourceFile(.{ .file = b.path("src/server/tls_tx.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
         if (http_deps) |p| {
             http_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             http_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libnghttp2.a", .{p}) });
@@ -336,6 +337,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
         });
         h2_codec.root_module.addCSourceFile(.{ .file = b.path("tests/h2_codec.c"), .flags = &.{ "-std=c11", "-UNDEBUG", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
+        h2_codec.root_module.addCSourceFile(.{ .file = b.path("src/server/tls_tx.c"), .flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra", "-Werror" } });
         if (openssl) |p| {
             h2_codec.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{p}) });
             h2_codec.root_module.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/libssl.a", .{p}) });

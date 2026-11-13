@@ -1,0 +1,105 @@
+--- rep 1 zhttpd-baseline 13:36:25 load=1.33
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd
+ 0.0 kcompactd0
+--- rep 1 nginx 13:37:03 load=1.72
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd
+ 0.0 kcompactd0
+--- rep 1 zhttpd 13:37:40 load=1.91
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 2 zhttpd 13:38:18 load=2.44
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 systemd
+ 0.0 kcompactd0
+--- rep 2 nginx 13:38:56 load=2.20
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 2 zhttpd-baseline 13:39:33 load=2.16
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 3 zhttpd-baseline 13:40:10 load=2.50
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 3 nginx 13:40:48 load=2.73
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 3 zhttpd 13:41:25 load=2.86
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 4 zhttpd 13:42:03 load=2.76
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 systemd
+--- rep 4 nginx 13:42:40 load=2.87
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 4 zhttpd-baseline 13:43:18 load=2.64
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 5 zhttpd-baseline 13:43:55 load=2.62
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 5 nginx 13:44:33 load=2.49
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 kcompactd0
+--- rep 5 zhttpd 13:45:10 load=2.67
+%CPU COMMAND
+ 0.2 lima-guestagent
+ 0.0 containerd
+ 0.0 rcu_preempt
+ 0.0 bash
+ 0.0 kcompactd0
