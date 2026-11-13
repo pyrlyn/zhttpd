@@ -55,7 +55,11 @@ python3 tests/h3_client.py 127.0.0.1 8443 --requests 32 --size 612
 `h3.Server.init(alloc, ssl_ctx, config, handler)` creates an endpoint; attach a
 UDP socket with `udp.Socket.init` and `ep.sink = sock.sink()`. The event loop
 calls `sock.receive(ep, batches)`, `ep.updateClock()`, `ep.onTimers()` and
-`ep.flush()`, and waits at most `ep.timeoutMs()`.
+`ep.flush()`, and waits at most `ep.timeoutMs()`. Within one receive round,
+`receive` sends the first connection's output as soon as its peer's last
+datagram in the batch is processed, so that client starts its next round
+while the server works through the other connections' datagrams; the rest
+share the caller's `flush`.
 
 `Handler` callbacks get a `*h3.Request`: `request` (headers decoded),
 `readable`, `writable` and `aborted`. A request exposes `headers()`, `read()`,

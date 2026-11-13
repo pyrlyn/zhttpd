@@ -122,6 +122,9 @@ pub fn prepare(fd: c_int, v6: bool) void {
 }
 
 const batch = 32;
+/// Connections per receive round whose output is sent before the round
+/// ends; the rest share one `sendmmsg` with the caller's `flush`.
+const max_early_flushes = 1;
 const slot = 2048;
 const ctl_len = 64;
 
@@ -218,12 +221,27 @@ pub const Socket = struct {
             }
             if (n == 0) break;
             ep.updateClock();
+            var early: usize = 0;
+            var peers: [batch]Addr = undefined;
+            for (0..n) |i| peers[i] = fromSock(&s.names[i]);
             for (0..n) |i| {
                 const h = &s.hdrs[i];
                 if (h.hdr.flags & 0x20 != 0) continue; // MSG_TRUNC (Linux) / truncated
-                const peer = fromSock(&s.names[i]);
-                const local = s.localFrom(&h.hdr);
-                ep.recv(s.rx[i][0..h.len], peer, local);
+                const c = ep.recv(s.rx[i][0..h.len], peers[i], s.localFrom(&h.hdr)) orelse continue;
+                // After a peer's last datagram in the batch, send that
+                // connection's output before working through other peers':
+                // each client starts its next round as soon as its responses
+                // arrive. The final datagram's output waits for the caller's
+                // `flush` unless another round follows.
+                if (i + 1 == n and n < batch) continue;
+                if (early >= max_early_flushes) continue;
+                const last = for (i + 1..n) |j| {
+                    if (peers[j].eql(&peers[i])) break false;
+                } else true;
+                if (last) {
+                    ep.flushConnNow(c);
+                    early += 1;
+                }
             }
             total += n;
             if (n < batch) break;

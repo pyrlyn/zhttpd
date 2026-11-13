@@ -144,7 +144,8 @@ pub const Endpoint = struct {
     // Input
 
     /// Processes one received datagram. Call `flush` after a batch.
-    pub fn recv(ep: *Endpoint, data: []u8, peer: Addr, local: Addr) void {
+    /// Returns the connection the datagram was delivered to, if any.
+    pub fn recv(ep: *Endpoint, data: []u8, peer: Addr, local: Addr) ?*Conn {
         var off: usize = 0;
         var target: ?*Conn = null;
         while (off < data.len) {
@@ -173,6 +174,7 @@ pub const Endpoint = struct {
             off += hdr.len;
         }
         if (target) |c| ep.markDirty(c);
+        return target;
     }
 
     fn accept(ep: *Endpoint, hdr: *const packet.Header, dgram_len: usize, peer: Addr, local: Addr) ?*Conn {
@@ -292,6 +294,22 @@ pub const Endpoint = struct {
         }
         ep.emit();
         ep.reap();
+    }
+
+    /// Transmits one connection's pending output now, ahead of the rest of
+    /// the batch. Closed connections are reaped by the next `flush`.
+    pub fn flushConnNow(ep: *Endpoint, c: *Conn) void {
+        if (!c.dirty) return;
+        var link = &ep.dirty_head;
+        while (link.*) |d| : (link = &d.dirty_next) {
+            if (d == c) {
+                link.* = c.dirty_next;
+                break;
+            }
+        }
+        c.dirty = false;
+        ep.flushConn(c);
+        ep.emit();
     }
 
     fn flushConn(ep: *Endpoint, c: *Conn) void {
