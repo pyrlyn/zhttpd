@@ -7,13 +7,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from e2e_common import free_port
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else "zig-out/bin/zhttpd").resolve()
 with tempfile.TemporaryDirectory(prefix="zhttpd-errors-") as tmp:
     root = Path(tmp)
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    port = free_port()
     (root / "custom.html").write_text("<h1>My custom error</h1>\n")
     codes = (400, 403, 404, 405, 413, 429, 500, 502, 503, 504, 507)
     locations = "\n".join(f"location /{code} {{ return {code}; }}" for code in codes)
