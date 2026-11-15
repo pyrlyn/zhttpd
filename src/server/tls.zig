@@ -13,6 +13,87 @@ pub const backend_name = if (!enabled) "disabled" else if (aws_lc) "AWS-LC" else
 pub const track_read_ready = builtin.os.tag == .linux;
 pub const ReadState = struct { ready: bool = true, eof: bool = false, want_write: bool = false };
 
+/// OpenSSL allocates a 16 KiB record buffer around every read and write
+/// (SSL_MODE_RELEASE_BUFFERS) and a 21 KiB message buffer per handshake.
+/// Taken from malloc, each leaves a hole that the long-lived objects of the
+/// next connection split, so the heap grows to about twice what is in use.
+/// A worker serves these short-lived buffers from a fixed region instead.
+const buffer_pool = struct {
+    const block = 24 * 1024;
+    const count = 64;
+    const smallest = 8 * 1024;
+    /// blocks past these are returned to the system as soon as they are freed
+    const kept = 4;
+    var installed = false;
+    var base: usize = 0;
+    var free_blocks: std.atomic.Value(u64) = .init(0);
+
+    extern "c" fn CRYPTO_set_mem_functions(
+        m: *const fn (usize, ?[*:0]const u8, c_int) callconv(.c) ?*anyopaque,
+        r: *const fn (?*anyopaque, usize, ?[*:0]const u8, c_int) callconv(.c) ?*anyopaque,
+        f: *const fn (?*anyopaque, ?[*:0]const u8, c_int) callconv(.c) void,
+    ) c_int;
+
+    fn index(addr: usize) ?u6 {
+        if (base == 0 or addr < base or addr - base >= count * block) return null;
+        return @intCast((addr - base) / block);
+    }
+
+    fn release(i: u6) void {
+        // The kernel drops whole pages: with pages that do not divide a block
+        // that would reach into its neighbours, so those blocks stay resident.
+        if (i >= kept and block % std.heap.pageSize() == 0)
+            _ = std.c.madvise(@ptrFromInt(base + @as(usize, i) * block), block, 4); // MADV_DONTNEED
+        _ = free_blocks.fetchOr(@as(u64, 1) << i, .release);
+    }
+
+    fn alloc(n: usize, _: ?[*:0]const u8, _: c_int) callconv(.c) ?*anyopaque {
+        if (n >= smallest and n <= block) {
+            var spare = free_blocks.load(.acquire);
+            while (spare != 0) {
+                // lowest block first: a quiet worker keeps reusing the same few
+                spare = free_blocks.cmpxchgWeak(spare, spare & (spare - 1), .acquire, .acquire) orelse
+                    return @ptrFromInt(base + @as(usize, @ctz(spare)) * block);
+            }
+        }
+        return std.c.malloc(n);
+    }
+
+    fn realloc(p: ?*anyopaque, n: usize, _: ?[*:0]const u8, _: c_int) callconv(.c) ?*anyopaque {
+        const i = index(@intFromPtr(p)) orelse return std.c.realloc(p, n);
+        if (n == 0) {
+            release(i);
+            return null;
+        }
+        if (n <= block) return p;
+        const moved = std.c.malloc(n) orelse return null;
+        @memcpy(@as([*]u8, @ptrCast(moved))[0..block], @as([*]const u8, @ptrCast(p.?))[0..block]);
+        release(i);
+        return moved;
+    }
+
+    fn free(p: ?*anyopaque, _: ?[*:0]const u8, _: c_int) callconv(.c) void {
+        if (index(@intFromPtr(p))) |i| release(i) else std.c.free(p);
+    }
+};
+
+/// Routes OpenSSL's allocations through `buffer_pool`. Call before anything
+/// else in this file: OpenSSL refuses the change once it has allocated.
+pub fn installAllocator() void {
+    if (!enabled or aws_lc or builtin.os.tag != .linux) return;
+    buffer_pool.installed = buffer_pool.CRYPTO_set_mem_functions(buffer_pool.alloc, buffer_pool.realloc, buffer_pool.free) == 1;
+}
+
+/// Gives the calling process its buffer pool. Until then, and when the region
+/// cannot be reserved, every allocation goes to malloc.
+pub fn enableBufferPool() void {
+    if (!enabled or aws_lc or builtin.os.tag != .linux) return;
+    if (!buffer_pool.installed or buffer_pool.base != 0) return;
+    const region = std.heap.page_allocator.alloc(u8, buffer_pool.count * buffer_pool.block) catch return;
+    buffer_pool.base = @intFromPtr(region.ptr);
+    buffer_pool.free_blocks.store(std.math.maxInt(u64), .release);
+}
+
 pub const SSL_CTX = opaque {};
 pub const SSL = opaque {};
 const SSL_METHOD = opaque {};

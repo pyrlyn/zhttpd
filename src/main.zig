@@ -62,6 +62,7 @@ fn outWrite(s: []const u8) void {
 }
 
 pub fn main(init: std.process.Init) u8 {
+    tls.installAllocator();
     const arena = init.arena.allocator();
     const gpa = std.heap.c_allocator;
     const argv = init.minimal.args.toSlice(arena) catch return 1;
@@ -465,6 +466,7 @@ fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize, acme_lock: 
     }
     var w: worker_mod.Worker = undefined;
     w.init(gpa, gen.cfg, listeners.items, gen.error_fd, @intCast(idx)) catch c.exit(2);
+    tls.enableBufferPool();
     os.releaseStartupPages();
     w.run();
     c.exit(0);
