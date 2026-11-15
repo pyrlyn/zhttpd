@@ -89,7 +89,7 @@ password_file="{password}"
             else:
                 config.write_text(original.replace('password_file="a.pass"', 'password_file=""'))
                 checked(config, b'must not be empty'); config.write_text(original)
-            with running([binary, '-c', config], port, log_path=log) as process:
+            with running([binary, '-c', config], port, log_path=log, pid_file=root/'master.pid') as process:
                 expected = cert_a
                 def count(text): return log.read_text().count(text)
                 def healthy():

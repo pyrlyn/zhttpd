@@ -462,29 +462,36 @@ fn selectContext(ssl: *SSL, ctx: *SSL_CTX, quic: bool) bool {
     return SSL_set_SSL_CTX(ssl, ctx) != null;
 }
 
+extern "c" fn SSL_get_fd(ssl: *const SSL) c_int;
+
+/// The address the client connected to. A wildcard socket also serves servers
+/// listening on one concrete address, so the socket's own address is not enough.
+/// A QUIC handshake has no descriptor and keeps the socket address.
+fn localOf(ssl: *SSL, listen: *const config.Listen) @TypeOf(listen.addr) {
+    if (!listen.addr.isWildcard() or SSL_get_rbio(ssl) == null) return listen.addr;
+    const fd = SSL_get_fd(ssl);
+    return if (fd >= 0) @import("net.zig").localAddr(fd) else listen.addr;
+}
+
 fn sniCallback(ssl: *SSL, alert: *c_int, arg: ?*anyopaque) callconv(.c) c_int {
     _ = alert;
     const tbl: *SniTable = @ptrCast(@alignCast(arg orelse return SSL_TLSEXT_ERR_OK));
-    const name = SSL_get_servername(ssl, 0) orelse {
-        // no SNI: default server; reject if it asked for it
-        const d = tbl.listen.entries[0].server;
-        return if (d.tls.reject_handshake) SSL_TLSEXT_ERR_ALERT_FATAL else SSL_TLSEXT_ERR_OK;
-    };
+    // no SNI: the default server of the address, as for a request without Host
+    const name: ?[]const u8 = if (SSL_get_servername(ssl, 0)) |n| std.mem.span(n) else null;
     var caps: Regex.Captures = .{};
     var hb: [256]u8 = undefined;
-    const local = tbl.listen.addr;
-    const srv = router.selectServer(tbl.listen, local, std.mem.span(name), &caps, &hb);
+    const srv = router.selectServer(tbl.listen, localOf(ssl, tbl.listen), name, &caps, &hb);
     if (srv.tls.reject_handshake) return SSL_TLSEXT_ERR_ALERT_FATAL;
     var best: ?*SSL_CTX = null;
     var rank: u8 = 0;
-    for (tbl.managed) |managed| {
+    if (name) |n| for (tbl.managed) |managed| {
         if (managed.server != srv) continue;
-        const candidate = acme.matchRank(tbl.certificates[managed.certificate].domains, std.mem.span(name));
+        const candidate = acme.matchRank(tbl.certificates[managed.certificate].domains, n);
         if (candidate > rank) {
             rank = candidate;
             best = managed.ctx;
         }
-    }
+    };
     if (best) |ctx| {
         return if (selectContext(ssl, ctx, tbl.listen.opts.quic)) SSL_TLSEXT_ERR_OK else SSL_TLSEXT_ERR_ALERT_FATAL;
     }

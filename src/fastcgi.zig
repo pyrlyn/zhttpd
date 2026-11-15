@@ -63,7 +63,8 @@ pub const Decoder = struct {
                 if (d.kind != 6 and d.kind != 7 and d.kind != 3) return error.Protocol;
                 d.remaining = (@as(usize, d.header[4]) << 8) | d.header[5];
                 d.padding = d.header[6];
-                if (d.kind == 3 and (d.remaining != 8 or !d.stdout_closed)) return error.Protocol;
+                // PHP-FPM ends a request without the empty STDOUT record
+                if (d.kind == 3 and d.remaining != 8) return error.Protocol;
                 if (d.kind == 6) {
                     if (d.stdout_closed) return error.Protocol;
                     if (d.remaining == 0) d.stdout_closed = true;
@@ -113,4 +114,16 @@ test "fragmented stdout and END_REQUEST validation" {
     }
     try std.testing.expect(d.done);
     try std.testing.expectEqualStrings("hello", out[0..n]);
+}
+test "END_REQUEST without an empty STDOUT record ends the response" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try record(a, &wire, 6, "hello");
+    try record(a, &wire, 3, &.{ 0, 0, 0, 0, 0, 0, 0, 0 });
+    var d: Decoder = .{};
+    var out: [16]u8 = undefined;
+    const r = try d.feed(wire.items, &out);
+    try std.testing.expect(d.done);
+    try std.testing.expectEqualStrings("hello", out[0..r.produced]);
 }

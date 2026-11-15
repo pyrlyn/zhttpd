@@ -10,6 +10,9 @@ pub const Match = struct {
     loc: ?*Location,
     /// Captures of the matching regex location (for $1.. and named captures).
     caps: Regex.Captures = .{},
+    /// A regex location ran out of steps: whether it applies is unknown, so
+    /// the request must not fall through to a less specific location.
+    failed: bool = false,
 };
 
 /// nginx ngx_http_core_find_location:
@@ -20,9 +23,9 @@ pub const Match = struct {
 /// 4. regex locations of this level are checked in config order, first match wins;
 /// 5. otherwise the remembered prefix is used.
 pub fn findLocation(locs: []const *Location, uri: []const u8) Match {
-    var caps: Regex.Captures = .{};
-    const loc = find(locs, uri, &caps);
-    return .{ .loc = loc, .caps = caps };
+    var m: Match = .{ .loc = null };
+    m.loc = find(locs, uri, &m.caps, &m.failed);
+    return m;
 }
 
 pub fn findLocationMethod(locs: []const *Location, uri: []const u8, method: []const u8) Match {
@@ -31,13 +34,13 @@ pub fn findLocationMethod(locs: []const *Location, uri: []const u8, method: []co
         if (l.conf.methods.len == 0) return path;
         // Only equivalent URL patterns can override the most specific path.
         for (locs) |candidate| {
-            if (candidate.kind == l.kind and std.mem.eql(u8, candidate.name, l.name) and @import("policy.zig").methodAllowed(candidate.conf.methods, method)) return .{ .loc = candidate, .caps = path.caps };
+            if (candidate.kind == l.kind and std.mem.eql(u8, candidate.name, l.name) and @import("policy.zig").methodAllowed(candidate.conf.methods, method)) return .{ .loc = candidate, .caps = path.caps, .failed = path.failed };
         }
     }
     return path;
 }
 
-fn find(locs: []const *Location, uri: []const u8, caps: *Regex.Captures) ?*Location {
+fn find(locs: []const *Location, uri: []const u8, caps: *Regex.Captures, failed: *bool) ?*Location {
     for (locs) |l| {
         if (l.kind == .exact and std.mem.eql(u8, l.name, uri)) return l;
     }
@@ -50,7 +53,7 @@ fn find(locs: []const *Location, uri: []const u8, caps: *Regex.Captures) ?*Locat
     var result = best;
     if (best) |b| {
         if (b.children.len > 0) {
-            if (find(b.children, uri, caps)) |r| {
+            if (find(b.children, uri, caps, failed)) |r| {
                 if (r.kind == .regex or r.kind == .regex_icase or r.kind == .exact) return r;
                 result = r;
             }
@@ -60,7 +63,11 @@ fn find(locs: []const *Location, uri: []const u8, caps: *Regex.Captures) ?*Locat
     for (locs) |l| {
         if (l.kind != .regex and l.kind != .regex_icase) continue;
         var c: Regex.Captures = .{};
-        if (l.re.?.search(uri, &c) catch false) {
+        const hit = l.re.?.search(uri, &c) catch {
+            failed.* = true;
+            return result;
+        };
+        if (hit) {
             caps.* = c;
             return l;
         }

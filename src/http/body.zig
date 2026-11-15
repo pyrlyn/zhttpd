@@ -1,5 +1,6 @@
 //! Bounded request parsers. All returned slices live in the caller's allocator/body.
 const std = @import("std");
+const request = @import("request.zig");
 pub const Field = struct { name: []const u8, value: []const u8, filename: ?[]const u8 = null, content_type: ?[]const u8 = null };
 pub const max_fields = 256;
 pub fn decode(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
@@ -11,7 +12,7 @@ pub fn decode(a: std.mem.Allocator, raw: []const u8) ![]const u8 {
             '+' => ' ',
             '%' => blk: {
                 if (i + 2 >= raw.len) return error.BadRequest;
-                const v = std.fmt.parseInt(u8, raw[i + 1 ..][0..2], 16) catch return error.BadRequest;
+                const v = request.hexByte(raw[i + 1 ..][0..2]) orelse return error.BadRequest;
                 i += 2;
                 break :blk v;
             },
@@ -135,6 +136,7 @@ test "form preserves duplicate keys and decodes percent/plus; malformed escapes 
     try std.testing.expectEqualStrings("a b", fields[1].value);
     try std.testing.expectEqualStrings("A", fields[3].name);
     try std.testing.expectError(error.BadRequest, form(a, "x=%Q0"));
+    try std.testing.expectError(error.BadRequest, form(a, "x=%+f"));
 }
 test "multipart binary files and boundary-like bytes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

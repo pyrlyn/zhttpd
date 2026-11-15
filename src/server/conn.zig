@@ -592,12 +592,15 @@ pub const Conn = struct {
         conn.bodyDone();
     }
 
-    fn bodyDone(conn: *Conn) void {
+    /// Run what the handler chose. Also called after a late `handler.finalize`
+    /// (upstream or body error), whose `error_page` may be a proxied location;
+    /// `close_after` only means the connection is not reused afterwards.
+    pub fn bodyDone(conn: *Conn) void {
         conn.ctx.body = conn.body.items;
-        if (conn.after_body == .proxy and !conn.close_after) {
+        if (conn.after_body == .proxy) {
             proxy.start(conn);
         } else {
-            if (conn.after_body == .application and !conn.close_after) @import("application.zig").run(conn);
+            if (conn.after_body == .application) @import("application.zig").run(conn);
             conn.state = .sending;
         }
     }
@@ -681,7 +684,7 @@ pub const Conn = struct {
         conn.fba = .init(conn.arena_mem);
         conn.ctx.error_page_done = false;
         handler.finalize(conn, status);
-        conn.state = .sending;
+        conn.bodyDone();
     }
 
     fn doSend(conn: *Conn) bool {

@@ -96,7 +96,8 @@ dns_propagation_wait_seconds=1
                 return path
 
             config = write([base])
-            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=35) as proc:
+            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=35,
+                         pid_file=case/'master.pid') as proc:
                 master = proc.pid
 
                 def healthy():

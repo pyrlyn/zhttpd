@@ -268,7 +268,8 @@ pub const Stream = struct {
     pub fn reset(s: *Stream, code: u64) void {
         if (!s.hasSend() or s.reset_code != null or s.send.allAcked()) return;
         s.reset_code = code;
-        s.reset_final = s.send.end;
+        // Final size is the credit used on the wire, not what is still buffered.
+        s.reset_final = s.send.sent;
         s.ctrl.reset = true;
         s.conn.queueCtrl(s);
     }
@@ -323,6 +324,13 @@ const Space = struct {
     probes: u8 = 0,
     discarded: bool = false,
 
+    /// Nothing is left to acknowledge.
+    fn ackSettled(s: *Space) void {
+        s.ack_dirty = false;
+        s.ack_unsent = 0;
+        s.ack_deadline = 0;
+    }
+
     fn deinit(s: *Space, a: std.mem.Allocator) void {
         if (s.rx) |*k| k.deinit();
         if (s.tx) |*k| k.deinit();
@@ -347,6 +355,7 @@ const PeerCid = struct {
     cid: Cid = .{},
     token: ?[16]u8 = null,
     active: bool = false,
+    /// Only on the ID in use: retire it as soon as another takes its place.
     retire_pending: bool = false,
 };
 
@@ -385,6 +394,10 @@ pub const Conn = struct {
     local_cids: [max_local_cids]LocalCid = @splat(.{}),
     local_seq: u64 = 0,
     peer_cids: [max_peer_cids]PeerCid = @splat(.{}),
+    /// Sequence numbers owed a RETIRE_CONNECTION_ID. Their slots are free
+    /// again, and a lost frame puts its number back (RFC 9000 §5.1.2, §13.3).
+    retire_seqs: [2 * max_peer_cids]u64 = undefined,
+    retire_n: u8 = 0,
     peer_cid: usize = 0,
     peer_retire_prior: u64 = 0,
     rx_dcid: [cid_len]u8 = undefined,
@@ -436,6 +449,8 @@ pub const Conn = struct {
     peer_params: tp.Params = .{},
     idle_timeout: u64 = 0,
     idle_deadline: u64 = 0,
+    /// An ack-eliciting packet was sent after the last packet was received.
+    sent_since_rx: bool = false,
     close: ?CloseInfo = null,
     close_reason: [64]u8 = undefined,
     close_pending: bool = false,
@@ -443,6 +458,8 @@ pub const Conn = struct {
     close_rx_count: u32 = 0,
     drain_close: ?u64 = null,
     drain_after: u64 = 0,
+    /// Application close requested from inside one of its own calls.
+    late_close: ?u64 = null,
     tp_buf: [256]u8 = undefined,
     app: ?*anyopaque = null,
     // endpoint bookkeeping
@@ -668,8 +685,8 @@ pub const Conn = struct {
         c.peer_params = p;
         c.tx_max = p.initial_max_data;
         c.peer_max_uni = p.initial_max_streams_uni;
-        if (p.max_idle_timeout_ms != 0) c.idle_timeout = @min(c.idle_timeout, p.max_idle_timeout_ms * 1000);
-        if (c.idle_timeout == 0) c.idle_timeout = p.max_idle_timeout_ms * 1000;
+        if (p.max_idle_timeout_ms != 0) c.idle_timeout = @min(c.idle_timeout, p.max_idle_timeout_ms *| 1000);
+        if (c.idle_timeout == 0) c.idle_timeout = p.max_idle_timeout_ms *| 1000;
         return 1;
     }
 
@@ -770,6 +787,13 @@ pub const Conn = struct {
         c.markDirty();
     }
 
+    /// Like `closeApp`, but the close and its callbacks run on the next
+    /// `send`, not under the caller (who may be reading one of the streams).
+    pub fn closeAppLater(c: *Conn, code: u64) void {
+        if (c.late_close == null) c.late_close = code;
+        c.markDirty();
+    }
+
     /// True once a graceful close has passed its grace period; new peer
     /// requests after this point should be refused.
     pub fn drainGraceOver(c: *const Conn) bool {
@@ -850,6 +874,7 @@ pub const Conn = struct {
             if (!peer.eql(&c.peer)) c.onPeerAddressChange(peer, local, cid_changed);
         }
         c.idle_deadline = c.now() + c.idleTimeout();
+        c.sent_since_rx = false;
 
         const eliciting = c.processFrames(lvl, body) catch |e| switch (e) {
             error.Drop => return,
@@ -858,7 +883,11 @@ pub const Conn = struct {
                 return;
             },
         };
+        const full = sp.recv_pns.items().len == max_ack_ranges;
         _ = sp.recv_pns.add(un.pn, un.pn + 1);
+        // A full set forgets its lowest range: everything below what is left
+        // counts as seen, or those packets would be accepted twice.
+        if (full) sp.recv_floor = @max(sp.recv_floor, sp.recv_pns.first().?.start);
         if (sp.largest_rx == null or un.pn > sp.largest_rx.?) {
             sp.largest_rx = un.pn;
             sp.largest_rx_time = c.now();
@@ -962,11 +991,21 @@ pub const Conn = struct {
 
     fn rotatePeerCid(c: *Conn) void {
         for (&c.peer_cids, 0..) |*p, i| {
-            if (i == c.peer_cid or !p.active or p.retire_pending) continue;
-            c.peer_cids[c.peer_cid].retire_pending = true;
+            if (i == c.peer_cid or !p.active) continue;
+            const old = &c.peer_cids[c.peer_cid];
+            if (!c.queueRetire(old.seq)) return;
+            old.* = .{};
             c.peer_cid = i;
             return;
         }
+    }
+
+    fn queueRetire(c: *Conn, seq: u64) bool {
+        for (c.retire_seqs[0..c.retire_n]) |x| if (x == seq) return true;
+        if (c.retire_n == c.retire_seqs.len) return false;
+        c.retire_seqs[c.retire_n] = seq;
+        c.retire_n += 1;
+        return true;
     }
 
     // ------------------------------------------------------------------
@@ -1165,7 +1204,8 @@ pub const Conn = struct {
         const grew = final - s.recv.highest;
         c.rx_highest += grew;
         if (c.rx_highest > c.rx_max) return c.fail(.flow_control, 0x04);
-        if (s.stop_code == null) c.rx_consumed += final - s.recv.read;
+        // After STOP_SENDING everything received so far is already counted.
+        c.rx_consumed += if (s.stop_code == null) final - s.recv.read else grew;
         s.recv.highest = final;
         s.recv.final = final;
         s.peer_reset = code;
@@ -1214,8 +1254,13 @@ pub const Conn = struct {
         if (c.dcid().len == 0) return c.fail(.protocol_violation, 0x18);
         if (prior > c.peer_retire_prior) {
             c.peer_retire_prior = prior;
-            for (&c.peer_cids) |*p| if (p.active and p.seq < prior) {
-                p.retire_pending = true;
+            for (&c.peer_cids, 0..) |*p, i| if (p.active and p.seq < prior) {
+                if (i == c.peer_cid) {
+                    p.retire_pending = true;
+                } else {
+                    if (!c.queueRetire(p.seq)) return c.fail(.connection_id_limit, 0x18);
+                    p.* = .{};
+                }
             };
         }
         var known = false;
@@ -1226,17 +1271,23 @@ pub const Conn = struct {
         if (!known and seq >= c.peer_retire_prior) {
             const slot = for (&c.peer_cids) |*p| {
                 if (!p.active) break p;
-            } else return c.fail(.connection_id_limit, 0x18);
+            } else blk: {
+                // The ID in use is to be retired: the new one replaces it.
+                const cur = &c.peer_cids[c.peer_cid];
+                if (!cur.retire_pending) return c.fail(.connection_id_limit, 0x18);
+                if (!c.queueRetire(cur.seq)) return c.fail(.connection_id_limit, 0x18);
+                break :blk cur;
+            };
             slot.* = .{ .seq = seq, .cid = Cid.init(id), .token = token[0..16].*, .active = true };
         } else if (!known) {
             // Already retired by retire_prior_to: retire it right away.
-            const slot = for (&c.peer_cids) |*p| {
-                if (!p.active) break p;
-            } else return c.fail(.connection_id_limit, 0x18);
-            slot.* = .{ .seq = seq, .cid = Cid.init(id), .active = true, .retire_pending = true };
+            if (!c.queueRetire(seq)) return c.fail(.connection_id_limit, 0x18);
         }
         if (c.peer_cids[c.peer_cid].retire_pending) {
             for (&c.peer_cids, 0..) |*p, i| if (p.active and !p.retire_pending) {
+                const old = &c.peer_cids[c.peer_cid];
+                if (!c.queueRetire(old.seq)) return c.fail(.connection_id_limit, 0x18);
+                old.* = .{};
                 c.peer_cid = i;
                 break;
             };
@@ -1364,6 +1415,7 @@ pub const Conn = struct {
                     if (!sp.discarded and f.id + 1 > sp.recv_floor) {
                         sp.recv_floor = f.id + 1;
                         sp.recv_pns.removeBelow(f.id + 1);
+                        if (sp.recv_pns.isEmpty()) sp.ackSettled();
                     }
                 },
                 else => {},
@@ -1410,9 +1462,7 @@ pub const Conn = struct {
                 .new_cid => for (&c.local_cids) |*l| {
                     if (l.active and l.seq == f.id) l.pending = true;
                 },
-                .retire_cid => for (&c.peer_cids) |*p| {
-                    if (p.active and p.seq == f.id) p.retire_pending = true;
-                },
+                .retire_cid => _ = c.queueRetire(f.id),
                 .handshake_done => c.handshake_done_pending = true,
                 .ping => if (f.id > 0) {
                     // Path does not carry the probed size; stay at the current MTU.
@@ -1669,10 +1719,16 @@ pub const Conn = struct {
         const lt = c.lossTimer();
         if (lt != 0) d = @min(d, lt);
         const sp = &c.spaces[2];
-        if (sp.ack_deadline != 0) d = @min(d, sp.ack_deadline);
+        // An ACK that cannot be sent yet must not keep the timer in the past.
+        if (sp.ack_deadline != 0 and !sp.recv_pns.isEmpty() and !c.amplificationBlocked()) d = @min(d, sp.ack_deadline);
         if (c.challenge != null) d = @min(d, c.challenge_deadline);
         if (c.drain_close != null and c.drain_after > c.now()) d = @min(d, c.drain_after);
         return d;
+    }
+
+    /// An unvalidated path may be sent three times what arrived on it.
+    fn amplificationBlocked(c: *const Conn) bool {
+        return !c.validated and (3 * c.rx_bytes) -| c.tx_bytes < 64;
     }
 
     /// Runs expired timers. Returns false when the connection is finished.
@@ -1729,7 +1785,7 @@ pub const Conn = struct {
         if (c.handshake_done_pending or c.max_data_pending or c.max_streams_pending[0] or c.max_streams_pending[1]) return true;
         if (c.response != null or c.challenge_pending or c.ctrl_head != null) return true;
         for (&c.local_cids) |*l| if (l.active and l.pending) return true;
-        for (&c.peer_cids) |*p| if (p.active and p.retire_pending) return true;
+        if (c.retire_n > 0) return true;
         if (c.send_head != null and c.cc.in_flight < c.cc.cwnd) return true;
         return false;
     }
@@ -1737,6 +1793,10 @@ pub const Conn = struct {
     /// Builds the next datagram into `out`. Returns null when idle.
     pub fn send(c: *Conn, out: []u8) ?Datagram {
         if (c.state == .closed or c.state == .draining) return null;
+        if (c.late_close) |code| {
+            c.late_close = null;
+            c.closeApp(code, "");
+        }
         if (c.drain_close) |code| if (c.state == .open and c.activeBidi() == 0 and c.now() >= c.drain_after) {
             c.drain_close = null;
             c.closeApp(code, "");
@@ -1896,7 +1956,12 @@ pub const Conn = struct {
         };
         sp.next_pn += 1;
         if (eliciting) {
-            if (sp.eliciting_in_flight == 0 or c.idle_deadline < t + c.idleTimeout()) c.idle_deadline = t + c.idleTimeout();
+            // RFC 9000 §10.1: only the first ack-eliciting packet since the last
+            // received one restarts the idle timer, or a dead peer is never given up.
+            if (!c.sent_since_rx) {
+                c.sent_since_rx = true;
+                c.idle_deadline = t + c.idleTimeout();
+            }
             sp.last_eliciting_time = t;
             sp.eliciting_in_flight += 1;
             c.cc.onSent(total);
@@ -1937,9 +2002,7 @@ pub const Conn = struct {
             w.varint(r.end - 1 - r.start);
             prev_start = r.start;
         }
-        sp.ack_dirty = false;
-        sp.ack_unsent = 0;
-        sp.ack_deadline = 0;
+        sp.ackSettled();
         c.logFrame(.{ .kind = .ack, .id = largest, .offset = @intFromEnum(lvl) });
         return true;
     }
@@ -2015,15 +2078,15 @@ pub const Conn = struct {
             eliciting.* = true;
             n += 1;
         };
-        for (&c.peer_cids, 0..) |*p, i| if (p.active and p.retire_pending and i != c.peer_cid and w.left() >= 9) {
+        while (c.retire_n > 0 and w.left() >= 9) {
+            c.retire_n -= 1;
+            const seq = c.retire_seqs[c.retire_n];
             w.byte(0x19);
-            w.varint(p.seq);
-            p.active = false;
-            p.retire_pending = false;
-            c.logFrame(.{ .kind = .retire_cid, .id = p.seq });
+            w.varint(seq);
+            c.logFrame(.{ .kind = .retire_cid, .id = seq });
             eliciting.* = true;
             n += 1;
-        };
+        }
         // Per-stream control frames.
         // Always consumes from the head; stops when the packet is full.
         while (c.ctrl_head) |s| {
@@ -2036,11 +2099,13 @@ pub const Conn = struct {
                 c.logFrame(.{ .kind = .max_stream_data, .id = s.id });
                 n += 1;
             }
+            s.ctrl.max_data = false;
             if (s.ctrl.stop and w.left() >= 1 + 8 * 2) {
                 w.byte(0x05);
                 w.varint(s.id);
                 w.varint(s.stop_code orelse 0);
                 c.logFrame(.{ .kind = .stop_sending, .id = s.id });
+                s.ctrl.stop = false;
                 n += 1;
             }
             if (s.ctrl.reset and w.left() >= 1 + 8 * 3) {
@@ -2049,10 +2114,12 @@ pub const Conn = struct {
                 w.varint(s.reset_code orelse 0);
                 w.varint(s.reset_final);
                 c.logFrame(.{ .kind = .reset_stream, .id = s.id });
+                s.ctrl.reset = false;
                 n += 1;
             }
-            s.ctrl = .{};
             eliciting.* = true;
+            // A frame that did not fit stays queued for the next packet.
+            if (s.ctrl.stop or s.ctrl.reset) break;
             c.ctrl_head = nxt;
             if (c.ctrl_tail == s) c.ctrl_tail = null;
             s.ctrl_next = null;
@@ -2067,8 +2134,12 @@ pub const Conn = struct {
 
     fn writeStreams(c: *Conn, w: *wire.Writer, eliciting: *bool) u16 {
         var n: u16 = 0;
+        // First stream found waiting for MAX_DATA. Such streams go to the back,
+        // so that retransmissions and FINs queued behind them, which need no
+        // connection credit, still go out; seeing it again ends the pass.
+        var waiting: ?*Stream = null;
         while (c.send_head) |s| {
-            if (w.left() < min_packet_room) break;
+            if (s == waiting or w.left() < min_packet_room) break;
             if (s.freeing or s.reset_code != null) {
                 c.popSend();
                 if (s.freeing) {
@@ -2080,8 +2151,10 @@ pub const Conn = struct {
             const hdr_max = 1 + 8 + 8 + 2;
             const credit = c.tx_max - c.tx_sent;
             const ch = s.send.next(w.left() - hdr_max, credit) orelse {
-                if (s.send.sent < s.send.end and s.send.sent < s.send.max and credit == 0) break;
-                c.popSend();
+                if (s.send.sent < s.send.end and s.send.sent < s.send.max and credit == 0) {
+                    if (waiting == null) waiting = s;
+                    c.rotateSend();
+                } else c.popSend();
                 continue;
             };
             if (ch.c.len == 0 and !ch.c.fin) {
@@ -2106,7 +2179,9 @@ pub const Conn = struct {
             if (!s.send.hasPending()) {
                 c.popSend();
             } else if (s.send.lost.isEmpty() and !s.send.fin_lost and c.tx_sent >= c.tx_max and !(s.send.fin and !s.send.fin_sent and s.send.sent == s.send.end)) {
-                break; // connection flow control: wait for MAX_DATA
+                // connection flow control: wait for MAX_DATA
+                if (waiting == null) waiting = s;
+                c.rotateSend();
             } else if (w.left() >= min_packet_room) {
                 // Round-robin: move to the back once this stream has had a turn.
                 c.popSend();
@@ -2114,6 +2189,17 @@ pub const Conn = struct {
             }
         }
         return n;
+    }
+
+    /// Moves the head of the send queue to its tail. Unlike `queueStream` it
+    /// does not ask for another flush: nothing new became sendable.
+    fn rotateSend(c: *Conn) void {
+        const s = c.send_head.?;
+        const nxt = s.next orelse return;
+        c.send_head = nxt;
+        s.next = null;
+        c.send_tail.?.next = s;
+        c.send_tail = s;
     }
 
     fn popSend(c: *Conn) void {
@@ -2132,6 +2218,7 @@ pub const Conn = struct {
             if (sp.discarded or sp.tx == null) continue;
             if (li == 2 and !c.tls_done) continue;
             if (li < 2 and c.tls_done) continue;
+            if (out.len - pos < 128) break;
             const keys = &sp.tx.?;
             const pn = sp.next_pn;
             const pn_len = packet.pnLen(pn, sp.largest_acked);
@@ -2163,13 +2250,9 @@ pub const Conn = struct {
                 w.bytes(reason);
             }
             while (w.pos - start < 4) w.byte(0);
-            var end = w.pos + crypto.tag_len;
-            if (li == 0 and end + pos < packet.min_initial_size and out.len >= packet.min_initial_size) {
-                const target = packet.min_initial_size - pos - crypto.tag_len;
-                @memset(w.buf[w.pos..target], 0);
-                w.pos = target;
-                end = w.pos + crypto.tag_len;
-            }
+            // Not ack-eliciting, so a server need not pad the Initial to 1200
+            // bytes (RFC 9000 §14.1); padding would leave no room for Handshake.
+            const end = w.pos + crypto.tag_len;
             const pkt = out[pos..][0..end];
             if (li != 2) {
                 const l = end - pn_off;

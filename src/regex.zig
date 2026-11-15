@@ -16,12 +16,17 @@ pub const max_groups = 16;
 
 pub const CompileError = error{ OutOfMemory, BadPattern };
 
+/// Nesting depth of loops whose body may match nothing.
+const max_marks = 16;
+
 const Op = union(enum) {
     char: u8,
     any, // any byte except '\n'
     class: u16, // index into classes
     split: struct { a: u32, b: u32 }, // try a first, then b
     jmp: u32,
+    mark: u8, // loop register: where this iteration started
+    loop: struct { reg: u8, back: u32 }, // repeat, unless the iteration matched nothing
     save: u8, // capture slot
     bol,
     eol, // end or before final '\n'
@@ -89,6 +94,7 @@ pub const Regex = struct {
     pub fn search(self: *const Regex, subject: []const u8, caps: ?*Captures) MatchError!bool {
         var budget: u32 = 2_000_000;
         var start: usize = 0;
+        const lead = self.leadLoop();
         while (start <= subject.len) : (start += 1) {
             var local: Captures = .{ .n = self.ngroups };
             if (try self.run(0, @intCast(self.ops.len), subject, start, &local, &budget)) {
@@ -97,8 +103,31 @@ pub const Regex = struct {
             }
             // Pattern anchored with ^ at the very start: no need to retry other positions.
             if (self.ops.len > 1 and self.ops[1] == .bol) break;
+            // A later start inside the same run of `x` reaches a subset of the
+            // positions this attempt already tried after the loop, so it fails
+            // too. Keeps `[a-z0-9_-]+\.php$` linear on a long URI.
+            if (lead) |x| while (start < subject.len and self.accepts(x, subject[start])) : (start += 1) {};
         }
         return false;
+    }
+
+    /// The byte test `x` of a pattern that starts with a greedy `x*` or `x+`.
+    fn leadLoop(self: *const Regex) ?Op {
+        const o = self.ops;
+        if (o.len < 6) return null;
+        const star = o[1] == .split and o[1].split.a == 2 and o[1].split.b == 4 and o[3] == .jmp and o[3].jmp == 1;
+        const plus = o[2] == .split and o[2].split.a == 3 and o[2].split.b == 5 and o[4] == .jmp and o[4].jmp == 2 and std.meta.eql(o[1], o[3]);
+        const x = if (star) o[2] else if (plus) o[1] else return null;
+        return if (x == .char or x == .any or x == .class) x else null;
+    }
+
+    fn accepts(self: *const Regex, x: Op, ch: u8) bool {
+        return switch (x) {
+            .char => |want| ch == want or (self.icase and std.ascii.toLower(ch) == want),
+            .any => ch != '\n',
+            .class => |ci| self.classes[ci].isSet(ch),
+            else => unreachable,
+        };
     }
 
     pub fn isMatch(self: *const Regex, subject: []const u8) bool {
@@ -108,6 +137,7 @@ pub const Regex = struct {
     const Frame = union(enum) {
         branch: struct { pc: u32, sp: u32 },
         restore: struct { slot: u8, old: i32 },
+        unmark: struct { reg: u8, old: u32 },
     };
 
     fn run(self: *const Regex, start_pc: u32, end_pc: u32, s: []const u8, start_sp: usize, caps: *Captures, budget: *u32) MatchError!bool {
@@ -116,6 +146,7 @@ pub const Regex = struct {
         var heap_stack: std.ArrayList(Frame) = .empty;
         defer heap_stack.deinit(std.heap.page_allocator);
         var sp_len: usize = 0;
+        var marks: [max_marks]u32 = @splat(0);
         var pc: u32 = start_pc;
         var sp: usize = start_sp;
         const push = struct {
@@ -156,6 +187,14 @@ pub const Regex = struct {
                     pc = sb.a;
                 },
                 .jmp => |t| pc = t,
+                .mark => |r| {
+                    push(&stack_buf, &heap_stack, &sp_len, .{ .unmark = .{ .reg = r, .old = marks[r] } });
+                    marks[r] = @intCast(sp);
+                    pc += 1;
+                },
+                // An iteration that consumed nothing ends the loop, as in PCRE:
+                // repeating it would never make progress.
+                .loop => |lp| pc = if (sp == marks[lp.reg]) pc + 1 else lp.back,
                 .save => |slot| {
                     push(&stack_buf, &heap_stack, &sp_len, .{ .restore = .{ .slot = slot, .old = caps.slots[slot] } });
                     caps.slots[slot] = @intCast(sp);
@@ -180,7 +219,11 @@ pub const Regex = struct {
                     var sub = caps.*;
                     const m = try self.run(lk.start, lk.end, s, sp, &sub, budget);
                     if (m != lk.neg) {
-                        if (m) caps.* = sub;
+                        // Groups set inside a lookahead are undone on backtracking like any other.
+                        if (m) for (&caps.slots, sub.slots, 0..) |*slot, new, i| if (slot.* != new) {
+                            push(&stack_buf, &heap_stack, &sp_len, .{ .restore = .{ .slot = @intCast(i), .old = slot.* } });
+                            slot.* = new;
+                        };
                         pc = lk.end;
                     } else fail = true;
                 },
@@ -193,6 +236,7 @@ pub const Regex = struct {
                     const fr = if (sp_len < stack_buf.len) stack_buf[sp_len] else heap_stack.pop().?;
                     switch (fr) {
                         .restore => |r| caps.slots[r.slot] = r.old,
+                        .unmark => |m| marks[m.reg] = m.old,
                         .branch => |br| {
                             pc = br.pc;
                             sp = br.sp;
@@ -273,6 +317,9 @@ const Compiler = struct {
                 .jmp => |*tg| {
                     if (tg.* >= thr) tg.* += 1;
                 },
+                .loop => |*lp| {
+                    if (lp.back >= thr) lp.back += 1;
+                },
                 .look => |*lk| {
                     if (lk.start >= thr) lk.start += 1;
                     if (lk.end >= thr) lk.end += 1;
@@ -323,7 +370,7 @@ const Compiler = struct {
                     return;
                 }
                 c.pos += 1;
-                if (min > 100 or (max != null and max.? > 100)) return error.BadPattern;
+                if (min > 100 or (max != null and (max.? > 100 or max.? < min))) return error.BadPattern;
             },
             else => return,
         }
@@ -356,14 +403,35 @@ const Compiler = struct {
             for (fixups.items) |sp| c.ops.items[sp] = if (lazy) .{ .split = .{ .a = end, .b = sp + 1 } } else .{ .split = .{ .a = sp + 1, .b = end } };
         } else {
             // star: L: split body, end ; body ; jmp L
+            // A body that may match nothing is guarded: L: split ; mark ; body ; loop L
+            const guard = try loopGuard(atom);
             const l = c.here();
             try c.emit(.{ .split = .{ .a = 0, .b = 0 } });
+            if (guard) |r| try c.emit(.{ .mark = r });
             try c.appendCopy(atom, atom_start);
-            try c.emit(.{ .jmp = l });
+            try c.emit(if (guard) |r| .{ .loop = .{ .reg = r, .back = l } } else .{ .jmp = l });
             const end = c.here();
             c.ops.items[l] = if (lazy) .{ .split = .{ .a = end, .b = l + 1 } } else .{ .split = .{ .a = l + 1, .b = end } };
         }
         _ = atom_len;
+    }
+
+    /// The register guarding a loop over `atom`, or null when every iteration
+    /// consumes input: a straight run of ops with at least one byte matcher.
+    /// A loop takes a register above those of the loops inside it.
+    fn loopGuard(atom: []const Op) CompileError!?u8 {
+        var consumes = false;
+        var straight = true;
+        var reg: u8 = 0;
+        for (atom) |op| switch (op) {
+            .char, .any, .class => consumes = true,
+            .split, .jmp, .look, .loop => straight = false,
+            .mark => |r| reg = @max(reg, r + 1),
+            else => {},
+        };
+        if (straight and consumes) return null;
+        if (reg == max_marks) return error.BadPattern;
+        return reg;
     }
 
     /// Append ops copied from an atom that originally started at `orig`, relocating targets.
@@ -377,6 +445,7 @@ const Compiler = struct {
                     sb.b = sb.b - orig + base;
                 },
                 .jmp => |*t| t.* = t.* - orig + base,
+                .loop => |*lp| lp.back = lp.back - orig + base,
                 .look => |*lk| {
                     lk.start = lk.start - orig + base;
                     lk.end = lk.end - orig + base;
@@ -404,18 +473,7 @@ const Compiler = struct {
     }
 
     fn addClass(c: *Compiler, set: std.StaticBitSet(256)) !void {
-        var s = set;
-        if (c.icase) {
-            var ch: u16 = 'a';
-            while (ch <= 'z') : (ch += 1) {
-                const u: u8 = @intCast(ch);
-                if (s.isSet(u) or s.isSet(std.ascii.toUpper(u))) {
-                    s.set(u);
-                    s.set(std.ascii.toUpper(u));
-                }
-            }
-        }
-        try c.classes.append(c.gpa, s);
+        try c.classes.append(c.gpa, set);
         try c.emit(.{ .class = @intCast(c.classes.items.len - 1) });
     }
 
@@ -591,6 +649,16 @@ const Compiler = struct {
             var b: u16 = lo;
             while (b <= hi) : (b += 1) set.set(@intCast(b));
         }
+        // fold before negating: `(?i)[^a]` excludes both cases
+        if (c.icase) {
+            var ch: u8 = 'a';
+            while (ch <= 'z') : (ch += 1) {
+                if (set.isSet(ch) or set.isSet(std.ascii.toUpper(ch))) {
+                    set.set(ch);
+                    set.set(std.ascii.toUpper(ch));
+                }
+            }
+        }
         if (neg) set.toggleAll();
         return set;
     }
@@ -606,6 +674,35 @@ fn expectMatch(p: []const u8, s: []const u8, want: bool) !void {
         std.debug.print("pattern {s} subject {s}\n", .{ p, s });
         return e;
     };
+}
+
+test "case-insensitive negated class excludes both cases" {
+    var re = try Regex.compile(tst.allocator, "^/x/[^a-z]+$", true);
+    defer re.deinit(tst.allocator);
+    try tst.expect(!re.isMatch("/x/abc"));
+    try tst.expect(!re.isMatch("/x/ABC"));
+    try tst.expect(re.isMatch("/x/123"));
+    var pos = try Regex.compile(tst.allocator, "^[a-c]+$", true);
+    defer pos.deinit(tst.allocator);
+    try tst.expect(pos.isMatch("aBc"));
+}
+
+test "a leading greedy loop is searched in linear time and still matches" {
+    const run: [12000]u8 = @splat('a');
+    const long = "/" ++ run ++ "/x.php";
+    try expectMatch("[a-z0-9_-]+\\.php$", long, true);
+    try expectMatch("[a-z0-9_-]+\\.php$", long ++ "x", false);
+    try expectMatch(".*\\.php$", long, true);
+    try expectMatch("a*b", "aaac aab", true);
+    try expectMatch("a+b", "aaac ab", true);
+    try expectMatch("a+b", "aaac a", false);
+    try expectMatch("a*$", "aaab", true);
+    try expectMatch("a+\\b", "baaa", true);
+    var re = try Regex.compile(tst.allocator, "[a-z]+(\\d)", false);
+    defer re.deinit(tst.allocator);
+    var caps: Regex.Captures = .{};
+    try tst.expect(try re.search("abc-de7", &caps));
+    try tst.expectEqualStrings("de7", caps.group("abc-de7", 0).?);
 }
 
 test "regex basics" {
@@ -650,4 +747,22 @@ test "regex rejects unsupported" {
     try tst.expectError(error.BadPattern, Regex.compile(tst.allocator, "(a)\\1", false));
     try tst.expectError(error.BadPattern, Regex.compile(tst.allocator, "(?<=a)b", false));
     try tst.expectError(error.BadPattern, Regex.compile(tst.allocator, "(ab", false));
+}
+
+test "a loop over a body that matches nothing ends instead of spinning" {
+    try expectMatch("(a*)*b", "aab", true);
+    try expectMatch("(a*)*b", "b", true);
+    try expectMatch("^(a*)+$", "aaa", true);
+    try expectMatch("^(a|b?)+c", "abc", true);
+    try expectMatch("(\\s*)*x", "x", true);
+    try expectMatch("^(a*)*$", "aab", false);
+    try expectMatch("^((a*)*b)*$", "aabbab", true);
+    try expectMatch("^(?:a?){2,}?b", "aaab", true);
+    try tst.expectError(error.BadPattern, Regex.compile(tst.allocator, "a{3,1}", false));
+    var re = try Regex.compile(tst.allocator, "^(a*)+(b)", false);
+    defer re.deinit(tst.allocator);
+    var caps: Regex.Captures = .{};
+    try tst.expect(try re.search("aab", &caps));
+    try tst.expectEqualStrings("", caps.group("aab", 1).?);
+    try tst.expectEqualStrings("b", caps.group("aab", 2).?);
 }

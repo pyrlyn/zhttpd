@@ -112,7 +112,8 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
     // RFC 9112 2.2: ignore at least one empty line before the request-line
     var start: usize = 0;
     while (start < buf.len and (buf[start] == '\r' or buf[start] == '\n')) start += 1;
-    const end = findHeadEnd(buf, @max(scan_from, start)) orelse {
+    // findHeadEnd backs up three bytes; keep it out of the skipped empty lines.
+    const end = findHeadEnd(buf, @max(scan_from, start + 3)) orelse {
         if (buf.len >= limits.max_head) {
             // Distinguish a huge request line (414) from huge headers.
             if (std.mem.indexOfScalarPos(u8, buf, start, '\n') == null) return error.UriTooLong;
@@ -127,6 +128,10 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
     var lines = std.mem.splitScalar(u8, head, '\n');
     const first = trimCr(lines.next() orelse return error.BadRequest);
     try parseRequestLine(first, req, path_buf, limits, merge_slashes);
+    // absolute-form: a Host header is still required to be valid and unique,
+    // but the authority from the target replaces it (RFC 9112 3.2.2).
+    const uri_host = req.host;
+    req.host = null;
     while (lines.next()) |raw| {
         const line = trimCr(raw);
         if (line.len == 0) break;
@@ -145,7 +150,9 @@ pub fn parseHead(buf: []const u8, scan_from: usize, req: *Request, path_buf: []u
         req.nheaders += 1;
         try interpretHeader(req, name, value);
     }
-    if (req.version == .http11 and req.host == null) return error.BadRequest;
+    if (uri_host) |h| {
+        req.host = h;
+    } else if (req.version == .http11 and req.host == null) return error.BadRequest;
     if (req.chunked and req.content_length != null) {
         // RFC 9112 6.3: chunked wins; nginx rejects the combination as smuggling-prone.
         return error.BadRequest;
@@ -262,6 +269,20 @@ fn isTchar(ch: u8) bool {
     };
 }
 
+/// Unsigned decimal made of digits only. `std.fmt.parseInt` also takes a
+/// sign and '_' separators, which no HTTP field allows ("+5", "1_0").
+pub fn parseDecimal(comptime T: type, s: []const u8) ?T {
+    for (s) |ch| if (!std.ascii.isDigit(ch)) return null;
+    return std.fmt.parseInt(T, s, 10) catch null;
+}
+
+/// Value of a "%XX" escape's two hex digits.
+pub fn hexByte(pair: *const [2]u8) ?u8 {
+    const hi = std.fmt.charToDigit(pair[0], 16) catch return null;
+    const lo = std.fmt.charToDigit(pair[1], 16) catch return null;
+    return hi << 4 | lo;
+}
+
 fn interpretHeader(req: *Request, name: []const u8, value: []const u8) ParseError!void {
     switch (name.len) {
         4 => if (std.ascii.eqlIgnoreCase(name, "host")) {
@@ -281,7 +302,7 @@ fn interpretHeader(req: *Request, name: []const u8, value: []const u8) ParseErro
             }
         },
         14 => if (std.ascii.eqlIgnoreCase(name, "content-length")) {
-            const n = std.fmt.parseInt(u64, value, 10) catch return error.BadRequest;
+            const n = parseDecimal(u64, value) orelse return error.BadRequest;
             if (req.content_length) |old| if (old != n) return error.BadRequest;
             req.content_length = n;
         },
@@ -339,6 +360,7 @@ fn parseRequestLine(line: []const u8, req: *Request, path_buf: []u8, limits: Lim
         const after = target[std.mem.indexOf(u8, target, "//").? + 2 ..];
         const slash = std.mem.indexOfAny(u8, after, "/?") orelse after.len;
         req.host = after[0..slash];
+        if (anyByte(req.host.?, isHostSeparator)) return error.BadRequest;
         path_part = if (slash < after.len) after[slash..] else "/";
     } else if (method.len == 7 and std.mem.eql(u8, method, "OPTIONS") and std.mem.eql(u8, target, "*")) {
         req.path = "*";
@@ -369,7 +391,7 @@ pub fn normalizePath(raw: []const u8, out: []u8, merge_slashes: bool) ?[]const u
         var ch = raw[i];
         if (ch == '%') {
             if (i + 2 >= raw.len) return null;
-            const v = std.fmt.parseInt(u8, raw[i + 1 .. i + 3], 16) catch return null;
+            const v = hexByte(raw[i + 1 ..][0..2]) orelse return null;
             if (v == 0) return null;
             ch = v;
             i += 2;
@@ -596,6 +618,46 @@ test "malformed requests" {
     var big: [20000]u8 = @splat('a');
     @memcpy(big[0..5], "GET /");
     try t.expectError(error.UriTooLong, parse(&big, &req, &pb));
+}
+
+test "absolute-form target overrides a Host header instead of rejecting it" {
+    var req: Request = .{};
+    var pb: [256]u8 = undefined;
+    try t.expectEqual(Status.complete, try parse("GET http://example.com/a?b=1 HTTP/1.1\r\nHost: other\r\n\r\n", &req, &pb));
+    try t.expectEqualStrings("example.com", req.host.?);
+    try t.expectEqualStrings("/a", req.path);
+    try t.expectEqualStrings("b=1", req.args);
+    try t.expectError(error.BadRequest, parse("GET http://example.com/ HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", &req, &pb));
+    try t.expectError(error.BadRequest, parse("GET http://a\\b/ HTTP/1.1\r\nHost: a\r\n\r\n", &req, &pb));
+}
+
+test "any number of empty lines before the request line is ignored" {
+    var req: Request = .{};
+    var pb: [256]u8 = undefined;
+    for ([_][]const u8{ "\r\n", "\r\n\r\n", "\n\n", "\r\n\r\n\r\n" }) |lead| {
+        var buf: [64]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, "{s}GET /x HTTP/1.1\r\nHost: a\r\n\r\nNEXT", .{lead});
+        try t.expectEqual(Status.incomplete, try parse(lead, &req, &pb));
+        try t.expectEqual(Status.complete, try parse(s, &req, &pb));
+        try t.expectEqualStrings("/x", req.path);
+        try t.expectEqualStrings("NEXT", s[req.head_len..]);
+    }
+}
+
+test "Content-Length and percent escapes take digits only" {
+    var req: Request = .{};
+    var pb: [256]u8 = undefined;
+    for ([_][]const u8{ "+5", "-0", "1_0", "0x5", "" }) |v| {
+        var buf: [96]u8 = undefined;
+        const s = try std.fmt.bufPrint(&buf, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: {s}\r\n\r\n", .{v});
+        try t.expectError(error.BadRequest, parse(s, &req, &pb));
+    }
+    try t.expectEqual(Status.complete, try parse("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 010\r\n\r\n", &req, &pb));
+    try t.expectEqual(@as(?u64, 10), req.content_length);
+    try t.expectError(error.BadRequest, parse("GET /%+f HTTP/1.0\r\n\r\n", &req, &pb));
+    try t.expectError(error.BadRequest, parse("GET /%-0 HTTP/1.0\r\n\r\n", &req, &pb));
+    try t.expectEqual(Status.complete, try parse("GET /%4a%4B HTTP/1.0\r\n\r\n", &req, &pb));
+    try t.expectEqualStrings("/JK", req.path);
 }
 
 test "normalize path" {

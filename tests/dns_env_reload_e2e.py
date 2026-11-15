@@ -89,7 +89,8 @@ operation_timeout_seconds=30
                 return config
 
             config = write()
-            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log) as proc:
+            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log,
+                         pid_file=case/'master.pid') as proc:
                 # A TCP listener alone does not mean startup has written its PID.
                 peer_cert(f.port, 'base.test')
                 peer_cert(f.port, 'dedicated.test')

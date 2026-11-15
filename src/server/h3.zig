@@ -311,6 +311,7 @@ pub fn read(st: *Stream, buf: []u8) net.Io {
         left.* -= n;
     }
     if (n > 0) return .{ .ok = n };
+    if (r.failed) return .{ .err = 0 };
     if (r.ended()) {
         if (st.body_left != null and st.body_left.? != 0) return malformed(st, r);
         st.body_end = true;
@@ -341,6 +342,7 @@ fn readChunk(st: *Stream, r: *Request, buf: []u8) net.Io {
     }
     const n = r.read(buf[10 .. buf.len - 2]);
     if (n == 0) {
+        if (r.failed) return .{ .err = 0 };
         if (!r.ended()) return .again;
         st.body_end = true;
         @memcpy(buf[0..5], "0\r\n\r\n");

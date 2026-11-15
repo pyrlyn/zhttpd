@@ -61,7 +61,7 @@ for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
             leaf.write_text(fragment('blue'))
         current = config if mode == 'self' else leaf
         render = (lambda color: wrapper(color=color)) if mode == 'self' else fragment
-        with running([binary, '-c', config, '--strict'], port, log_path=log) as proc:
+        with running([binary, '-c', config, '--strict'], port, log_path=log, pid_file=root/'master.pid') as proc:
             def count(needle): return log.read_text().count(needle)
             def healthy():
                 assert proc.poll() is None

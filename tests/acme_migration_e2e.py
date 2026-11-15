@@ -76,7 +76,8 @@ operation_timeout_seconds=10
         def unchanged(saved):
             for path, data in saved.items(): assert path.read_bytes() == data, path
         def no_stage(): return not list(encrypted.glob('*/work-*'))
-        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log) as process:
+        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log,
+                     pid_file=case/'master.pid') as process:
             certs = [peer_cert(f.port, host) for host in hosts]
             def healthy():
                 assert process.poll() is None
