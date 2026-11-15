@@ -128,7 +128,9 @@ func (*stateSnapshot) Release() {}
 func (f *FSM) Restore(r io.ReadCloser) error {
 	defer r.Close()
 	var s State
-	if err := decodeJSON(io.LimitReader(r, 32*1024*1024), &s); err != nil {
+	// No byte cap here: Persist writes whatever Apply admitted, and a snapshot
+	// this node cannot read back would keep it from ever rejoining.
+	if err := decodeJSON(r, &s); err != nil {
 		return err
 	}
 	if s.Documents == nil || s.Metrics == nil || s.Peers == nil || len(s.Documents) > maxNodes || len(s.Metrics) > maxNodes || len(s.Peers) > maxNodes {

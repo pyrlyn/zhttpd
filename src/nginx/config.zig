@@ -1144,7 +1144,8 @@ pub fn parseSize(s: []const u8) ?u64 {
     }
     const num = if (mul != 1) s[0 .. s.len - 1] else s;
     const v = std.fmt.parseInt(u64, num, 10) catch return null;
-    return v * mul;
+    // a wrapped product would read as 0, which means "unlimited"
+    return std.math.mul(u64, v, mul) catch null;
 }
 
 /// nginx time: "60", "60s", "500ms", "1h30m", "1d", "1w", "1M", "1y". Returns milliseconds.
@@ -1192,7 +1193,11 @@ pub fn build(gpa: std.mem.Allocator, ast: parser.Ast, opts: Options, diag: *Diag
     const cfg = try gpa.create(Config);
     cfg.* = .{ .arena = .init(gpa), .source_arena = ast.arena, .source_files = ast.files, .prefix = opts.prefix, .conf_file = "" };
     var b: Builder = .{ .a = cfg.arena.allocator(), .gpa = gpa, .diag = diag, .opts = opts, .cfg = cfg };
-    cfg.error_log.path = b.fullPath("logs/error.log") catch return error.OutOfMemory;
+    cfg.error_log.path = b.fullPath("logs/error.log") catch {
+        cfg.deinit();
+        gpa.destroy(cfg);
+        return error.OutOfMemory;
+    };
     b.buildMain(ast.root) catch |e| {
         cfg.deinit();
         gpa.destroy(cfg);
@@ -1213,14 +1218,12 @@ pub fn destroy(gpa: std.mem.Allocator, cfg: *Config) void {
 
 /// Parse and build from a file, the way `zhttpd -c FILE` does.
 pub fn load(gpa: std.mem.Allocator, conf_file: []const u8, opts: Options, diag: *Diag) Error!*Config {
-    var ast = parser.parseFile(gpa, conf_file, .{ .conf_prefix = opts.conf_prefix, .sources = opts.sources }, diag) catch |e| switch (e) {
+    const ast = parser.parseFile(gpa, conf_file, .{ .conf_prefix = opts.conf_prefix, .sources = opts.sources }, diag) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseFailed => return error.ConfigFailed,
     };
-    const cfg = build(gpa, ast, opts, diag) catch |e| {
-        if (e != error.ConfigFailed and e != error.OutOfMemory) ast.deinit();
-        return e;
-    };
+    // `build` owns the AST from here on and frees it on every error.
+    const cfg = try build(gpa, ast, opts, diag);
     cfg.conf_file = conf_file;
     return cfg;
 }
@@ -1238,6 +1241,7 @@ test "parse sizes and times" {
     const t = std.testing;
     try t.expectEqual(@as(?u64, 1048576), parseSize("1m"));
     try t.expectEqual(@as(?u64, 10240), parseSize("10K"));
+    try t.expectEqual(@as(?u64, null), parseSize("17179869184g"));
     try t.expectEqual(@as(?u32, 65000), parseTimeMs("65"));
     try t.expectEqual(@as(?u32, 5400000), parseTimeMs("1h30m"));
     try t.expectEqual(@as(?u32, 500), parseTimeMs("500ms"));

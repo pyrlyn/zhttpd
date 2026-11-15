@@ -251,10 +251,14 @@ fn readPid(cfg: *config.Config) ?c.pid_t {
         return null;
     };
     defer std.heap.c_allocator.free(data);
-    return std.fmt.parseInt(c.pid_t, std.mem.trim(u8, data, " \r\n\t"), 10) catch {
-        eprint("zhttpd: [error] invalid PID number \"{s}\" in \"{s}\"\n", .{ std.mem.trim(u8, data, " \r\n\t"), p });
+    const text = std.mem.trim(u8, data, " \r\n\t");
+    // kill(0) and kill(-n) address process groups, never the master
+    const pid = std.fmt.parseInt(c.pid_t, text, 10) catch 0;
+    if (pid <= 0) {
+        eprint("zhttpd: [error] invalid PID number \"{s}\" in \"{s}\"\n", .{ text, p });
         return null;
-    };
+    }
+    return pid;
 }
 
 fn sendSignal(cfg: *config.Config, sig: []const u8) u8 {
@@ -704,6 +708,7 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
     var acme_pending = false;
     var acme_cancelled = false;
     var refresh_tls = false;
+    var refresh_at: i64 = 0; // earliest retry after a certificate refresh failed
     var old: std.ArrayList(c.pid_t) = .empty; // workers of previous generations, shutting down
     while (true) {
         sleepMs(100);
@@ -773,20 +778,50 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             const sig: c_int = if (m_terminate) SIGTERM else SIGQUIT;
             signalAll(&gen, sig);
             for (old.items) |p| _ = kill(p, sig);
-            var waited: u32 = 0;
-            while (waited < 600) : (waited += 1) {
+            // Poll rather than block: a SIGTERM during a graceful quit must still
+            // reach workers that are draining long-lived connections.
+            var forced = m_terminate;
+            while (true) {
                 var status: c_int = 0;
-                const pid = c.waitpid(-1, &status, 0);
+                const pid = c.waitpid(-1, &status, c.W.NOHANG);
                 if (pid < 0) break;
+                if (pid > 0) {
+                    for (gen.pids) |*p| if (p.* == pid) {
+                        p.* = 0;
+                    };
+                    for (old.items, 0..) |p, k| if (p == pid) {
+                        _ = old.swapRemove(k);
+                        break;
+                    };
+                    continue;
+                }
+                if (m_terminate and !forced) {
+                    forced = true;
+                    signalAll(&gen, SIGTERM);
+                    for (old.items) |p| _ = kill(p, SIGTERM);
+                }
+                sleepMs(100);
             }
             removePid(cfg0);
             return 0;
         }
+        // fork() fails transiently (EAGAIN, ENOMEM); keep the worker count
+        for (gen.pids, 0..) |*p, k| if (p.* < 0) {
+            p.* = spawnWorker(gpa, &gen, k, if (encrypted_job) |job| job.lock_fd else null);
+        };
         const now = z.server.loop.nowMs();
         if (acme_pid > 0 and now - acme_started > @as(i64, acme_active.operation_timeout_seconds) * 1000) stopAcme(acme_pid, encrypted_job);
         if (m_reopen) {
             m_reopen = false;
+            // The master's descriptor is what respawned workers and ACME
+            // children inherit, so it has to follow the rotation too.
+            const fd = openErrorLog(gen.cfg);
+            if (fd > 2) {
+                if (gen.error_fd > 2) net.close(gen.error_fd);
+                gen.error_fd = fd;
+            }
             signalAll(&gen, SIGUSR1);
+            for (old.items) |p| _ = kill(p, SIGUSR1);
         }
         const writer: ?z.http.config_watch.Writer = if (acme_pid > 0) .{ .certificate = acme_active.certificate, .key = acme_active.key } else null;
         if (gen.cfg.auto_reload and watcher.poll(now, writer)) {
@@ -843,27 +878,31 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
         }
         // Keep serving the active generation throughout issuance. Activation is
         // one transaction after every certificate has passed TLS validation.
-        if (!watcher.unsettled() and ((pending != null and pending_validated and !writing_candidate and missing == null and !acme_pending) or (pending == null and refresh_tls))) {
+        if (!watcher.unsettled() and ((pending != null and pending_validated and !writing_candidate and missing == null and !acme_pending) or (pending == null and refresh_tls and now >= refresh_at))) {
             const ncfg = pending orelse gen.cfg;
             const owns_candidate = pending != null;
             pending = null;
-            refresh_tls = false;
             var socks: std.ArrayList(Sock) = .empty;
             defer socks.deinit(gpa);
             for (gen.cfg.listens, 0..) |l, li| if (gen.fds[li].len == 1) {
                 socks.append(gpa, .{ .addr = l.addr, .fd = gen.fds[li][0], .used = false, .quic = l.opts.quic }) catch {};
             };
+            // A renewed certificate stays due until a generation has loaded it:
+            // a failed attempt keeps `refresh_tls` and is retried after a pause.
             const next_jobs = z.http.acme.renewals(gpa, ncfg.acme, acme_jobs) catch {
+                refresh_at = now + 10_000;
                 if (owns_candidate) destroyConfig(gpa, ncfg);
                 eprint("zhttpd: [emerg] cannot allocate ACME renewal schedule\n", .{});
                 continue;
             };
             const ngen = prepare(gpa, ncfg, socks.items, &diag) catch {
+                refresh_at = now + 10_000;
                 gpa.free(next_jobs);
                 if (owns_candidate) destroyConfig(gpa, ncfg);
                 eprint("zhttpd: [emerg] reload failed, keeping the old configuration\n", .{});
                 continue;
             };
+            refresh_tls = false;
             acme_revision += 1;
             for (next_jobs) |*job| {
                 var previous: ?z.http.acme.Renewal = null;
@@ -889,6 +928,8 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
             // Old workers retain their own descriptors until they shut down.
             for (socks.items) |s| if (!s.used) net.close(s.fd);
             for (gen.fds) |fds| if (fds.len > 1) for (fds) |fd| net.close(fd);
+            // likewise the previous error log: `prepare` opened this generation's own
+            if (gen.error_fd > 2) net.close(gen.error_fd);
             for (next.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &next, k, if (encrypted_job) |job| job.lock_fd else null);
             for (gen.pids) |p| if (p > 0) {
                 _ = kill(p, SIGQUIT);

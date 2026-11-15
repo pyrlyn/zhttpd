@@ -25,7 +25,9 @@ void zhttp_tx_prepare_write(SSL *ssl);
 int zhttp_tx_seal_frame(SSL *ssl, const uint8_t *head, size_t hn, const uint8_t *data, size_t n);
 
 #define STREAMS 32
-#define INPUT_CAP (64 * 1024)
+/* Until the client acknowledges SETTINGS it may send the default 65535-byte
+ * window at once: that, its chunk framing and the request head must fit. */
+#define INPUT_CAP (128 * 1024)
 #define INPUT_INITIAL_CAP 1024
 #define HEAD_INITIAL_CAP 1024
 #define OUTPUT_INITIAL_CAP 2048
@@ -168,6 +170,8 @@ static void sweep(session *s) {
         if (!p->closed) { pp = &p->next; continue; }
         *pp = p->next;
         if (p->request) s->close(p->request);
+        /* Input nobody read still counts against the connection window. */
+        if (p->credit && s->h2) nghttp2_session_consume_connection(s->h2, p->credit);
         unmap_file(p);
         if (p->headers && cached_streams < STREAMS && p->output_cap <= OUTPUT_CACHE_CAP - cached_output_bytes) {
             p->next = stream_cache; stream_cache = p; ++cached_streams;
@@ -357,6 +361,8 @@ static int body(stream *p, const uint8_t *data, size_t n) {
     if (!n) return 0;
     if (p->chunked) {
         char b[32]; int k = snprintf(b, sizeof(b), "%zx\r\n", n);
+        /* All or nothing: a chunk header without its data mis-frames the rest. */
+        if (n > INPUT_CAP - p->input_len || (size_t)k + 2 > INPUT_CAP - p->input_len - n) return -1;
         if (append(p, b, (size_t)k) || append(p, data, n) || append(p, "\r\n", 2)) return -1;
     } else if (append(p, data, n)) return -1;
     p->credit += n;
@@ -491,8 +497,14 @@ static int h2_frame(nghttp2_session *h, const nghttp2_frame *f, void *user) {
     return 0;
 }
 static int h2_data(nghttp2_session *h, uint8_t flags, int32_t id, const uint8_t *data, size_t n, void *user) {
-    (void)h; (void)flags;
-    return body(lookup(user, id), data, n) ? NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE : 0;
+    (void)flags;
+    if (!body(lookup(user, id), data, n)) return 0;
+    /* nghttp2 only skips a chunk whose callback fails and leaves the stream
+     * open: reset it, or the body continues with a hole in it. The skipped
+     * bytes go back to the connection window. */
+    nghttp2_session_consume_connection(h, n);
+    nghttp2_submit_rst_stream(h, 0, id, NGHTTP2_INTERNAL_ERROR);
+    return 0;
 }
 static int h2_close(nghttp2_session *h, int32_t id, uint32_t error, void *user) {
     (void)h; (void)error;

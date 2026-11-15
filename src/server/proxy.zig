@@ -81,10 +81,10 @@ pub fn start(conn: *Conn) void {
     conn.up.fcgi = lc.gateway != .http;
     conn.up.req_head = (if (conn.up.fcgi) fastcgi.request(conn) else buildRequest(conn, p)) catch {
         handler.finalize(conn, 500);
-        conn.state = .sending;
+        conn.bodyDone();
         return;
     };
-    if (conn.up.fcgi) conn.up.request_owned = @constCast(conn.up.req_head);
+    conn.up.request_owned = @constCast(conn.up.req_head);
     const ups = conn.up.ups.?;
     conn.up.first_addr = ups.rr;
     ups.rr +%= 1;
@@ -112,7 +112,7 @@ fn resolveDynamic(conn: *Conn, dh: @import("expression").Expr) bool {
     }
     conn.w.errlog(.err, "no resolver defined to resolve {s}", .{hostport});
     handler.finalize(conn, 502);
-    conn.state = .sending;
+    conn.bodyDone();
     return false;
 }
 
@@ -161,7 +161,7 @@ fn fail(conn: *Conn, status: u16) void {
     }
     conn.ctx.upstream_status = if (status == 504) 504 else 502;
     handler.finalize(conn, status);
-    conn.state = .sending;
+    conn.bodyDone();
 }
 
 pub fn onUpstreamEvent(conn: *Conn, writable: bool) void {
@@ -199,8 +199,15 @@ pub fn drive(conn: *Conn) bool {
                 logUpstreamError(conn, "connect() failed", e);
                 disconnect(conn);
                 connectNext(conn);
-                if (conn.state != .proxy) return true;
+                // an error_page may have started another location's upstream
+                if (conn.state != .proxy or conn.ctx.conf != lc) return true;
                 continue;
+            }
+            // The tag is shared by every attempt, so a queued event of the
+            // previous, already closed socket can land here mid-connect.
+            if (!net.connected(up.fd)) {
+                up.writable = false;
+                return false;
             }
             up.phase = .sending;
             conn.deadline = conn.w.now_ms + lc.proxy_send_timeout_ms;
@@ -231,7 +238,7 @@ pub fn drive(conn: *Conn) bool {
                         logUpstreamError(conn, "writev() failed", net.errno());
                         disconnect(conn);
                         connectNext(conn);
-                        if (conn.state != .proxy) return true;
+                        if (conn.state != .proxy or conn.ctx.conf != lc) return true;
                         break;
                     },
                 }
@@ -369,11 +376,11 @@ const HeadResult = enum { incomplete, bad, ok, intercepted };
 fn parseResponseHead(conn: *Conn) HeadResult {
     const up = conn.up;
     const buf = conn.wbuf[0..up.rlen];
-    const end = blk: {
-        if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i| break :blk i + 4;
-        if (std.mem.indexOf(u8, buf, "\n\n")) |i| break :blk i + 2;
-        return .incomplete;
-    };
+    // whichever blank line comes first: a CRLF pair later in the body is not the end
+    const crlf = if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i| i + 4 else buf.len + 1;
+    const lf = if (std.mem.indexOf(u8, buf, "\n\n")) |i| i + 2 else buf.len + 1;
+    const end = @min(crlf, lf);
+    if (end > buf.len) return .incomplete;
     const head = buf[0..end];
     var lines = std.mem.splitScalar(u8, head, '\n');
     const sl = std.mem.trimEnd(u8, lines.next() orelse return .bad, "\r");
@@ -401,13 +408,15 @@ fn parseResponseHead(conn: *Conn) HeadResult {
         for (lc.error_pages) |ep| if (std.mem.indexOfScalar(u16, ep.codes, status) != null) {
             release(conn);
             handler.finalize(conn, status);
-            conn.state = .sending;
+            conn.bodyDone();
             return .intercepted;
         };
     }
 
     const a = conn.arena();
-    var hdrs: std.ArrayList(u8) = .empty;
+    // Sized once: a list that grows asks for more than it needs, and the arena is small.
+    // Each line may gain a space and a CR.
+    var hdrs: std.ArrayList(u8) = std.ArrayList(u8).initCapacity(a, end + 2 * std.mem.count(u8, head, "\n")) catch return .bad;
     var length: ?u64 = null;
     var chunked = false;
     while (lines.next()) |raw| {
@@ -418,7 +427,7 @@ fn parseResponseHead(conn: *Conn) HeadResult {
         const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
         if (up.fcgi and std.ascii.eqlIgnoreCase(name, "status")) continue;
         if (std.ascii.eqlIgnoreCase(name, "content-length")) {
-            length = std.fmt.parseInt(u64, value, 10) catch return .bad;
+            length = request.parseDecimal(u64, value) orelse return .bad;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
@@ -446,7 +455,7 @@ fn parseResponseHead(conn: *Conn) HeadResult {
     }
     // client head, built in the arena (wbuf still holds upstream bytes)
     conn.keep_alive = handler.decideKeepAlive(conn);
-    var hw: std.Io.Writer.Allocating = .init(a);
+    var hw = std.Io.Writer.Allocating.initCapacity(a, hdrs.items.len + 512) catch return .bad;
     handler.writeHeadTo(conn, &hw.writer, status, .{
         .length = if (known_len) length else if (no_body) length else null,
         .chunked = up_.rechunk,
@@ -465,6 +474,8 @@ fn parseResponseHead(conn: *Conn) HeadResult {
         return .ok;
     }
     if (leftover.len == 0) {
+        // "Content-Length: 0": nothing more will come, do not wait for the upstream to close
+        if (up_.framing == .length and up_.remaining == 0 and !up.fcgi) up_.finished = true;
         conn.setOutput(&.{client_head});
         return .ok;
     }
@@ -490,12 +501,15 @@ fn hidden(name: []const u8, lc: *const config.LocConf) bool {
     return false;
 }
 
-/// Request line + headers for the upstream.
+/// Request line + headers for the upstream, owned by the caller. It is kept
+/// off the request arena, which must still hold the response head for the client.
 fn buildRequest(conn: *Conn, p: config.Proxy) ![]const u8 {
     const ctx = conn.ctx;
     const lc = ctx.conf;
     const a = conn.arena();
+    const gpa = conn.w.gpa;
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
     const method = if (ctx.method_override_get) "GET" else conn.req.method_raw;
     // URI
     var uri_changed = !std.mem.eql(u8, ctx.uri, conn.req.path) or ctx.internal;
@@ -513,7 +527,8 @@ fn buildRequest(conn: *Conn, p: config.Proxy) ![]const u8 {
         if (std.mem.indexOfScalar(u8, path, '?')) |q| path = path[0..q];
         if (std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://")) path = try escapedConcat(a, "", ctx.uri);
     } else path = try escapedConcat(a, "", ctx.uri);
-    try out.print(a, "{s} {s}{s}{s} HTTP/{s}\r\n", .{ method, path, if (ctx.args.len > 0) "?" else "", ctx.args, if (lc.proxy_http_11) "1.1" else "1.0" });
+    // `proxy_pass` variables and rewritten args can hold decoded request bytes
+    try out.print(gpa, "{s} {s}{s}{s} HTTP/{s}\r\n", .{ method, try handler.escapeCtl(a, path), if (ctx.args.len > 0) "?" else "", try handler.escapeCtl(a, ctx.args), if (lc.proxy_http_11) "1.1" else "1.0" });
 
     // proxy_set_header (defaults: Host $proxy_host, Connection close)
     var set_host = false;
@@ -525,14 +540,14 @@ fn buildRequest(conn: *Conn, p: config.Proxy) ![]const u8 {
     // nginx 1.30 defaults: Host $proxy_host; Connection "" (not sent). zhttpd never reuses
     // upstream connections, it closes them after each response.
     _ = &set_conn;
-    if (!set_host) try out.print(a, "Host: {s}\r\n", .{if (ctx.proxy_host.len > 0) ctx.proxy_host else p.host});
+    if (!set_host) try out.print(gpa, "Host: {s}\r\n", .{if (ctx.proxy_host.len > 0) ctx.proxy_host else p.host});
     for (lc.proxy_set_headers) |h| {
         const v = try vars.eval(a, ctx, h.value);
-        if (v.len == 0) continue;
-        try out.print(a, "{s}: {s}\r\n", .{ h.name, v });
+        if (v.len == 0 or std.mem.indexOfAny(u8, v, "\r\n") != null) continue;
+        try out.print(gpa, "{s}: {s}\r\n", .{ h.name, v });
     }
     if (conn.body_mode != .none or conn.req.content_length != null) {
-        try out.print(a, "Content-Length: {d}\r\n", .{conn.body.items.len});
+        try out.print(gpa, "Content-Length: {d}\r\n", .{conn.body.items.len});
     }
     if (lc.proxy_pass_request_headers) {
         for (conn.req.headers[0..conn.req.nheaders]) |h| {
@@ -542,11 +557,11 @@ fn buildRequest(conn: *Conn, p: config.Proxy) ![]const u8 {
                 if (std.ascii.eqlIgnoreCase(s.name, h.name)) overridden = true;
             }
             if (overridden) continue;
-            try out.print(a, "{s}: {s}\r\n", .{ h.name, h.value });
+            try out.print(gpa, "{s}: {s}\r\n", .{ h.name, h.value });
         }
     }
-    try out.appendSlice(a, "\r\n");
-    return out.items;
+    try out.appendSlice(gpa, "\r\n");
+    return out.toOwnedSlice(gpa);
 }
 
 fn skipRequestHeader(name: []const u8) bool {

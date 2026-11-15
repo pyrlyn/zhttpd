@@ -116,6 +116,9 @@ pub const Request = struct {
     in_frame: bool = false,
     released: bool = false,
     aborted: bool = false,
+    /// `read` hit a stream or connection error: the body is incomplete and
+    /// `ended` is true. No `aborted` callback runs under `read` itself.
+    failed: bool = false,
     /// `Handler.request` was called; the application owns the request.
     delivered: bool = false,
     block: std.ArrayList(u8) = .empty,
@@ -172,6 +175,7 @@ pub const Request = struct {
                 r.in_frame = false;
             }
         }
+        r.cutShort(s);
         r.checkEnd(s);
         return done;
     }
@@ -189,19 +193,35 @@ pub const Request = struct {
         r.state = .done;
     }
 
+    /// Connection error found on this request's stream. Once the application
+    /// owns the request it may be inside `read`: closing now would run its
+    /// `aborted` callback (and free the session) under that call, so the
+    /// close waits for the next flush and `read` reports `failed`.
+    fn failSession(r: *Request, code: u64) void {
+        if (!r.delivered) return r.session.fail(code);
+        r.failed = true;
+        r.state = .done;
+        r.session.conn.closeAppLater(code);
+    }
+
+    /// A frame the stream ended in the middle of (RFC 9114 §7.1).
+    fn cutShort(r: *Request, s: *Stream) void {
+        if (r.in_frame and r.state != .done and s.finReceived() and s.available() == 0) r.failSession(Error.frame);
+    }
+
     fn nextFrame(r: *Request, s: *Stream) bool {
         const fh = peekFrame(s) orelse {
-            if (s.finReceived() and s.available() > 0) r.session.fail(Error.frame);
+            if (s.finReceived() and s.available() > 0) r.failSession(Error.frame);
             return false;
         };
         if (isReservedH2Frame(fh.ty) or fh.ty == frame_settings or fh.ty == frame_goaway or
             fh.ty == frame_max_push_id or fh.ty == frame_cancel_push or fh.ty == frame_push_promise)
         {
-            r.session.fail(Error.frame_unexpected);
+            r.failSession(Error.frame_unexpected);
             return false;
         }
         if (r.state == .trailers and (fh.ty == frame_data or fh.ty == frame_headers)) {
-            r.session.fail(Error.frame_unexpected);
+            r.failSession(Error.frame_unexpected);
             return false;
         }
         s.consume(fh.size);
@@ -224,7 +244,10 @@ pub const Request = struct {
         const a = r.session.server.alloc;
         while (r.frame_left > 0) {
             const p = s.peek();
-            if (p.len == 0) return false;
+            if (p.len == 0) {
+                r.cutShort(s);
+                return false;
+            }
             const n: usize = @intCast(@min(p.len, r.frame_left));
             r.block.appendSlice(a, p[0..n]) catch {
                 r.abort(Error.internal);
@@ -240,13 +263,20 @@ pub const Request = struct {
     fn collectTrailers(r: *Request, s: *Stream) bool {
         if (!r.collectBlock(s)) return false;
         // Validate the encoding; trailer fields are not forwarded.
-        var scratch: [1024]u8 = undefined;
-        var d = qpack.Decoder.init(r.block.items, &scratch) catch {
-            r.session.fail(qpack.decompression_failed);
+        // Sized like the head's scratch: a fixed buffer would turn a large
+        // but valid trailer section into a connection error.
+        const a = r.session.server.alloc;
+        const scratch = a.alloc(u8, r.block.items.len * 2 + 64) catch {
+            r.abort(Error.internal);
+            return false;
+        };
+        defer a.free(scratch);
+        var d = qpack.Decoder.init(r.block.items, scratch) catch {
+            r.failSession(qpack.decompression_failed);
             return false;
         };
         while (d.next() catch {
-            r.session.fail(qpack.decompression_failed);
+            r.failSession(qpack.decompression_failed);
             return false;
         }) |_| {}
         r.state = .trailers;
@@ -271,7 +301,10 @@ pub const Request = struct {
             }
             if (r.frame_ty != frame_headers) {
                 r.frame_left -= skip(s, r.frame_left);
-                if (r.frame_left != 0) return false;
+                if (r.frame_left != 0) {
+                    r.cutShort(s);
+                    return false;
+                }
                 r.in_frame = false;
                 continue;
             }
@@ -357,6 +390,12 @@ pub const Request = struct {
             s.reset(code);
         }
         r.state = .done;
+        // Under the application's `read`: it sees `failed`, not a callback
+        // that would make it release the request it is still using.
+        if (r.delivered) {
+            r.failed = true;
+            return;
+        }
         r.notifyAborted(code);
     }
 
@@ -777,7 +816,8 @@ pub const Server = struct {
         sv.sessions = se;
         c.app = se;
         se.openControl();
-        if (sv.shutting_down) se.shutdown();
+        // A failed control stream closes the connection, which frees `se`.
+        if (sv.shutting_down and c.app != null) se.shutdown();
     }
 
     fn connClosed(ctx: ?*anyopaque, c: *Conn) void {

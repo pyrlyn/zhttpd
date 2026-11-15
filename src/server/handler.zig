@@ -63,6 +63,12 @@ fn findAndRun(conn: *Conn) void {
         }
         const m = router.findLocationMethod(ctx.srv.locations, ctx.uri, conn.req.method_raw);
         setLocation(conn, m.loc, m.caps, ctx.uri);
+        if (m.failed) {
+            conn.w.errlog(.err, "location regex exceeded its step limit on \"{s}\"", .{ctx.uri});
+            return finalize(conn, 500);
+        }
+        // Before the location's own `return`/`rewrite` can answer for it.
+        if (ctx.conf.internal and !ctx.internal) return finalize(conn, 404);
         if (!checkBodySize(conn)) return;
         if (!@import("policy.zig").check(conn)) return;
         if (m.loc) |loc| {
@@ -80,6 +86,9 @@ fn setLocation(conn: *Conn, loc: ?*config.Location, caps: Regex.Captures, subjec
     const ctx = conn.ctx;
     ctx.loc = loc;
     ctx.conf = if (loc) |l| l.conf else ctx.srv.conf;
+    // per location; vars.zig maps them on demand until the content phase does
+    ctx.request_filename = "";
+    ctx.document_root = "";
     if (loc) |l| if (l.re) |re| {
         ctx.caps = caps;
         ctx.caps_subject = subject;
@@ -89,7 +98,8 @@ fn setLocation(conn: *Conn, loc: ?*config.Location, caps: Regex.Captures, subjec
 
 fn checkBodySize(conn: *Conn) bool {
     const max = conn.ctx.conf.client_max_body_size;
-    if (max != 0) if (conn.req.content_length) |len| if (len > max) {
+    // not on internal redirects (nginx): `error_page 413` must reach its page
+    if (max != 0 and !conn.ctx.internal) if (conn.req.content_length) |len| if (len > max) {
         conn.w.errlog(.err, "client intended to send too large body: {d} bytes", .{len});
         conn.close_after = true;
         finalize(conn, 413);
@@ -146,12 +156,12 @@ fn runStmts(conn: *Conn, stmts: []const config.Stmt) !StmtResult {
         },
         .rewrite => |rw| {
             var caps: Regex.Captures = .{};
-            if (!(rw.re.search(ctx.uri, &caps) catch false)) continue;
+            if (!try rw.re.search(ctx.uri, &caps)) continue; // step limit: 500, not "no match"
             const saved = .{ ctx.caps, ctx.caps_subject, ctx.caps_re };
             ctx.caps = caps;
             ctx.caps_subject = ctx.uri;
             ctx.caps_re = rw.re;
-            const new = try vars.eval(a, ctx, rw.repl);
+            const new = try evalRewrite(a, conn, rw.repl, rw.flag == .redirect or rw.flag == .permanent);
             _ = saved;
             const is_url = std.mem.startsWith(u8, new, "http://") or std.mem.startsWith(u8, new, "https://");
             const keep_args = !std.mem.endsWith(u8, rw.repl.raw, "?");
@@ -189,6 +199,42 @@ fn runStmts(conn: *Conn, stmts: []const config.Stmt) !StmtResult {
     return .cont;
 }
 
+/// Rewrite replacement with nginx's capture quoting: when the client's target
+/// carried escapes, `$N` copied into a redirect or after the '?' is escaped
+/// again, so a decoded CR/LF, space or '&' cannot leave its value.
+fn evalRewrite(a: std.mem.Allocator, conn: *Conn, repl: expr.Expr, redirect: bool) ![]const u8 {
+    const ctx = conn.ctx;
+    if (std.mem.indexOfAny(u8, conn.req.target, "%+") == null) return vars.eval(a, ctx, repl);
+    var quote = redirect;
+    for ([_][]const u8{ "http://", "https://", "$scheme" }) |p| quote = quote or std.mem.startsWith(u8, repl.raw, p);
+    var out: std.ArrayList(u8) = .empty;
+    for (repl.parts) |part| switch (part) {
+        .lit => |l| {
+            try out.appendSlice(a, l);
+            quote = quote or std.mem.indexOfScalar(u8, l, '?') != null;
+        },
+        .v => |v| if (v == .capture and quote) {
+            for (ctx.caps.group(ctx.caps_subject, v.capture) orelse "") |ch| {
+                if (ch <= 0x20 or ch >= 0x7f or std.mem.indexOfScalar(u8, "#%&+;?", ch) != null) {
+                    try out.print(a, "%{X:0>2}", .{ch});
+                } else try out.append(a, ch);
+            }
+        } else try vars.appendVar(a, ctx, v, &out, 0),
+    };
+    return out.items;
+}
+
+/// `s` with control bytes and spaces percent-escaped. Decoded request bytes
+/// (`$uri`, captures) must not end a header line or a request-line token.
+pub fn escapeCtl(a: std.mem.Allocator, s: []const u8) ![]const u8 {
+    if (!request.anyByte(s, request.isCtlOrSpace)) return s;
+    var out: std.ArrayList(u8) = .empty;
+    for (s) |ch| {
+        if (ch <= 0x20 or ch == 0x7f) try out.print(a, "%{X:0>2}", .{ch}) else try out.append(a, ch);
+    }
+    return out.items;
+}
+
 fn evalCond(conn: *Conn, cond: *const config.Cond) !bool {
     const ctx = conn.ctx;
     const a = conn.arena();
@@ -199,7 +245,7 @@ fn evalCond(conn: *Conn, cond: *const config.Cond) !bool {
         .ne => !eql(v, try vars.eval(a, ctx, cond.b)),
         .re => blk: {
             var caps: Regex.Captures = .{};
-            if (cond.re.?.search(v, &caps) catch false) {
+            if (try cond.re.?.search(v, &caps)) {
                 ctx.caps = caps;
                 ctx.caps_subject = v;
                 ctx.caps_re = cond.re;
@@ -291,24 +337,7 @@ fn accessAllowed(conn: *Conn, rules: []const config.AccessRule) bool {
 
 /// Filesystem path for `uri` under `root` or `alias` (no trailing NUL).
 fn mapUri(conn: *Conn, uri: []const u8) ![:0]u8 {
-    const ctx = conn.ctx;
-    const a = conn.arena();
-    const lc = ctx.conf;
-    if (lc.alias) |al| {
-        const base = try vars.eval(a, ctx, al);
-        ctx.document_root = base;
-        const loc = ctx.loc;
-        if (loc != null and (loc.?.kind == .regex or loc.?.kind == .regex_icase)) {
-            // regex alias: the alias is the complete path
-            return a.dupeSentinel(u8, base, 0);
-        }
-        const plen = if (loc) |l| @min(l.name.len, uri.len) else 0;
-        return std.mem.concatWithSentinel(a, u8, &.{ base, uri[plen..] }, 0);
-    }
-    var root = try vars.eval(a, ctx, lc.root);
-    if (root.len > 1 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
-    ctx.document_root = root;
-    return std.mem.concatWithSentinel(a, u8, &.{ root, uri }, 0);
+    return vars.mapUri(conn.arena(), conn.ctx, uri, 0);
 }
 
 fn tryFiles(conn: *Conn, tf: []const expr.Expr) void {
@@ -519,20 +548,37 @@ fn parseRange(h: []const u8, size: u64) Range {
     const a = std.mem.trim(u8, spec[0..dash], " ");
     const b = std.mem.trim(u8, spec[dash + 1 ..], " ");
     if (a.len == 0) {
-        const n = std.fmt.parseInt(u64, b, 10) catch return .bad;
+        const n = request.parseDecimal(u64, b) orelse return .bad;
         if (n == 0 or size == 0) return .bad;
         return .{ .ok = .{ .start = size - @min(n, size), .end = size - 1 } };
     }
-    const s = std.fmt.parseInt(u64, a, 10) catch return .bad;
+    const s = request.parseDecimal(u64, a) orelse return .bad;
     if (s >= size) return .bad;
     var e = size - 1;
-    if (b.len > 0) e = @min(std.fmt.parseInt(u64, b, 10) catch return .bad, size - 1);
+    if (b.len > 0) e = @min(request.parseDecimal(u64, b) orelse return .bad, size - 1);
     if (e < s) return .bad;
     return .{ .ok = .{ .start = s, .end = e } };
 }
 
+/// `s` as HTML text, or as a relative `href` when `href` is set. File names and
+/// the decoded request path are not markup.
+fn appendHtml(a: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8, href: bool) !void {
+    for (s) |ch| {
+        if (href) {
+            if (std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "-._~!$()*+,=@", ch) != null) try out.append(a, ch) else try out.print(a, "%{X:0>2}", .{ch});
+        } else switch (ch) {
+            '&' => try out.appendSlice(a, "&amp;"),
+            '<' => try out.appendSlice(a, "&lt;"),
+            '>' => try out.appendSlice(a, "&gt;"),
+            '"' => try out.appendSlice(a, "&quot;"),
+            else => try out.append(a, ch),
+        }
+    }
+}
+
 fn autoindex(conn: *Conn, dir: []const u8, is_head: bool) void {
-    const a = conn.arena();
+    // a listing outgrows the fixed request arena after a few dozen entries
+    const a = conn.appAllocator();
     const names = os.listDir(conn.w.gpa, dir) catch return finalize(conn, 403);
     defer os.freeList(conn.w.gpa, names);
     std.mem.sort([]u8, names, {}, struct {
@@ -541,19 +587,41 @@ fn autoindex(conn: *Conn, dir: []const u8, is_head: bool) void {
         }
     }.lt);
     var out: std.ArrayList(u8) = .empty;
-    const uri = conn.ctx.uri;
-    out.print(a, "<html>\r\n<head><title>Index of {s}</title></head>\r\n<body>\r\n<h1>Index of {s}</h1><hr><pre><a href=\"../\">../</a>\r\n", .{ uri, uri }) catch return finalize(conn, 500);
-    for (names) |n| {
-        if (n.len == 0 or n[0] == '.') continue;
-        const p = std.fmt.allocPrintSentinel(a, "{s}{s}", .{ dir, n }, 0) catch return finalize(conn, 500);
-        const m = os.statZ(p) orelse continue;
-        const slash = if (m.kind == .dir) "/" else "";
-        out.print(a, "<a href=\"{s}{s}\">{s}{s}</a>\r\n", .{ n, slash, n, slash }) catch return finalize(conn, 500);
-    }
-    out.appendSlice(a, "</pre><hr></body>\r\n</html>\r\n") catch return finalize(conn, 500);
+    autoindexBody(a, &out, dir, conn.ctx.uri, names) catch return finalize(conn, 500);
     conn.ctx.status = 200;
     _ = is_head; // writeSimple drops the body for HEAD
     writeSimple(conn, 200, "text/html", out.items, "");
+}
+
+fn autoindexBody(a: std.mem.Allocator, out: *std.ArrayList(u8), dir: []const u8, uri: []const u8, names: []const []u8) !void {
+    try out.appendSlice(a, "<html>\r\n<head><title>Index of ");
+    try appendHtml(a, out, uri, false);
+    try out.appendSlice(a, "</title></head>\r\n<body>\r\n<h1>Index of ");
+    try appendHtml(a, out, uri, false);
+    try out.appendSlice(a, "</h1><hr><pre><a href=\"../\">../</a>\r\n");
+    for (names) |n| {
+        if (n.len == 0 or n[0] == '.') continue;
+        const p = try std.fmt.allocPrintSentinel(a, "{s}{s}", .{ dir, n }, 0);
+        const m = os.statZ(p) orelse continue;
+        const slash = if (m.kind == .dir) "/" else "";
+        try out.appendSlice(a, "<a href=\"");
+        try appendHtml(a, out, n, true);
+        try out.print(a, "{s}\">", .{slash});
+        try appendHtml(a, out, n, false);
+        try out.print(a, "{s}</a>\r\n", .{slash});
+    }
+    try out.appendSlice(a, "</pre><hr></body>\r\n</html>\r\n");
+}
+
+test "autoindex escapes file names and the request path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    try appendHtml(arena.allocator(), &out, "a b\"<x>&.txt", true);
+    try std.testing.expectEqualStrings("a%20b%22%3Cx%3E%26.txt", out.items);
+    out.clearRetainingCapacity();
+    try appendHtml(arena.allocator(), &out, "/<script>\"&/", false);
+    try std.testing.expectEqualStrings("/&lt;script&gt;&quot;&amp;/", out.items);
 }
 
 // ------------------------------------------------------------------ errors and redirects
@@ -603,9 +671,13 @@ pub fn finalizeExtra(conn: *Conn, status: u16, extra: []const u8) void {
 }
 
 /// Redirect with nginx's absolute_redirect / port_in_redirect handling.
-pub fn sendRedirect(conn: *Conn, code: u16, target: []const u8) void {
+pub fn sendRedirect(conn: *Conn, code: u16, raw_target: []const u8) void {
     const ctx = conn.ctx;
     const lc = ctx.conf;
+    const target = escapeCtl(conn.arena(), raw_target) catch {
+        ctx.error_page_done = true;
+        return finalize(conn, 500);
+    };
     var loc = target;
     if (target.len > 0 and target[0] == '/' and lc.absolute_redirect) {
         var hb: [256]u8 = undefined;
@@ -733,7 +805,8 @@ fn writeAddHeaders(conn: *Conn, w: *std.Io.Writer, status: u16) !void {
     for (conn.ctx.conf.add_headers) |h| {
         if (!ok_status and !h.always) continue;
         const v = vars.eval(conn.arena(), conn.ctx, h.value) catch continue;
-        if (v.len == 0) continue;
+        // a decoded CR/LF from `$uri` or a capture would start another header
+        if (v.len == 0 or std.mem.indexOfAny(u8, v, "\r\n") != null) continue;
         try w.print("{s}: {s}\r\n", .{ h.name, v });
     }
 }
@@ -829,4 +902,6 @@ test "range parsing" {
     try t.expectEqual(@as(u64, 99), parseRange("bytes=50-", 100).ok.end);
     try t.expect(parseRange("bytes=200-", 100) == .bad);
     try t.expect(parseRange("items=1-2", 100) == .none);
+    try t.expect(parseRange("bytes=+1-5", 100) == .bad);
+    try t.expect(parseRange("bytes=1-1_0", 100) == .bad);
 }
