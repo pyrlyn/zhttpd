@@ -9,7 +9,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from e2e_common import free_port
+
+from e2e_common import free_port, running
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'zig-out/bin/zhttpd').resolve()
 openssl = os.environ.get('OPENSSL_CLI', os.environ.get('OPENSSL_BIN', 'openssl'))
@@ -23,6 +24,13 @@ def context(version, cipher='ECDHE-ECDSA-AES128-GCM-SHA256'):
     ctx.minimum_version = ctx.maximum_version = version
     ctx.set_ciphers(cipher)
     return ctx
+
+
+def self_signed(name, key, cert):
+    subprocess.run([openssl, 'req', '-config', os.devnull, '-x509', '-newkey', 'ec',
+                    '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+                    '-subj', f'/CN={name}', '-keyout', str(key), '-out', str(cert)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def exchange(ctx, port, name='allowed.local', session=None):
@@ -42,11 +50,7 @@ def exchange(ctx, port, name='allowed.local', session=None):
 
 with tempfile.TemporaryDirectory(prefix='zhttpd-tls-config-') as tmp:
     root = Path(tmp)
-    subprocess.run([openssl, 'req', '-config', os.devnull, '-x509', '-newkey', 'ec',
-                    '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
-                    '-subj', '/CN=allowed.local', '-keyout', str(root / 'key.pem'),
-                    '-out', str(root / 'cert.pem')], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    self_signed('allowed.local', root / 'key.pem', root / 'cert.pem')
     port = free_port()
     conf = root / 'nginx.conf'
     for tickets in ('off', 'on'):
@@ -126,3 +130,52 @@ http {{
             finally:
                 server.terminate()
                 server.wait(timeout=5)
+
+    # A wildcard listener shares its socket with address-specific ones: the
+    # certificate and ssl_reject_handshake follow the address the client reached.
+    self_signed('wild.local', root / 'wild-key.pem', root / 'wild.pem')
+    conf.write_text(f'''
+worker_processes 1;
+pid off;
+error_log stderr;
+events {{ worker_connections 128; }}
+http {{
+    access_log off;
+    server {{
+        listen {port} ssl;
+        server_name wild.local;
+        ssl_certificate {root}/wild.pem;
+        ssl_certificate_key {root}/wild-key.pem;
+        return 200 "backend contract";
+    }}
+    server {{
+        listen 127.0.0.1:{port} ssl;
+        server_name allowed.local;
+        ssl_certificate {root}/cert.pem;
+        ssl_certificate_key {root}/key.pem;
+        return 200 "backend contract";
+    }}
+    server {{
+        listen 127.0.0.1:{port} ssl;
+        server_name rejected.local;
+        ssl_reject_handshake on;
+    }}
+}}
+''')
+    with running([binary, '-c', conf], port):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        for name, expected in (('allowed.local', 'cert.pem'), ('wild.local', 'wild.pem')):
+            with socket.create_connection(('127.0.0.1', port), timeout=3) as raw:
+                with ctx.wrap_socket(raw, server_hostname=name) as client:
+                    served = ssl.DER_cert_to_PEM_cert(client.getpeercert(True))
+                    assert served == (root / expected).read_text(), f'{name}: wrong certificate'
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=3) as raw:
+                ctx.wrap_socket(raw, server_hostname='rejected.local').close()
+        except ssl.SSLError:
+            pass
+        else:
+            raise AssertionError('ssl_reject_handshake ignored behind a wildcard listener')
+        print('PASS: SNI on a wildcard socket follows the local address')

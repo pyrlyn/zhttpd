@@ -260,6 +260,13 @@ pub fn soError(fd: c_int) c_int {
     return v;
 }
 
+/// False while a non-blocking connect is still in progress.
+pub fn connected(fd: c_int) bool {
+    var sa: SockAddr = undefined;
+    var len: c.socklen_t = @sizeOf(SockAddr);
+    return c.getpeername(fd, &sa.any, &len) == 0 or errno() != @backingInt(c.E.NOTCONN);
+}
+
 pub fn close(fd: c_int) void {
     _ = c.close(fd);
 }

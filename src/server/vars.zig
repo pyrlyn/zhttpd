@@ -118,9 +118,12 @@ pub fn appendVar(a: std.mem.Allocator, c: *Ctx, v: expr.Var, out: *std.ArrayList
         .server_port => try std.fmt.allocPrint(a, "{d}", .{c.local.port}),
         .remote_addr => try a.dupe(u8, c.peer.formatIp(&nb)),
         .remote_port => try std.fmt.allocPrint(a, "{d}", .{c.peer.port}),
-        .document_root => c.document_root,
-        .realpath_root => c.document_root,
-        .request_filename => c.request_filename,
+        // set by the content phase; `if (-f $request_filename)` runs before it
+        .document_root, .realpath_root => blk: {
+            if (c.document_root.len == 0) _ = try mapUri(a, c, c.uri, depth + 1);
+            break :blk c.document_root;
+        },
+        .request_filename => if (c.request_filename.len > 0) c.request_filename else try mapUri(a, c, c.uri, depth + 1),
         .fastcgi_script_name => if (std.mem.endsWith(u8, c.uri, "/")) try std.fmt.allocPrint(a, "{s}{s}", .{ c.uri, c.conf.fastcgi_index }) else c.uri,
         .content_type => r.header("content-type") orelse "",
         .content_length => r.header("content-length") orelse "",
@@ -166,6 +169,27 @@ pub fn appendVar(a: std.mem.Allocator, c: *Ctx, v: expr.Var, out: *std.ArrayList
         .named => |name| try named(a, c, name, depth),
     };
     try out.appendSlice(a, s);
+}
+
+/// Filesystem path for `uri` under the location's `root` or `alias`; records `$document_root`.
+pub fn mapUri(a: std.mem.Allocator, c: *Ctx, uri: []const u8, depth: u8) Error![:0]u8 {
+    if (depth > 8) return a.dupeSentinel(u8, "", 0); // `root $document_root`
+    const lc = c.conf;
+    if (lc.alias) |al| {
+        const base = try evalDepth(a, c, al, depth);
+        c.document_root = base;
+        const loc = c.loc;
+        if (loc != null and (loc.?.kind == .regex or loc.?.kind == .regex_icase)) {
+            // regex alias: the alias is the complete path
+            return a.dupeSentinel(u8, base, 0);
+        }
+        const plen = if (loc) |l| @min(l.name.len, uri.len) else 0;
+        return std.mem.concatWithSentinel(a, u8, &.{ base, uri[plen..] }, 0);
+    }
+    var root = try evalDepth(a, c, lc.root, depth);
+    if (root.len > 1 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
+    c.document_root = root;
+    return std.mem.concatWithSentinel(a, u8, &.{ root, uri }, 0);
 }
 
 fn named(a: std.mem.Allocator, c: *Ctx, name: []const u8, depth: u8) Error![]const u8 {

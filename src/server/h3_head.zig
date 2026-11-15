@@ -32,6 +32,18 @@ fn isLineBreak(x: anytype) @TypeOf(x == x) {
     return request.isNulOrCr(x) | (x == @as(T, @splat('\n')));
 }
 
+/// RFC 9110 token. Field names are copied into the HTTP/1.1 text as is, and
+/// HTTP/3 allows them in lowercase only (RFC 9114 §4.2).
+fn token(s: []const u8, lowercase: bool) bool {
+    if (s.len == 0) return false;
+    for (s) |ch| switch (ch) {
+        'a'...'z', '0'...'9', '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+        'A'...'Z' => if (lowercase) return false,
+        else => return false,
+    };
+    return true;
+}
+
 /// No control characters, space or DEL in the request target.
 fn safePath(v: []const u8) bool {
     return !request.anyByte(v, request.isCtlOrSpace);
@@ -59,7 +71,7 @@ pub const Plan = struct {
 pub fn plan(r: anytype) ?Plan {
     if (r.method.len == 0 or r.method.len >= 32 or r.path.len == 0 or r.path.len > 8192) return null;
     if (!std.mem.eql(u8, r.scheme, "https")) return null;
-    if (!safeValue(r.method) or !safeValue(r.authority)) return null;
+    if (!token(r.method, false) or !safeValue(r.authority)) return null;
     if (!safePath(r.path)) return null;
     var authority = r.authority;
     var content_length: ?[]const u8 = null;
@@ -67,7 +79,7 @@ pub fn plan(r: anytype) ?Plan {
     const fields = r.headers();
     if (fields.len + 4 > max_fields) return null;
     for (fields) |f| {
-        if (!safeValue(f.value)) return null;
+        if (!token(f.name, true) or !safeValue(f.value)) return null;
         if (eqlAny(f.name, &.{ "connection", "transfer-encoding", "upgrade", "keep-alive", "proxy-connection" })) return null;
         if (eqlAny(f.name, &.{"host"})) {
             if (authority.len == 0) {
@@ -260,6 +272,7 @@ pub fn parseCollected(comptime F: type, h: []u8, fields: []F) Collected {
         const at = colons.next(pos) orelse return .invalid;
         if (at >= nl - 1) return .invalid;
         const colon = at - pos;
+        if (colon == 0) return .invalid;
         pos = nl + 1;
         const name = line[0..colon];
         lower(h, nl - 1 - line.len, colon);
@@ -387,6 +400,13 @@ test "request: malformed or smuggling requests are rejected" {
         .{ .path = "/" ++ rep('a', 8192) },
         .{ .scheme = "http" },
         .{ .method = "GET\r\nX: y" },
+        .{ .method = "GET /admin" },
+        .{ .fields = &.{.{ .name = "x\r\ninjected", .value = "1" }} },
+        .{ .fields = &.{.{ .name = "x: y\r\ntransfer-encoding", .value = "chunked" }} },
+        .{ .fields = &.{.{ .name = "", .value = "1" }} },
+        .{ .fields = &.{.{ .name = "a b", .value = "1" }} },
+        .{ .fields = &.{.{ .name = "X-Upper", .value = "1" }} },
+        .{ .fields = &.{.{ .name = ":unknown", .value = "1" }} },
         .{ .authority = "a\nb" },
         .{ .authority = rep('a', 1024) },
         .{ .path = "/a b" },
@@ -597,6 +617,7 @@ test "response: collecting path classifies informational and invalid heads" {
         .{ "HTTP/1.1 099 Nope\r\n\r\n", Tag.invalid },
         .{ "HTTP/2.0 200 OK\r\n\r\n", Tag.invalid },
         .{ "HTTP/1.1 200 OK\r\nNo colon\r\n\r\n", Tag.invalid },
+        .{ "HTTP/1.1 200 OK\r\n: empty name\r\n\r\n", Tag.invalid },
         .{ "HTTP/1.1 200 OK\r\nA: b\n\r\n", Tag.invalid },
     };
     inline for (cases) |c| {

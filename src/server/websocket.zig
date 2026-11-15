@@ -62,10 +62,12 @@ pub fn drive(c: *Conn) void {
             c.finishRequest();
             return;
         }
-        switch (c.recv(c.rbuf)) {
+        // past the request head: the access log still reads it at close
+        const room = c.rbuf[c.req.head_len..];
+        switch (c.recv(room)) {
             .ok => |n| {
                 c.deadline = c.w.now_ms + c.ctx.conf.keepalive_timeout_ms;
-                feed(c, c.rbuf[0..n]);
+                feed(c, room[0..n]);
             },
             .again => return,
             else => {

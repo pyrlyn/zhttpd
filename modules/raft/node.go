@@ -27,25 +27,66 @@ type streamLayer struct {
 	net.Listener
 	tls      *tls.Config
 	greeting string
+	start    sync.Once
+	ready    chan net.Conn
+	errs     chan error
+	done     chan struct{}
 }
 
+// Accept returns greeted connections only. The transport accepts serially, so
+// the greeting (and the TLS handshake under it) is read off this path: a peer
+// that connects and stays silent must not hold up the ones behind it.
 func (s *streamLayer) Accept() (net.Conn, error) {
-	for {
-		conn, err := s.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-		hello := make([]byte, len(s.greeting))
-		_, err = io.ReadFull(conn, hello)
-		if err != nil || string(hello) != s.greeting {
-			_ = conn.Close()
-			continue
-		}
-		_ = conn.SetDeadline(time.Time{})
+	s.start.Do(func() {
+		s.ready = make(chan net.Conn)
+		s.errs = make(chan error)
+		s.done = make(chan struct{})
+		go s.serve()
+	})
+	select {
+	case conn := <-s.ready:
 		return conn, nil
+	case err := <-s.errs:
+		return nil, err
+	case <-s.done:
+		return nil, net.ErrClosed
 	}
 }
+
+func (s *streamLayer) serve() {
+	for {
+		conn, err := s.Listener.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			close(s.done)
+			return
+		}
+		if err != nil {
+			select {
+			case s.errs <- err:
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		go s.greet(conn)
+	}
+}
+
+func (s *streamLayer) greet(conn net.Conn) {
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	hello := make([]byte, len(s.greeting))
+	_, err := io.ReadFull(conn, hello)
+	if err != nil || string(hello) != s.greeting {
+		_ = conn.Close()
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	select {
+	case s.ready <- conn:
+	case <-s.done:
+		_ = conn.Close()
+	}
+}
+
 func (s *streamLayer) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	var conn net.Conn
@@ -124,7 +165,7 @@ func startNode(c Config) (n *Node, err error) {
 	if tc != nil {
 		listener = tls.NewListener(listener, tc)
 	}
-	n.transport = raft.NewNetworkTransport(&streamLayer{listener, tc, "ZHTTPD-RAFT/1 " + c.ClusterID + "\n"}, 3, 2*time.Second, os.Stderr)
+	n.transport = raft.NewNetworkTransport(&streamLayer{Listener: listener, tls: tc, greeting: "ZHTTPD-RAFT/1 " + c.ClusterID + "\n"}, 3, 2*time.Second, os.Stderr)
 	snapshots, err := raft.NewFileSnapshotStore(c.DataDir, 3, os.Stderr)
 	if err != nil {
 		return nil, err

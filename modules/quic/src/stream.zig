@@ -161,6 +161,8 @@ pub const SendBuf = struct {
                 s.acked = @max(s.acked, r.end);
                 s.acked_ranges.removeBelow(r.end);
             }
+            // The ring below `acked` is released: nothing there may be resent.
+            s.lost.removeBelow(s.acked);
             return;
         }
         if (s.acked_ranges.tryAdd(lo, end) == .full) {
@@ -321,6 +323,28 @@ test "send buffer ack, loss and wrap" {
     try std.testing.expectEqual(@as(usize, 1000), try s.write(a, &data, 4096));
     s.copy(1000, &out);
     try std.testing.expectEqualSlices(u8, data[0..400], &out);
+}
+
+test "a lost range below the acked offset is not retransmitted" {
+    const a = std.testing.allocator;
+    var s: SendBuf = .{ .max = 1 << 20 };
+    defer s.deinit(a);
+    const data: [400]u8 = @splat('A');
+    _ = try s.write(a, &data, 1 << 16);
+    var k: u64 = 0;
+    while (k < 40) : (k += 1) s.onSent(.{ .off = k * 10, .len = 10, .fin = false });
+    // Even chunks are acked out of order, odd ones declared lost; the last
+    // loss widens a range over bytes that were already acked.
+    k = 2;
+    while (k <= 32) : (k += 2) s.onAck(k * 10, 10, false);
+    k = 1;
+    while (k <= 33) : (k += 2) s.onLost(k * 10, 10, false);
+    // Late ACKs for the original packets.
+    s.onAck(0, 10, false);
+    k = 1;
+    while (k <= 31) : (k += 2) s.onAck(k * 10, 10, false);
+    if (s.lost.first()) |r| try std.testing.expect(r.start >= s.acked);
+    try std.testing.expect(s.next(1200, 1 << 20).?.c.off >= s.acked);
 }
 
 test "receive buffer reassembly and limits" {

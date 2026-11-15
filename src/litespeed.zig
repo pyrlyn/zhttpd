@@ -15,11 +15,16 @@ fn path(b: *B, n: N, value: []const u8, vh_root: []const u8) Error![]const u8 {
     if (std.mem.indexOfScalar(u8, value, '$') != null) return b.fail(n, "unsupported OpenLiteSpeed path variable", .{});
     return b.fullPath(vh_root, value);
 }
-fn names(b: *B, s: *C.Server, values: []const []const u8) Error!void {
+/// Returns whether the list has `*`, OpenLiteSpeed's catch-all.
+fn names(b: *B, s: *C.Server, values: []const []const u8) Error!bool {
+    var all = false;
     for (values) |v| {
         var it = std.mem.tokenizeAny(u8, v, ", ");
-        while (it.next()) |name| try b.name(s, name);
+        while (it.next()) |name| {
+            if (std.mem.eql(u8, name, "*")) all = true else try b.name(s, name);
+        }
     }
+    return all;
 }
 fn ssl(b: *B, s: *C.Server, nodes: []N, vh_root: []const u8) Error!void {
     for (nodes) |n| {
@@ -59,7 +64,7 @@ fn host(b: *B, s: *C.Server, nodes: []N, vh_root: []const u8) Error!void {
     for (nodes) |n| {
         if (eq(n.name, "docRoot") or eq(n.name, "accesslog") or eq(n.name, "errorlog")) continue;
         if (eq(n.name, "vhDomain") or eq(n.name, "vhAliases")) {
-            try names(b, s, n.args);
+            _ = try names(b, s, n.args);
         } else if (eq(n.name, "index")) {
             const children = n.children orelse return b.fail(n, "index requires block", .{});
             for (children) |child| {
@@ -153,12 +158,17 @@ pub fn loadObserved(gpa: std.mem.Allocator, file: []const u8, root: []const u8, 
             s.locations = base.locations;
             s.names = &.{};
             s.primary_name = "";
-            try names(&b, s, child.args[1..]);
+            const catch_all = try names(&b, s, child.args[1..]);
             if (secure) {
                 try ssl(&b, s, tls_nodes.items, b.cfg.prefix);
                 s.http2 = true;
             }
-            try b.listen(s, addr orelse return b.fail(n, "listener requires address", .{}), secure, false);
+            const at = addr orelse return b.fail(n, "listener requires address", .{});
+            try b.listen(s, at, secure, false);
+            // `map vhost *` takes every host no other mapping names.
+            if (catch_all) for (b.cfg.listens) |*l| if (l.addr.eql(at) and !l.opts.quic) {
+                for (l.entries) |*e| e.default = e.server == s;
+            };
             mapped = true;
         };
         if (!mapped) return b.fail(n, "listener requires map", .{});

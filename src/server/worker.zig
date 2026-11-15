@@ -72,6 +72,9 @@ pub const Worker = struct {
     stopping: bool = false,
     page_buf: [response.page_buffer_size]u8 = undefined,
     log_buf: [65536]u8 = undefined,
+    /// Scratch for one access-log variable at a time. The request arena may
+    /// be nearly full by now, and a client must not be able to blank a field.
+    log_var_buf: [32 * 1024]u8 = undefined,
     accept_paused_until: i64 = 0,
     /// connection being processed, for the `client: ..., request: ...` suffix of error logs
     current: ?*Conn = null,
@@ -479,19 +482,21 @@ pub const Worker = struct {
         for (logs) |lg| {
             const fd = w.logFd(lg.path);
             if (fd < 0) continue;
-            var line: std.ArrayList(u8) = .initBuffer(&w.log_buf);
-            var fba: std.heap.FixedBufferAllocator = .init(cn.arena_mem[cn.fba.end_index..]);
+            // The last byte is kept for the newline, however long the line gets.
+            var line: std.ArrayList(u8) = .initBuffer(w.log_buf[0 .. w.log_buf.len - 1]);
+            var fba: std.heap.FixedBufferAllocator = .init(&w.log_var_buf);
             const a = fba.allocator();
             for (lg.format.expr.parts) |p| switch (p) {
                 .lit => |s| logging.appendBounded(&line, s),
                 .v => |v| {
+                    fba.reset();
                     var tmp: std.ArrayList(u8) = .empty;
                     vars.appendVar(a, cn.ctx, v, &tmp, 0) catch {};
                     if (tmp.items.len == 0) logging.appendBounded(&line, "-") else logging.appendEscaped(&line, tmp.items, lg.format.escape);
                 },
             };
-            logging.appendBounded(&line, "\n");
-            _ = c.write(fd, line.items.ptr, line.items.len);
+            w.log_buf[line.items.len] = '\n';
+            _ = c.write(fd, &w.log_buf, line.items.len + 1);
         }
     }
 
@@ -518,15 +523,19 @@ pub const Worker = struct {
     }
 
     fn reopenLogs(w: *Worker) void {
-        for (w.logs.items) |*l| {
-            if (l.fd <= 2) continue;
-            const z = w.gpa.dupeSentinel(u8, l.path, 0) catch continue;
-            defer w.gpa.free(z);
-            const fd = c.open(z, .{ .ACCMODE = .WRONLY, .APPEND = true, .CREAT = true, .CLOEXEC = true }, @as(c.mode_t, 0o644));
-            if (fd >= 0) {
-                _ = c.dup2(fd, l.fd);
-                net.close(fd);
-            }
+        // the error log inherited from the master is rotated like the rest
+        w.reopen(w.cfg.error_log.path, w.error_fd);
+        for (w.logs.items) |l| w.reopen(l.path, l.fd);
+    }
+
+    fn reopen(w: *Worker, path: []const u8, target: c_int) void {
+        if (target <= 2) return;
+        const z = w.gpa.dupeSentinel(u8, path, 0) catch return;
+        defer w.gpa.free(z);
+        const fd = c.open(z, .{ .ACCMODE = .WRONLY, .APPEND = true, .CREAT = true, .CLOEXEC = true }, @as(c.mode_t, 0o644));
+        if (fd >= 0) {
+            _ = c.dup2(fd, target);
+            net.close(fd);
         }
     }
 };
