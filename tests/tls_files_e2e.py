@@ -22,7 +22,7 @@ for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
         atomic(cert, pem_cert(a)); atomic(key, pem_key(ka))
         atomic(other, pem_cert(a)); atomic(other_key, pem_key(ka))
         config = configure_manual(root, mode, port, cert, key, other, other_key)
-        with running([binary, '-c', config], port, log_path=log) as proc:
+        with running([binary, '-c', config], port, log_path=log, pid_file=root/'master.pid') as proc:
             # Listening starts before TLS contexts and the PID file are ready.
             # Complete a request before rotating files used by startup itself.
             assert peer_cert(port) == der(a)

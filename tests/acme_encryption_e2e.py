@@ -102,7 +102,8 @@ operation_timeout_seconds={timeout}
                 (stale/'leftover.key').write_text('crashed-client-plaintext')
                 outside = case/'keep'; outside.mkdir(); (outside/'marker').touch()
                 (stale/'external-link').symlink_to(outside)
-            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log) as proc:
+            with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log,
+                         pid_file=case/'master.pid') as proc:
                 def count(text): return log.read_text().count(text)
                 def healthy():
                     assert proc.poll() is None

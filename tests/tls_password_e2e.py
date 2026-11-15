@@ -44,7 +44,7 @@ for mode in (sys.argv[2:] or ('self', 'nginx', 'apache', 'litespeed', 'caddy')):
         original = config.read_text()
         config.write_text(original+'[tls]\npassword_file="tls passwords.txt"\n')
         checked(config, True, '-T')
-        with running([binary, '-c', config], port, log_path=log) as proc:
+        with running([binary, '-c', config], port, log_path=log, pid_file=root/'master.pid') as proc:
             def count(text): return log.read_text().count(text)
             def healthy():
                 assert proc.poll() is None

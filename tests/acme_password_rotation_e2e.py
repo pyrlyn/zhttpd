@@ -66,7 +66,8 @@ check_interval_seconds=3600
         def decoded(i, password):
             return serialization.load_pem_private_key(keyfile(i).read_bytes(), password).private_numbers()
         def no_stage(): return not list(store.glob('*/work-*'))
-        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log) as proc:
+        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=40, log_path=log,
+                     pid_file=case/'master.pid') as proc:
             def count(text): return log.read_text().count(text)
             def wait(predicate, message):
                 until = time.monotonic()+20
@@ -195,7 +196,8 @@ check_interval_seconds=3600
         restart_log = case/'restart.log'
         unknown = store/domains[0]/'gen-KEEP00'; unknown.mkdir()
         (unknown/'unrecognized.data').write_text('retain this file')
-        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=10, log_path=restart_log) as proc:
+        with running([binary, '-c', config], f.port, env=f.env, startup_timeout=10, log_path=restart_log,
+                     pid_file=case/'master.pid') as proc:
             until = time.monotonic()+10
             while recovery[0].exists() or 'RetiredGenerationChanged' not in restart_log.read_text():
                 assert time.monotonic() < until, restart_log.read_text()

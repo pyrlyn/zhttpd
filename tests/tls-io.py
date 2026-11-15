@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from e2e_common import free_port
 
 
 class Client:
@@ -167,12 +168,7 @@ with tempfile.TemporaryDirectory(prefix="zhttpd-tls-") as tmp:
     small_time, large_time = 1600000000, 1700000000
     os.utime(root / "small", (small_time, small_time))
     os.utime(root / "large", (large_time, large_time))
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        plain_port = sock.getsockname()[1]
+    port, plain_port = free_port(), free_port()
     conf = root / "nginx.conf"
     conf.write_text(f"""
 worker_processes 1;

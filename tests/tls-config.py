@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 
-from e2e_common import running
+from e2e_common import free_port, running
 
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'zig-out/bin/zhttpd').resolve()
 openssl = os.environ.get('OPENSSL_CLI', os.environ.get('OPENSSL_BIN', 'openssl'))
@@ -51,9 +51,7 @@ def exchange(ctx, port, name='allowed.local', session=None):
 with tempfile.TemporaryDirectory(prefix='zhttpd-tls-config-') as tmp:
     root = Path(tmp)
     self_signed('allowed.local', root / 'key.pem', root / 'cert.pem')
-    with socket.socket() as probe:
-        probe.bind(('127.0.0.1', 0))
-        port = probe.getsockname()[1]
+    port = free_port()
     conf = root / 'nginx.conf'
     for tickets in ('off', 'on'):
         conf.write_text(f'''

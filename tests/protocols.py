@@ -24,6 +24,7 @@ from aioquic.h3.events import HeadersReceived, DataReceived
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.connection import QuicConnection
 from aioquic.quic.events import ConnectionTerminated, StreamReset
+from e2e_common import free_port
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get('ZHTTPD', ROOT / 'zig-out/bin/zhttpd')).resolve()
@@ -586,14 +587,10 @@ def run():
                         '-subj', '/CN=localhost', '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
         (temp / 'large').write_bytes(LARGE)
         (temp / 'truncated').write_bytes(LARGE)
-        with socket.socket() as reserve:
-            reserve.bind(('127.0.0.1', 0))
-            port = reserve.getsockname()[1]
+        port = free_port()
         # Migration needs one engine per address: like nginx without
         # quic_bpf, a multi-worker reuseport group cannot steer a new path.
-        with socket.socket(type=socket.SOCK_DGRAM) as reserve:
-            reserve.bind(('127.0.0.1', 0))
-            migration_port = reserve.getsockname()[1]
+        migration_port = free_port()
         upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
         thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         thread.start()
