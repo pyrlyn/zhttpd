@@ -251,7 +251,8 @@ pub const HuffCache = struct {
     }
 
     fn get(c: *const HuffCache, raw: []const u8, out: []u8) ?usize {
-        if (raw.len > max_enc) return null;
+        // Empty strings are never cached, and an unused slot has length 0.
+        if (raw.len == 0 or raw.len > max_enc) return null;
         const i = c.find(raw) orelse return null;
         const n = c.dec_len[i];
         if (n > out.len) return null;

@@ -164,13 +164,14 @@ pub const Endpoint = struct {
                 if (!hdr.long) ep.sendStatelessReset(data.len, hdr.dcid, peer, local);
                 break;
             };
+            const first = target == null;
             if (target) |t| {
                 if (t != c) break;
-            } else {
-                target = c;
-                c.rx_bytes += data.len;
-            }
+            } else target = c;
             c.recvPacket(rest[0..hdr.len], &hdr, peer, local);
+            // Counted after the packet: a peer address change starts a new
+            // path, and this datagram arrived on it.
+            if (first) c.rx_bytes += data.len;
             off += hdr.len;
         }
         if (target) |c| ep.markDirty(c);
@@ -215,7 +216,7 @@ pub const Endpoint = struct {
     }
 
     fn sendVersionNegotiation(ep: *Endpoint, hdr: *const packet.Header, peer: Addr, local: Addr) void {
-        const buf = ep.reserveOut(64 + 2 * packet.max_cid_len) orelse return;
+        const buf = ep.reserveOut(16 + hdr.dcid.len + hdr.scid.len) orelse return;
         var r: [1]u8 = undefined;
         tls.random(&r);
         const n = packet.versionNegotiation(buf, hdr.scid, hdr.dcid, r[0]);
