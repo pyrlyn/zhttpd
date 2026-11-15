@@ -205,7 +205,8 @@ const Parser = struct {
     fn token(p: *Parser) Error!Token {
         while (p.pos < p.data.len) {
             const c = p.data[p.pos];
-            if (c == ' ' or c == '\t' or c == '\r') {
+            // every byte that ends an unquoted word, or a stray form feed never advances
+            if (c != '\n' and std.ascii.isWhitespace(c)) {
                 p.pos += 1;
                 continue;
             }

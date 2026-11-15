@@ -92,8 +92,13 @@ fn body(b: *B, s: *C.Server, loc: ?*C.Location, nodes: []Node) Error!void {
             s.tls.certificate_key = try b.fullPath(b.cfg.prefix, n.args[1]);
         }
     }
-    for (nodes) |n| {
+    // Caddy runs directives in its own order, not the file's: header first,
+    // then handle, then the terminal handlers. A handle block copies the site
+    // settings, so it must see every header and none of the site's handler.
+    for (0..3) |pass| for (nodes) |n| {
         if (std.mem.eql(u8, n.name, "root") or std.mem.eql(u8, n.name, "tls") or std.mem.eql(u8, n.name, "log")) continue;
+        const order: usize = if (std.mem.eql(u8, n.name, "header")) 0 else if (std.mem.eql(u8, n.name, "handle")) 1 else 2;
+        if (order != pass) continue;
         if (std.mem.eql(u8, n.name, "handle")) {
             if (loc != null) return b.fail(n, "nested handle blocks are not supported", .{});
             try b.arity(n, 1, 1);
@@ -147,10 +152,11 @@ fn body(b: *B, s: *C.Server, loc: ?*C.Location, nodes: []Node) Error!void {
             try b.proxy(lc, n, n.args[0]);
         } else if (std.mem.eql(u8, n.name, "header")) {
             try b.arity(n, 2, 2);
-            if (n.args[0].len == 0 or std.mem.indexOfAny(u8, n.args[0], "+-?>") != null or n.children != null) return b.fail(n, "only literal response headers are supported", .{});
+            // Caddy's operators are prefixes; a hyphen inside the name is just the name
+            if (n.args[0].len == 0 or std.mem.indexOfScalar(u8, "+-?>", n.args[0][0]) != null or n.children != null) return b.fail(n, "only literal response headers are supported", .{});
             lc.add_headers = try support.append(b.a, C.AddHeader, lc.add_headers, .{ .name = n.args[0], .value = try b.literal(n.args[1]), .always = true });
         } else return b.fail(n, "unsupported Caddy directive {s}", .{n.name});
-    }
+    };
     if (!handler) {
         const stmt: C.Stmt = .{ .ret = .{ .code = 404, .text = null } };
         if (loc) |l| l.stmts = try b.a.dupe(C.Stmt, &.{stmt}) else {

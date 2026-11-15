@@ -97,7 +97,12 @@ fn local(b: *B, lc: *C.LocConf, n: Node) Error!void {
         lc.keepalive_requests = if (value == 0) std.math.maxInt(u32) else value;
     } else return b.fail(n, "unsupported Apache directive {s}", .{n.name});
 }
-fn server(b: *B, s: *C.Server, nodes: []Node, secure: *bool) Error!void {
+fn route(n: Node) bool {
+    return eq(n.name, "ProxyPass") or eq(n.name, "Alias");
+}
+/// `inherited` are the main server's nodes: its routes and <Location> sections
+/// also apply to a virtual host, which may override them.
+fn server(b: *B, s: *C.Server, nodes: []Node, inherited: []Node, secure: *bool) Error!void {
     // Formats are registered before CustomLog regardless of source order.
     for (nodes) |n| if (eq(n.name, "LogFormat")) {
         try b.arity(n, 2, 2);
@@ -189,20 +194,38 @@ fn server(b: *B, s: *C.Server, nodes: []Node, secure: *bool) Error!void {
                 el.path = path;
                 s.conf.error_log = el;
             } else b.cfg.pid_path = path;
-        } else if (eq(n.name, "ProxyPass") or eq(n.name, "Alias")) {
+        } else if (route(n)) {
             try b.arity(n, 2, 2);
-            const loc = try b.location(s, n, n.args[0]);
-            if (eq(n.name, "ProxyPass")) try b.proxy(loc.conf, n, n.args[1]) else loc.conf.alias = try b.literal(try b.fullPath(b.cfg.prefix, n.args[1]));
         } else try local(b, s.conf, n);
     }
+    // A location starts as a copy of the server settings, so routes and
+    // <Location> sections are created last, whatever their place in the file.
     for (nodes) |n| if (n.children) |children| {
-        if (eq(n.name, "VirtualHost")) continue;
+        if (eq(n.name, "VirtualHost") or eq(n.name, "Location")) continue;
+        if (!eq(n.name, "Directory")) return b.fail(n, "unsupported Apache section {s}", .{n.name});
         try b.arity(n, 1, 1);
-        const lc = if (eq(n.name, "Directory")) blk: {
-            const path = try b.fullPath(b.cfg.prefix, n.args[0]);
-            if (!eq(path, "/") and !std.mem.eql(u8, path, s.conf.root.literal())) return b.fail(n, "Directory currently supports / or DocumentRoot; use explicit supported access rules", .{});
-            break :blk s.conf;
-        } else if (eq(n.name, "Location")) (try b.location(s, n, n.args[0])).conf else return b.fail(n, "unsupported Apache section {s}", .{n.name});
+        const path = try b.fullPath(b.cfg.prefix, n.args[0]);
+        if (!eq(path, "/") and !std.mem.eql(u8, path, s.conf.root.literal())) return b.fail(n, "Directory currently supports / or DocumentRoot; use explicit supported access rules", .{});
+        for (children) |child| try local(b, s.conf, child);
+    };
+    const lists = [_][]Node{ inherited, nodes };
+    for (lists, 0..) |list, own| for (list) |n| if (route(n)) {
+        if (own == 0) {
+            const overridden = for (nodes) |o| {
+                if (route(o) and o.args.len > 0 and std.mem.eql(u8, o.args[0], n.args[0])) break true;
+            } else false;
+            if (overridden) continue;
+        }
+        const loc = try b.location(s, n, n.args[0]);
+        if (eq(n.name, "ProxyPass")) try b.proxy(loc.conf, n, n.args[1]) else loc.conf.alias = try b.literal(try b.fullPath(b.cfg.prefix, n.args[1]));
+    };
+    for (lists) |list| for (list) |n| if (eq(n.name, "Location")) {
+        const children = n.children orelse continue;
+        try b.arity(n, 1, 1);
+        // Sections for one path merge, as in Apache: later ones override.
+        const lc = for (s.locations) |l| {
+            if (l.kind == .prefix and std.mem.eql(u8, l.name, n.args[0])) break l.conf;
+        } else (try b.location(s, n, n.args[0])).conf;
         for (children) |child| try local(b, lc, child);
     };
 }
@@ -210,7 +233,7 @@ fn build(b: *B, nodes: []Node) Error!void {
     const origin: Node = .{ .name = "main", .args = &.{}, .file = b.cfg.conf_file, .line = 1 };
     const base = try b.server(origin, null);
     var main_tls = false;
-    try server(b, base, nodes, &main_tls);
+    try server(b, base, nodes, &.{}, &main_tls);
     var listens: std.ArrayList(http.addr.Addr) = .empty;
     for (nodes) |n| if (eq(n.name, "Listen")) {
         try b.arity(n, 1, 2);
@@ -225,7 +248,7 @@ fn build(b: *B, nodes: []Node) Error!void {
         const block = n.children orelse return b.fail(n, "VirtualHost must be a section", .{});
         const s = try b.server(n, base);
         var secure = main_tls;
-        try server(b, s, block, &secure);
+        try server(b, s, block, nodes, &secure);
         for (n.args) |address| {
             const target = try b.address(n, address, 80);
             var matched = false;
@@ -252,4 +275,23 @@ test "Apache virtual hosts, roots and access rules lower to HTTP" {
     try std.testing.expectEqualStrings("example.test", cfg.listens[0].entries[0].server.primary_name);
     try std.testing.expect(!cfg.listens[0].entries[0].server.conf.access[0].allow);
     try std.testing.expectError(error.ConfigFailed, loadString(std.testing.allocator, "Listen 80\nAuthType Basic\n", .{ .server_root = "/srv" }, &d));
+}
+
+test "Apache locations see later directives and reach virtual hosts" {
+    var d: http.diag.Diag = .{ .gpa = std.testing.allocator };
+    defer d.deinit();
+    const text = "Listen 127.0.0.1:8080\nDocumentRoot /srv/www\n" ++
+        "<Location /open>\nOptions Indexes\n</Location>\n<Location /private>\nRequire all denied\n</Location>\n" ++
+        "Alias /static /srv/static\n<Directory />\nRequire ip 10.0.0.1\n</Directory>\n" ++
+        "<VirtualHost *:8080>\nServerName a.test\nAlias /static /srv/other\n<Location /private>\nOptions Indexes\n</Location>\n</VirtualHost>\n";
+    const cfg = try loadString(std.testing.allocator, text, .{ .server_root = "/srv" }, &d);
+    defer destroy(std.testing.allocator, cfg);
+    // A section placed before <Directory> still gets its access rule.
+    for (cfg.servers[0].locations) |l| try std.testing.expect(l.conf.access.len == 2 or !l.conf.access[0].allow);
+    const vhost = cfg.servers[1];
+    try std.testing.expectEqual(3, vhost.locations.len);
+    for (vhost.locations) |l| {
+        if (eq(l.name, "/static")) try std.testing.expectEqualStrings("/srv/other", l.conf.alias.?.literal());
+        if (eq(l.name, "/private")) try std.testing.expect(!l.conf.access[0].allow and l.conf.autoindex);
+    }
 }
