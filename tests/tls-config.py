@@ -127,3 +127,70 @@ http {{
             finally:
                 server.terminate()
                 server.wait(timeout=5)
+
+    # A wildcard listener shares its socket with address-specific ones: the
+    # certificate and ssl_reject_handshake follow the address the client reached.
+    subprocess.run([openssl, 'req', '-config', os.devnull, '-x509', '-newkey', 'ec',
+                    '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+                    '-subj', '/CN=wild.local', '-keyout', str(root / 'wild-key.pem'),
+                    '-out', str(root / 'wild.pem')], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    conf.write_text(f'''
+worker_processes 1;
+pid off;
+error_log stderr;
+events {{ worker_connections 128; }}
+http {{
+    access_log off;
+    server {{
+        listen {port} ssl;
+        server_name wild.local;
+        ssl_certificate {root}/wild.pem;
+        ssl_certificate_key {root}/wild-key.pem;
+        return 200 "backend contract";
+    }}
+    server {{
+        listen 127.0.0.1:{port} ssl;
+        server_name allowed.local;
+        ssl_certificate {root}/cert.pem;
+        ssl_certificate_key {root}/key.pem;
+        return 200 "backend contract";
+    }}
+    server {{
+        listen 127.0.0.1:{port} ssl;
+        server_name rejected.local;
+        ssl_reject_handshake on;
+    }}
+}}
+''')
+    with tempfile.TemporaryFile() as errors:
+        server = subprocess.Popen([binary, '-c', conf], stderr=errors)
+        try:
+            for _ in range(100):
+                if server.poll() is not None:
+                    errors.seek(0)
+                    raise AssertionError(errors.read().decode())
+                try:
+                    socket.create_connection(('127.0.0.1', port), timeout=.1).close()
+                    break
+                except OSError:
+                    time.sleep(.02)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            for name, expected in (('allowed.local', 'cert.pem'), ('wild.local', 'wild.pem')):
+                with socket.create_connection(('127.0.0.1', port), timeout=3) as raw:
+                    with ctx.wrap_socket(raw, server_hostname=name) as client:
+                        served = ssl.DER_cert_to_PEM_cert(client.getpeercert(True))
+                        assert served == (root / expected).read_text(), f'{name}: wrong certificate'
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=3) as raw:
+                    ctx.wrap_socket(raw, server_hostname='rejected.local').close()
+            except ssl.SSLError:
+                pass
+            else:
+                raise AssertionError('ssl_reject_handshake ignored behind a wildcard listener')
+            print('PASS: SNI on a wildcard socket follows the local address')
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
