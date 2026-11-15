@@ -1,6 +1,7 @@
 //! Response helpers: status lines, HTTP dates, branded default error pages.
 const std = @import("std");
 const error_page = @import("error_page.zig");
+const request = @import("request.zig");
 pub const page_buffer_size = error_page.buffer_size;
 
 pub fn reason(code: u16) []const u8 {
@@ -121,17 +122,25 @@ pub fn parseHttpDate(s: []const u8) ?i64 {
             return null;
         }
     }.f;
+    // Client input: digits only and in range, so the day arithmetic cannot overflow.
+    const field = struct {
+        fn f(v: []const u8, max: u16) ?i64 {
+            const x = request.parseDecimal(u16, v) orelse return null;
+            return if (x <= max) x else null;
+        }
+    }.f;
+    const hms_max = [3]u16{ 23, 59, 60 };
     if (n == 8) { // "Tue, 10 Nov 2026 07:30:00 GMT" or "Tuesday, 10-Nov-26 07:30:00 GMT"
-        day = std.fmt.parseInt(i64, parts[1], 10) catch return null;
+        day = field(parts[1], 31) orelse return null;
         mon = monthIdx(parts[2]) orelse return null;
-        year = std.fmt.parseInt(i64, parts[3], 10) catch return null;
+        year = field(parts[3], 9999) orelse return null;
         if (year < 100) year += if (year < 70) 2000 else 1900;
-        for (0..3) |i| hms[i] = std.fmt.parseInt(i64, parts[4 + i], 10) catch return null;
+        for (0..3) |i| hms[i] = field(parts[4 + i], hms_max[i]) orelse return null;
     } else if (n == 7) { // asctime: "Tue Nov 10 07:30:00 2026"
         mon = monthIdx(parts[1]) orelse return null;
-        day = std.fmt.parseInt(i64, parts[2], 10) catch return null;
-        for (0..3) |i| hms[i] = std.fmt.parseInt(i64, parts[3 + i], 10) catch return null;
-        year = std.fmt.parseInt(i64, parts[6], 10) catch return null;
+        day = field(parts[2], 31) orelse return null;
+        for (0..3) |i| hms[i] = field(parts[3 + i], hms_max[i]) orelse return null;
+        year = field(parts[6], 9999) orelse return null;
     } else return null;
     // days_from_civil
     const y = if (mon <= 2) year - 1 else year;
@@ -152,6 +161,18 @@ test "dates" {
     try std.testing.expectEqual(@as(?i64, 1794295800), parseHttpDate("Tue Nov 10 07:30:00 2026"));
     var l: [26]u8 = undefined;
     try std.testing.expectEqualStrings("10/Nov/2026:09:30:00 +0200", logDate(&l, 1794295800, 7200));
+}
+
+test "date fields are digits within range" {
+    for ([_][]const u8{
+        "Tue, 10 Nov 9223372036854775807 07:30:00 GMT",
+        "Tue, 10 Nov 2026 07:30:9223372036854775807 GMT",
+        "Tue, +10 Nov 2026 07:30:00 GMT",
+        "Tue, 32 Nov 2026 07:30:00 GMT",
+        "Tue, 10 Nov 2026 24:00:00 GMT",
+        "Tue Nov 10 07:60:00 2026",
+    }) |s| try std.testing.expectEqual(@as(?i64, null), parseHttpDate(s));
+    try std.testing.expectEqual(@as(?i64, 1794295800), parseHttpDate("Tuesday, 10-Nov-26 07:30:00 GMT"));
 }
 
 test "default errors fit the worker buffer with exact lengths" {
