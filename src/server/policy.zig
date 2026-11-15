@@ -124,9 +124,22 @@ pub fn check(cn: *Conn) bool {
 /// Bounded token buckets. Colliding active peers are rejected, never evicted.
 pub const Rates = struct {
     const Bucket = struct { key: u64 = 0, time: i64 = 0, credit: u64 = 0, rate: u32 = 0, capacity: u64 = 0, used: bool = false };
-    buckets: [4096]Bucket = @splat(.{}),
+    const Table = [4096]Bucket;
+    /// Allocated by the first limited request: most workers never limit.
+    buckets: ?*Table = null,
+    pub fn deinit(r: *Rates) void {
+        if (r.buckets) |t| std.heap.page_allocator.destroy(t);
+        r.buckets = null;
+    }
     pub fn allow(r: *Rates, key: u64, now: i64, rate: u32, burst: u32) bool {
-        const b = &r.buckets[key % r.buckets.len];
+        const table = r.buckets orelse blk: {
+            // Without a table nothing can be counted, so nothing is allowed.
+            const t = std.heap.page_allocator.create(Table) catch return false;
+            t.* = @splat(.{});
+            r.buckets = t;
+            break :blk t;
+        };
+        const b = &table[key % table.len];
         const cap = @as(u64, @max(1, burst)) * 1000;
         const elapsed: u64 = @intCast(@max(0, now - b.time));
         const credit = @min(b.capacity, b.credit +| (elapsed *| b.rate));
@@ -144,6 +157,7 @@ pub const Rates = struct {
 };
 test "rate refill, burst and collisions cannot bypass quota" {
     var rates: Rates = .{};
+    defer rates.deinit();
     try std.testing.expect(rates.allow(1, 1000, 2, 2));
     try std.testing.expect(!rates.allow(4097, 1000, 1000000, 1));
     try std.testing.expect(rates.allow(1, 1000, 2, 2));
