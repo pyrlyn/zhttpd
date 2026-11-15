@@ -81,7 +81,8 @@ pub fn serveConfig(cfg: *http.config.Config) !void {
     http.server.worker.sig_terminate = false;
     http.server.worker.sig_quit = false;
     http.server.worker.sig_reopen = false;
-    var w = try http.server.worker.Worker.init(a, cfg, listeners, 2, 0);
+    var w: http.server.worker.Worker = undefined;
+    try w.init(a, cfg, listeners, 2, 0);
     defer w.deinit();
     w.run();
 }

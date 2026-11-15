@@ -62,6 +62,7 @@ fn outWrite(s: []const u8) void {
 }
 
 pub fn main(init: std.process.Init) u8 {
+    tls.installAllocator();
     const arena = init.arena.allocator();
     const gpa = std.heap.c_allocator;
     const argv = init.minimal.args.toSlice(arena) catch return 1;
@@ -467,7 +468,10 @@ fn spawnWorker(gpa: std.mem.Allocator, gen: *Generation, idx: usize, acme_lock: 
         }
         listeners.append(gpa, .{ .fd = fd, .listen = l, .sni = gen.sni[li] }) catch c.exit(2);
     }
-    var w = worker_mod.Worker.init(gpa, gen.cfg, listeners.items, gen.error_fd, @intCast(idx)) catch c.exit(2);
+    var w: worker_mod.Worker = undefined;
+    w.init(gpa, gen.cfg, listeners.items, gen.error_fd, @intCast(idx)) catch c.exit(2);
+    tls.enableBufferPool();
+    os.releaseStartupPages();
     w.run();
     c.exit(0);
 }
@@ -687,7 +691,9 @@ fn master(gpa: std.mem.Allocator, cfg0: *config.Config, copts: config.Options, c
     writePid(cfg0);
     var ab: [64]u8 = undefined;
     for (cfg0.listens) |l| eprint("zhttpd: listening on {s}{s}{s}:{d}{s}\n", .{ if (l.addr.family == .v6) "[" else "", l.addr.formatIp(&ab), if (l.addr.family == .v6) "]" else "", l.addr.port, if (l.opts.quic) " (quic)" else if (l.opts.ssl) " (ssl)" else "" });
+    os.trimHeap();
     for (gen.pids, 0..) |*p, k| p.* = spawnWorker(gpa, &gen, k, null);
+    os.releaseStartupPages();
     eprint("zhttpd: master {d} started {d} worker(s), event method {s}\n", .{ c.getpid(), gen.pids.len, z.server.loop.name });
     cleanupActivatedCaches(gpa, &gen, &watcher);
 

@@ -14,13 +14,26 @@ pub const ReplayCache = struct {
         started: bool = false,
         keep_middleware_headers: bool = true,
     };
-    entries: [128]Entry = @splat(.{}),
+    const Table = [128]Entry;
+    /// Allocated by the first idempotent request, from `allocator`.
+    entries: ?*Table = null,
+    allocator: std.mem.Allocator = undefined,
     pub fn deinit(cache: *ReplayCache) void {
-        for (&cache.entries) |*e| if (e.arena) |*a| a.deinit();
+        const table = cache.entries orelse return;
+        for (table) |*e| if (e.arena) |*a| a.deinit();
+        cache.allocator.destroy(table);
+        cache.entries = null;
     }
     fn reserve(cache: *ReplayCache, allocator: std.mem.Allocator, now: i64, key: [32]u8, fingerprint: [32]u8) !*Entry {
+        const table = cache.entries orelse blk: {
+            const t = try allocator.create(Table);
+            t.* = @splat(.{});
+            cache.entries = t;
+            cache.allocator = allocator;
+            break :blk t;
+        };
         var free: ?*Entry = null;
-        for (&cache.entries) |*entry| {
+        for (table) |*entry| {
             if (entry.expires <= now) {
                 if (entry.arena) |*a| a.deinit();
                 entry.* = .{};

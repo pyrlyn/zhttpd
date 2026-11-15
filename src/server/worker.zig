@@ -85,9 +85,11 @@ pub const Worker = struct {
     file_buffer_cache: ?[]u8 = null,
     tokens_on: []const u8 = "zhttpd/" ++ vars.version,
 
-    pub fn init(gpa: std.mem.Allocator, cfg: *config.Config, listeners: []Listener, error_fd: c_int, worker_index: u32) !Worker {
+    /// Initializes `w` in place: the struct holds large buffers that must not
+    /// be copied through the stack.
+    pub fn init(w: *Worker, gpa: std.mem.Allocator, cfg: *config.Config, listeners: []Listener, error_fd: c_int, worker_index: u32) !void {
         _ = worker_index;
-        var w: Worker = .{
+        w.* = .{
             .gpa = gpa,
             .cfg = cfg,
             .loop = try loop_mod.Loop.init(),
@@ -102,13 +104,13 @@ pub const Worker = struct {
         w.balancer = try @import("load_balancer").Runtime.init(gpa, cfg.load_balancer, cfg.worker_processes);
         w.updateTime();
         w.gmtoff = localOffset(w.wall_sec);
-        return w;
     }
 
     /// Release an embedded worker after run() returns.
     pub fn deinit(w: *Worker) void {
         w.balancer.deinit();
         w.replays.deinit();
+        w.rates.deinit();
         while (w.active) |cn| cn.close();
         w.bury();
         while (w.pool) |cn| {

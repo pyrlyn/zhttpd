@@ -258,3 +258,81 @@ pub fn resolve(alloc: std.mem.Allocator, host: []const u8, port: u16, out: anyty
     }
     return found;
 }
+
+/// Returns free heap pages to the system (glibc only).
+pub fn trimHeap() void {
+    if (comptime is_linux and builtin.abi.isGnu()) {
+        _ = @extern(*const fn (usize) callconv(.c) c_int, .{ .name = "malloc_trim" })(0);
+    }
+}
+
+/// Drops the resident file pages of private read-only file mappings (program
+/// text, constants, relocation-free data). Startup touches most of the binary
+/// once; the event loop needs a small part of it, which faults back in from
+/// the page cache. Pages the process wrote to are private copies and stay.
+pub fn releaseStartupPages() void {
+    if (!is_linux) return;
+    const maps = c.open("/proc/self/maps", .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (maps < 0) return;
+    defer _ = c.close(maps);
+    const pagemap = c.open("/proc/self/pagemap", .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (pagemap < 0) return;
+    defer _ = c.close(pagemap);
+    var buf: [8192]u8 = undefined;
+    var len: usize = 0;
+    while (true) {
+        const n = c.read(maps, buf[len..].ptr, buf.len - len);
+        if (n <= 0) break;
+        len += @intCast(n);
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, buf[0..len], pos, '\n')) |nl| {
+            // start-end perms offset dev inode [path]
+            var it = std.mem.tokenizeScalar(u8, buf[pos..nl], ' ');
+            pos = nl + 1;
+            const span = it.next() orelse continue;
+            const perms = it.next() orelse continue;
+            _ = it.next();
+            _ = it.next();
+            const inode = it.next() orelse continue;
+            if (perms.len != 4 or perms[0] != 'r' or perms[1] != '-' or perms[3] != 'p' or std.mem.eql(u8, inode, "0")) continue;
+            const dash = std.mem.indexOfScalar(u8, span, '-') orelse continue;
+            const start = std.fmt.parseInt(usize, span[0..dash], 16) catch continue;
+            const end = std.fmt.parseInt(usize, span[dash + 1 ..], 16) catch continue;
+            releaseFilePages(pagemap, start, end);
+        }
+        std.mem.copyForwards(u8, buf[0 .. len - pos], buf[pos..len]);
+        len -= pos;
+        if (len == buf.len) return; // a line longer than the buffer: stop
+    }
+}
+
+fn releaseFilePages(pagemap: c_int, start: usize, end: usize) void {
+    const page = std.heap.pageSize();
+    var entries: [512]u64 = undefined;
+    var at = start;
+    var run: usize = 0; // first page of the current run to drop, 0 for none
+    while (at < end) {
+        const want: usize = @min(entries.len, (end - at) / page);
+        const got = c.pread(pagemap, @ptrCast(&entries), want * 8, @intCast(at / page * 8));
+        if (got < 8) break;
+        for (entries[0 .. @as(usize, @intCast(got)) / 8]) |entry| {
+            // pagemap: bit 63 present, bit 61 file page (a private copy is anonymous)
+            const droppable = entry >> 61 & 0b101 == 0b101;
+            if (droppable and run == 0) run = at;
+            if (!droppable and run != 0) {
+                _ = c.madvise(@ptrFromInt(run), at - run, 4); // MADV_DONTNEED
+                run = 0;
+            }
+            at += page;
+        }
+    }
+    if (run != 0) _ = c.madvise(@ptrFromInt(run), at - run, 4);
+}
+
+test "releasing startup pages leaves the process intact" {
+    const before = strerror(2);
+    releaseStartupPages();
+    trimHeap();
+    try std.testing.expectEqualStrings(before, strerror(2));
+    try std.testing.expect(statZ("build.zig") != null);
+}

@@ -32,7 +32,8 @@ pub fn serve(address: []const u8, callbacks: Callbacks) !void {
     worker.sig_terminate = false;
     worker.sig_quit = false;
     worker.sig_reopen = false;
-    var w = try worker.Worker.init(a, b.cfg, &listeners, 2, 0);
+    var w: worker.Worker = undefined;
+    try w.init(a, b.cfg, &listeners, 2, 0);
     defer w.deinit();
     w.run();
 }

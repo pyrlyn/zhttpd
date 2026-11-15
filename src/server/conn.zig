@@ -220,7 +220,20 @@ pub const Conn = struct {
                 .err => .{ .err = 0 },
             };
         };
-        return net.read(conn.fd, buf);
+        if (!tls.track_read_ready) return net.read(conn.fd, buf);
+        // Linux epoll(7): a short read on a stream socket exhausts read
+        // readiness, and new bytes or a peer close raise another edge. Skip the
+        // read that would only report EAGAIN.
+        if (!conn.tls_read.ready and !conn.tls_read.eof) return .again;
+        const r = net.read(conn.fd, buf);
+        switch (r) {
+            .ok => |n| if (n < buf.len) {
+                conn.tls_read.ready = false;
+            },
+            .again => conn.tls_read.ready = false,
+            .eof, .err => {},
+        }
+        return r;
     }
 
     pub fn sendRaw(conn: *Conn, buf: []const u8) net.Io {
@@ -402,9 +415,11 @@ pub const Conn = struct {
             // continuation must run even without another edge from the OS:
             // pipelined bytes may already be in rbuf or inside OpenSSL.
             if (conn.state == .read_head and !conn.in_request and conn.requests > 0) {
-                if (tls.enabled and tls.track_read_ready) if (conn.ssl) |ssl| {
-                    if (conn.rlen == 0 and !conn.tls_read.ready and !conn.tls_read.eof and !tls.hasPending(ssl)) return;
-                };
+                if (tls.track_read_ready and conn.rlen == 0 and !conn.tls_read.ready and !conn.tls_read.eof) {
+                    // Nothing buffered and the socket is drained: the next
+                    // request arrives with its own readiness edge.
+                    if (conn.transport_stream == null and (conn.ssl == null or !(tls.enabled and tls.hasPending(conn.ssl.?)))) return;
+                }
                 conn.w.post(conn);
                 return;
             }
