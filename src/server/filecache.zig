@@ -7,16 +7,88 @@
 //! set-associative. Four-entry buckets are allocated on first insertion, so a large
 //! configured limit does not commit memory for files that are never opened.
 //! Paths longer than `path_cap` are not cached.
+//!
+//! On Linux a cached file of at most `map_max` bytes is also mapped, so that
+//! serving it copies from the page cache without a read call per request.
 const std = @import("std");
+const builtin = @import("builtin");
 const c = std.c;
+const posix = std.posix;
 const os = @import("../os.zig");
 const net = @import("net.zig");
 const config = @import("../http/config.zig");
 
 pub const path_cap = 232;
 const ways = 4;
+const can_map = builtin.os.tag == .linux;
+/// Largest file that is mapped: what fits in a connection's write buffer.
+const map_max = 16 * 1024;
+/// Most bytes one worker keeps mapped, so many small files cannot grow its
+/// resident set without bound.
+const map_budget = 1024 * 1024;
 
-const Entry = struct {
+/// A mapped file loses its pages when it is truncated, and reading them
+/// raises SIGBUS. While `copy` runs, the handler backs the faulting page with
+/// zeroes and marks the copy as failed; any other SIGBUS goes to the previous
+/// disposition.
+const bus = struct {
+    threadlocal var lo: usize = 0;
+    threadlocal var hi: usize = 0;
+    threadlocal var faulted: bool = false;
+    var previous: posix.Sigaction = undefined;
+    var page_size: usize = 0;
+
+    fn install() void {
+        if (page_size != 0) return;
+        page_size = std.heap.pageSize();
+        // NODEFER: a chained handler may leave with siglongjmp.
+        const act: posix.Sigaction = .{
+            .handler = .{ .sigaction = onBus },
+            .mask = posix.sigemptyset(),
+            .flags = posix.SA.SIGINFO | posix.SA.NODEFER,
+        };
+        posix.sigaction(.BUS, &act, &previous);
+    }
+
+    fn onBus(sig: posix.SIG, info: *const posix.siginfo_t, ctx: ?*anyopaque) callconv(.c) void {
+        const addr = @intFromPtr(info.fields.sigfault.addr);
+        if (addr >= lo and addr < hi) {
+            const rc = std.os.linux.mmap(@ptrFromInt(addr & ~(page_size - 1)), page_size, .{ .READ = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .FIXED = true }, -1, 0);
+            if (rc <= std.math.maxInt(usize) - 4096) {
+                faulted = true;
+                return;
+            }
+        }
+        if (previous.flags & posix.SA.SIGINFO != 0) {
+            if (previous.handler.sigaction) |f| return f(sig, info, ctx);
+        } else if (previous.handler.handler) |f| {
+            if (@intFromPtr(f) > 1) return f(sig);
+        }
+        // default action: the faulting access runs again and ends the process
+        const dfl: posix.Sigaction = .{ .handler = .{ .handler = null }, .mask = posix.sigemptyset(), .flags = 0 };
+        posix.sigaction(.BUS, &dfl, null);
+    }
+
+    /// Copies from a mapping whose file ends at `last`, at or after the copied
+    /// bytes. False when the file may have shrunk, and `dst` then holds
+    /// unspecified bytes: a page was gone, or the last byte reads as zero,
+    /// which is what a cut inside a page leaves behind.
+    noinline fn copy(dst: []u8, src: [*]const u8, last: *const volatile u8) bool {
+        const guard_lo: *volatile usize = &lo;
+        const guard_hi: *volatile usize = &hi;
+        const failed: *volatile bool = &faulted;
+        guard_lo.* = @intFromPtr(src);
+        guard_hi.* = @intFromPtr(last) + 1;
+        @memcpy(dst, src[0..dst.len]);
+        const tail = last.*;
+        guard_hi.* = 0;
+        if (!failed.*) return tail != 0;
+        failed.* = false;
+        return false;
+    }
+};
+
+pub const Entry = struct {
     hash: u64 = 0,
     used: bool = false,
     path_len: u16 = 0,
@@ -26,17 +98,17 @@ const Entry = struct {
     uses: u32 = 0,
     validated_ms: u64 = 0,
     last_ms: u64 = 0,
+    /// read-only mapping of the whole file, or null
+    map: ?[*]align(std.heap.page_size_min) const u8 = null,
+    map_len: u32 = 0,
     path: [path_cap]u8 = undefined,
-
-    fn drop(e: *Entry) void {
-        if (e.fd >= 0) net.close(e.fd);
-        e.* = .{};
-    }
 };
 
 pub const Result = union(enum) {
     /// `owned` = the caller must close `fd` (it is not held by the cache).
-    file: struct { fd: c_int, meta: os.Meta, owned: bool },
+    /// `entry` is set when the file is mapped (see `Cache.copyMapped`); it is
+    /// valid until the next call into the cache.
+    file: struct { fd: c_int, meta: os.Meta, owned: bool, entry: ?*Entry = null },
     /// not a regular file (directory etc.); no descriptor
     other: os.Meta,
     err: c_int,
@@ -48,6 +120,7 @@ pub const Cache = struct {
     nsets: usize = 0,
     hits: u64 = 0,
     misses: u64 = 0,
+    mapped: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator, max: u32) !Cache {
         if (max == 0) return .{};
@@ -60,7 +133,7 @@ pub const Cache = struct {
     pub fn deinit(cache: *Cache, gpa: std.mem.Allocator) void {
         for (cache.sets) |bucket| {
             if (bucket) |entries| {
-                for (entries) |*e| if (e.used) e.drop();
+                for (entries) |*e| if (e.used) cache.drop(e);
                 gpa.destroy(entries);
             }
         }
@@ -83,7 +156,7 @@ pub const Cache = struct {
         for (set) |*e| {
             if (e.used and e.hash == h and e.path_len == path.len and std.mem.eql(u8, e.path[0..e.path_len], path)) {
                 if (now -| e.last_ms > ofc.inactive_ms) {
-                    e.drop();
+                    cache.drop(e);
                     victim = e;
                     break;
                 }
@@ -95,7 +168,7 @@ pub const Cache = struct {
                         cache.hits += 1;
                         return .{ .err = e.err };
                     }
-                    e.drop();
+                    cache.drop(e);
                     victim = e;
                     break;
                 }
@@ -105,7 +178,7 @@ pub const Cache = struct {
                 }
                 if (e.fd >= 0) {
                     cache.hits += 1;
-                    return .{ .file = .{ .fd = e.fd, .meta = e.meta, .owned = false } };
+                    return held(e);
                 }
                 // counted but not yet min_uses: open now, keep it once the threshold is met
                 const r = openUncached(path);
@@ -113,7 +186,8 @@ pub const Cache = struct {
                     e.fd = r.file.fd;
                     e.meta = r.file.meta;
                     e.validated_ms = now;
-                    return .{ .file = .{ .fd = r.file.fd, .meta = r.file.meta, .owned = false } };
+                    cache.mapFile(e);
+                    return held(e);
                 }
                 return r;
             }
@@ -122,7 +196,7 @@ pub const Cache = struct {
         cache.misses += 1;
         const r = openUncached(path);
         if (r == .err and !ofc.errors) return r;
-        if (victim.used) victim.drop();
+        if (victim.used) cache.drop(victim);
         victim.* = .{ .hash = h, .used = true, .path_len = @intCast(path.len), .uses = 1, .validated_ms = now, .last_ms = now };
         @memcpy(victim.path[0..path.len], path);
         switch (r) {
@@ -132,7 +206,8 @@ pub const Cache = struct {
                 victim.meta = f.meta;
                 if (ofc.min_uses <= 1) {
                     victim.fd = f.fd;
-                    return .{ .file = .{ .fd = f.fd, .meta = f.meta, .owned = false } };
+                    cache.mapFile(victim);
+                    return held(victim);
                 }
             },
         }
@@ -158,20 +233,70 @@ pub const Cache = struct {
         return os.statZ(path);
     }
 
+    fn held(e: *Entry) Result {
+        return .{ .file = .{ .fd = e.fd, .meta = e.meta, .owned = false, .entry = if (e.map != null) e else null } };
+    }
+
+    fn mapFile(cache: *Cache, e: *Entry) void {
+        if (!can_map or e.meta.size == 0 or e.meta.size > map_max) return;
+        const len = std.mem.alignForward(usize, @intCast(e.meta.size), std.heap.pageSize());
+        if (cache.mapped + len > map_budget) return;
+        const flags: posix.MAP = if (can_map) .{ .TYPE = .SHARED, .POPULATE = true } else .{ .TYPE = .SHARED };
+        const m = posix.mmap(null, len, .{ .READ = true }, flags, e.fd, 0) catch return;
+        if (can_map) bus.install();
+        e.map = m.ptr;
+        e.map_len = @intCast(len);
+        cache.mapped += len;
+        // a file that ends in a zero byte cannot be told from a shrunk one
+        var probe: [1]u8 = undefined;
+        _ = cache.copyMapped(e, &probe, e.meta.size - 1);
+    }
+
+    fn unmap(cache: *Cache, e: *Entry) void {
+        const m = e.map orelse return;
+        posix.munmap(m[0..e.map_len]);
+        cache.mapped -= e.map_len;
+        e.map = null;
+        e.map_len = 0;
+    }
+
+    /// Unmaps the file and closes the descriptor the entry holds.
+    fn release(cache: *Cache, e: *Entry) void {
+        cache.unmap(e);
+        if (e.fd >= 0) net.close(e.fd);
+        e.fd = -1;
+    }
+
+    fn drop(cache: *Cache, e: *Entry) void {
+        cache.release(e);
+        e.* = .{};
+    }
+
+    /// Copies `dst.len` bytes at `start` from the mapping of `e` (the `entry`
+    /// of the `open` result just returned). False when the bytes must be read
+    /// from the descriptor instead, which reports a short file as it always
+    /// did: the file may have shrunk under the mapping, which is then dropped.
+    pub fn copyMapped(cache: *Cache, e: *Entry, dst: []u8, start: u64) bool {
+        if (!can_map) return false;
+        const m = e.map orelse return false;
+        if (start > e.meta.size or dst.len > e.meta.size - start) return false;
+        const size: usize = @intCast(e.meta.size);
+        if (bus.copy(dst, m + @as(usize, @intCast(start)), &m[size - 1])) return true;
+        cache.unmap(e);
+        return false;
+    }
+
     fn revalidate(cache: *Cache, e: *Entry, path: [:0]const u8, now: u64) void {
-        _ = cache;
         e.validated_ms = now;
         const m = os.statZ(path) orelse {
-            if (e.fd >= 0) net.close(e.fd);
-            e.fd = -1;
+            cache.release(e);
             e.err = os.errnoInt();
             if (e.err == 0) e.err = @backingInt(c.E.NOENT);
             return;
         };
         if (e.err == 0 and m.kind == e.meta.kind and m.ino == e.meta.ino and m.mtime == e.meta.mtime and m.size == e.meta.size) return;
         // changed: forget the old descriptor; the next open() call reopens
-        if (e.fd >= 0) net.close(e.fd);
-        e.fd = -1;
+        cache.release(e);
         e.err = 0;
         e.meta = m;
         if (m.kind == .file) {
@@ -179,6 +304,7 @@ pub const Cache = struct {
                 .file => |f| {
                     e.fd = f.fd;
                     e.meta = f.meta;
+                    cache.mapFile(e);
                 },
                 .other => |om| e.meta = om,
                 .err => |er| e.err = er,
@@ -250,4 +376,61 @@ test "file cache falls back to an owned descriptor when a bucket cannot be alloc
     try t.expect(result == .file and result.file.owned);
     net.close(result.file.fd);
     try t.expect(cache.sets[0] == null);
+}
+
+test "file cache maps small files and survives truncation" {
+    if (!can_map) return error.SkipZigTest;
+    const t = std.testing;
+    const path = "zig-cache-map-test.tmp";
+    const fd = c.open(path, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, @as(c.mode_t, 0o600));
+    try t.expect(fd >= 0);
+    defer {
+        net.close(fd);
+        _ = c.unlink(path);
+    }
+    const body = "mapped file body";
+    try t.expectEqual(@as(isize, body.len), c.write(fd, body.ptr, body.len));
+
+    var cache = try Cache.init(t.allocator, 16);
+    defer cache.deinit(t.allocator);
+    const ofc: config.OpenFileCache = .{ .max = 16, .valid_ms = 1000 };
+    const first = cache.open(ofc, path, 0);
+    const e = first.file.entry.?;
+    try t.expectEqual(std.heap.pageSize(), cache.mapped);
+    var buf: [body.len]u8 = undefined;
+    try t.expect(cache.copyMapped(e, &buf, 0));
+    try t.expectEqualStrings(body, &buf);
+    try t.expect(cache.copyMapped(e, buf[0..4], 7));
+    try t.expectEqualStrings("file", buf[0..4]);
+    try t.expect(!cache.copyMapped(e, &buf, 1)); // past the end of the file
+
+    // an in-place rewrite is visible at once
+    try t.expectEqual(@as(isize, 6), c.pwrite(fd, "MAPPED", 6, 0));
+    try t.expect(cache.copyMapped(e, buf[0..6], 0));
+    try t.expectEqualStrings("MAPPED", buf[0..6]);
+
+    // truncation takes the pages away: the copy fails and the mapping goes
+    try t.expectEqual(@as(c_int, 0), c.ftruncate(fd, 0));
+    try t.expect(!cache.copyMapped(e, &buf, 0));
+    try t.expectEqual(@as(usize, 0), cache.mapped);
+    try t.expect(cache.open(ofc, path, 10).file.entry == null);
+
+    // revalidation picks up the new file and maps it again
+    try t.expectEqual(@as(isize, 3), c.pwrite(fd, "new", 3, 0));
+    const again = cache.open(ofc, path, 5000);
+    try t.expectEqual(@as(u64, 3), again.file.meta.size);
+    try t.expect(cache.copyMapped(again.file.entry.?, buf[0..3], 0));
+    try t.expectEqualStrings("new", buf[0..3]);
+
+    // a cut inside the page leaves zeroes, not a fault: still not served
+    try t.expectEqual(@as(c_int, 0), c.ftruncate(fd, 2));
+    try t.expect(!cache.copyMapped(again.file.entry.?, buf[0..1], 0));
+    try t.expectEqual(@as(usize, 0), cache.mapped);
+
+    // a file that ends in a zero byte is read, never mapped
+    try t.expectEqual(@as(isize, 4), c.pwrite(fd, "end\x00", 4, 0));
+    const zero_ended = cache.open(ofc, path, 10000);
+    try t.expectEqual(@as(u64, 4), zero_ended.file.meta.size);
+    try t.expect(zero_ended.file.entry == null);
+    try t.expectEqual(@as(usize, 0), cache.mapped);
 }

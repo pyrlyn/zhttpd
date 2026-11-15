@@ -285,8 +285,22 @@ http {{
                     (root / "small").write_bytes(small.upper())
                     client.send([request()])
                     assert client.response()[2] == small.upper()
+                    # Truncating an open cached file fails that one response;
+                    # the worker and its other connections must survive.
+                    os.truncate(root / "small", 0)
+                    victim = Client(port, version)
+                    try:
+                        victim.send([request()])
+                        victim.response()
+                        raise SystemExit("truncated file served a complete body")
+                    except (AssertionError, ssl.SSLError, ConnectionError):
+                        pass
+                    finally:
+                        victim.close()
                     (root / "small").write_bytes(small)
                     os.utime(root / "small", (small_time, small_time))
+                    client.send([request()])
+                    assert client.response()[2] == small
                     # Formatting reuse must follow both metadata fields and
                     # preserve conditional responses after revalidation.
                     previous_tag = b'"not-current"'

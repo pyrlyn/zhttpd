@@ -13,6 +13,7 @@ const os = @import("../os.zig");
 const vars = @import("vars.zig");
 const router = @import("router.zig");
 const net = @import("net.zig");
+const filecache = @import("filecache.zig");
 const Conn = @import("conn.zig").Conn;
 const proxy = @import("proxy.zig");
 
@@ -370,6 +371,7 @@ fn staticFile(conn: *Conn) void {
     }
     const path = mapUri(conn, uri) catch return finalize(conn, 500);
     ctx.request_filename = path;
+    var mapped: ?*filecache.Entry = null;
     const meta = switch (conn.w.files.open(lc.open_file_cache, path, @intCast(conn.w.now_ms))) {
         .err => |e| {
             if (e == @backingInt(c.E.ACCES)) {
@@ -389,13 +391,14 @@ fn staticFile(conn: *Conn) void {
         .file => |f| blk: {
             conn.file_fd = f.fd;
             conn.file_borrowed = !f.owned;
+            mapped = f.entry;
             break :blk f.meta;
         },
     };
-    serveOpenFile(conn, meta, is_head);
+    serveOpenFile(conn, meta, is_head, mapped);
 }
 
-fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
+fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool, mapped: ?*filecache.Entry) void {
     const ctx = conn.ctx;
     const lc = ctx.conf;
     var status: u16 = 200;
@@ -456,11 +459,12 @@ fn serveOpenFile(conn: *Conn, meta: os.Meta, is_head: bool) void {
         conn.setOutput(&.{head});
         return;
     }
-    // small files: one read into the write buffer, one write for head + body
+    // small files: one copy or read into the write buffer, one write for head + body
     const room = conn.wbuf.len - head.len;
     if (size <= room) {
-        const n = net.pread(conn.file_fd, conn.wbuf[head.len..][0..@intCast(size)], start);
-        if (n == @as(isize, @intCast(size))) {
+        const body = conn.wbuf[head.len..][0..@intCast(size)];
+        const copied = if (mapped) |e| conn.w.files.copyMapped(e, body, start) else false;
+        if (copied or net.pread(conn.file_fd, body, start) == @as(isize, @intCast(size))) {
             conn.closeFile();
             ctx.body_bytes_sent = size;
             conn.setOutput(&.{conn.wbuf[0 .. head.len + size]});
