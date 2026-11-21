@@ -166,6 +166,14 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("zhttpd", lib_mod);
     const exe = b.addExecutable(.{ .name = "zhttpd", .root_module = exe_mod });
+    // Linux: one section per function and constant, so src/hot-layout.ld can
+    // place what a running worker uses side by side. Fewer pages stay resident.
+    // The script anchors on .dynamic, which a static (musl) executable lacks.
+    if (target.result.os.tag == .linux and target.result.abi.isGnu()) {
+        exe.link_function_sections = true;
+        exe.link_data_sections = true;
+        exe.setLinkerScript(b.path("src/hot-layout.ld"));
+    }
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);

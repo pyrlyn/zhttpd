@@ -52,7 +52,8 @@ SSL_PREFIX="$BUILD/openssl-install"
 if [ ! -f "$SSL_PREFIX/lib/libssl.a" ]; then
   rm -rf "$SSL_SRC"
   tar -xzf "$ROOT/deps/openssl-3.5.9.tar.gz" -C "$BUILD"
-  (cd "$SSL_SRC" && ./Configure no-shared no-tests no-docs --prefix="$SSL_PREFIX" --libdir=lib linux-aarch64)
+  (cd "$SSL_SRC" && ./Configure no-shared no-tests no-docs --prefix="$SSL_PREFIX" --libdir=lib linux-aarch64 \
+    -ffunction-sections -fdata-sections)
   make -C "$SSL_SRC" -j"$NPROC"
   make -C "$SSL_SRC" install_sw
 fi
