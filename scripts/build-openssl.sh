@@ -19,7 +19,9 @@ fi
 export CC="$(mise which clang)"
 export AR="$(mise which llvm-ar)"
 export RANLIB="$(mise which llvm-ranlib)"
-mise exec -- perl ./Configure no-shared no-tests no-docs --prefix="$D/openssl-install" --libdir=lib
+# One section per function and constant: src/hot-layout.ld places the used ones side by side.
+mise exec -- perl ./Configure no-shared no-tests no-docs --prefix="$D/openssl-install" --libdir=lib \
+  -ffunction-sections -fdata-sections
 mise exec -- make -j"$J"
 mise exec -- make install_sw
 
