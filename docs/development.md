@@ -146,8 +146,8 @@ and checks the installed archive with `tests/quic-stream-gc.c` and
 Together the two TLS patches cut OpenSSL's heap per established TLS 1.3
 connection from 27.2 KiB to 10.6 KiB with X25519MLKEM768 (20.7 KiB to
 10.5 KiB with X25519). With one worker on the bench VM, peak PSS under 1000
-HTTPS/1.1 keep-alive connections fell from 61.6 MiB to 46.1 MiB, and under 256
-HTTP/2 connections from 25.7 MiB to 22.5 MiB, with no change in RPS. An external `-Dopenssl` prefix works without them and
+HTTPS/1.1 keep-alive connections fell from 49.9 MiB to 34.2 MiB, and under 256
+HTTP/2 connections from 26.6 MiB to 22.4 MiB; RPS stayed within noise. An external `-Dopenssl` prefix works without them and
 just uses more memory. With `-Dhttp=true`,
 `zig build test` also runs the zquic unit tests (varints, packet protection
 and RFC 9001 test vectors, ACK ranges, RTT/NewReno, stream buffers, transport
