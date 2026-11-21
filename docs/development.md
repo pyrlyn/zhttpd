@@ -128,9 +128,27 @@ windows and deterministic packet loss, checking exact bodies before and after
 reload. A UDP relay also exercises reordering and late duplicate packets.
 A second relay switches the client to a new UDP source port mid-download and
 checks that the response completes on the validated new path.
-The OpenSSL build still applies `deps/patches/openssl-quic-stream-gc.patch` and
-runs `tests/quic-stream-gc.c` against the installed archive; zhttpd no longer
-uses OpenSSL's QUIC stack, but nginx comparison builds do. With `-Dhttp=true`,
+The OpenSSL build applies every `deps/patches/openssl-*.patch` in name order
+and checks the installed archive with `tests/quic-stream-gc.c` and
+`tests/openssl-tls-mem.c`:
+
+- `openssl-quic-stream-gc.patch`: zhttpd no longer uses OpenSSL's QUIC stack,
+  but nginx comparison builds do.
+- `openssl-tls13-free-key-shares.patch`: a TLS 1.3 server frees both key shares
+  once the handshake secret is derived, as TLS 1.2 ECDHE already does, instead
+  of keeping them (an ML-KEM-768 peer key is about 6.5 KiB) until `SSL_free`.
+  `SSL_get_peer_tmp_key` and `SSL_get_tmp_key` find no key afterwards.
+- `openssl-single-pipeline.patch`: `SSL_MAX_PIPELINES` is 1. zhttpd never
+  enables record pipelining, and the per-pipeline arrays in both record layers
+  cost about 10 KiB per connection. `SSL_CTX_set_max_pipelines` rejects values
+  above 1.
+
+Together the two TLS patches cut OpenSSL's heap per established TLS 1.3
+connection from 27.2 KiB to 10.6 KiB with X25519MLKEM768 (20.7 KiB to
+10.5 KiB with X25519). With one worker on the bench VM, peak PSS under 1000
+HTTPS/1.1 keep-alive connections fell from 61.6 MiB to 46.1 MiB, and under 256
+HTTP/2 connections from 25.7 MiB to 22.5 MiB, with no change in RPS. An external `-Dopenssl` prefix works without them and
+just uses more memory. With `-Dhttp=true`,
 `zig build test` also runs the zquic unit tests (varints, packet protection
 and RFC 9001 test vectors, ACK ranges, RTT/NewReno, stream buffers, transport
 parameters and QPACK) and the HTTP/2 codec test; connection behaviour is
