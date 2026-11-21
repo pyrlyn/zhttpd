@@ -271,6 +271,29 @@ Read [the plan](../bench/PLAN.md) for prerequisites and methodology, and
 [the results](../bench/RESULTS.md) for recorded measurements. A dedicated Linux
 benchmark setup is described in [bench/lima/README.md](../bench/lima/README.md).
 
+### Linux page layout
+
+A process pays for every page of the binary it reads, and the kernel maps the
+neighbours of each page along with it. On Linux with glibc the build therefore
+links with [`src/hot-layout.ld`](../src/hot-layout.ld): the functions and
+constants a serving worker and the master use are placed side by side, ahead of
+everything else. The script lists them by section name, so the build gives every
+function and constant a section of its own, and `scripts/build-openssl.sh` and
+`scripts/build-http-deps.sh` build the dependencies the same way. A name the
+script lists and the link does not have is ignored: stale entries, dependencies
+built without per-function sections and other CPU architectures (the assembly
+entries are aarch64) cost memory, never correctness.
+
+The file is generated. After a change that moves much code, regenerate it in
+the bench VM and commit the result:
+
+```bash
+bench/layout/regen.sh /tmp/hot-layout.ld
+```
+
+It records the functions with gdb and finds the constants from the kernel's
+page map; the header of the script lists what it needs.
+
 ## Documentation maintenance
 
 Keep runnable commands rooted at the repository directory, and distinguish

@@ -20,13 +20,19 @@ pub const ReadState = struct { ready: bool = true, eof: bool = false, want_write
 /// A worker serves these short-lived buffers from a fixed region instead.
 const buffer_pool = struct {
     const block = 24 * 1024;
-    const count = 64;
+    /// A handshake holds its message buffer and two write buffers until it
+    /// completes, so a burst of new connections takes three blocks each; past
+    /// the last block they come from malloc. Only address space is reserved.
+    const count = 4096;
     const smallest = 8 * 1024;
+    /// OpenSSL's handshake write buffers (BIO_f_buffer). Left to malloc, each
+    /// handshake leaves a hole of this size behind the connection's own state.
+    const handshake_io = 4096;
     /// blocks past these are returned to the system as soon as they are freed
     const kept = 4;
     var installed = false;
     var base: usize = 0;
-    var free_blocks: std.atomic.Value(u64) = .init(0);
+    var free_blocks: [count / 64]std.atomic.Value(u64) = @splat(.init(0));
 
     extern "c" fn CRYPTO_set_mem_functions(
         m: *const fn (usize, ?[*:0]const u8, c_int) callconv(.c) ?*anyopaque,
@@ -34,32 +40,36 @@ const buffer_pool = struct {
         f: *const fn (?*anyopaque, ?[*:0]const u8, c_int) callconv(.c) void,
     ) c_int;
 
-    fn index(addr: usize) ?u6 {
+    fn index(addr: usize) ?usize {
         if (base == 0 or addr < base or addr - base >= count * block) return null;
-        return @intCast((addr - base) / block);
+        return (addr - base) / block;
     }
 
-    fn release(i: u6) void {
+    fn release(i: usize) void {
         // The kernel drops whole pages: with pages that do not divide a block
         // that would reach into its neighbours, so those blocks stay resident.
         if (i >= kept and block % std.heap.pageSize() == 0)
-            _ = std.c.madvise(@ptrFromInt(base + @as(usize, i) * block), block, 4); // MADV_DONTNEED
-        _ = free_blocks.fetchOr(@as(u64, 1) << i, .release);
+            _ = std.c.madvise(@ptrFromInt(base + i * block), block, 4); // MADV_DONTNEED
+        _ = free_blocks[i / 64].fetchOr(@as(u64, 1) << @intCast(i % 64), .release);
     }
 
     fn alloc(n: usize, _: ?[*:0]const u8, _: c_int) callconv(.c) ?*anyopaque {
-        if (n >= smallest and n <= block) {
-            var spare = free_blocks.load(.acquire);
-            while (spare != 0) {
-                // lowest block first: a quiet worker keeps reusing the same few
-                spare = free_blocks.cmpxchgWeak(spare, spare & (spare - 1), .acquire, .acquire) orelse
-                    return @ptrFromInt(base + @as(usize, @ctz(spare)) * block);
+        if (n == handshake_io or (n >= smallest and n <= block)) {
+            for (&free_blocks, 0..) |*word, w| {
+                var spare = word.load(.acquire);
+                while (spare != 0) {
+                    // lowest block first: a quiet worker keeps reusing the same few
+                    spare = word.cmpxchgWeak(spare, spare & (spare - 1), .acquire, .acquire) orelse
+                        return @ptrFromInt(base + (w * 64 + @ctz(spare)) * block);
+                }
             }
         }
         return std.c.malloc(n);
     }
 
-    fn realloc(p: ?*anyopaque, n: usize, _: ?[*:0]const u8, _: c_int) callconv(.c) ?*anyopaque {
+    fn realloc(p: ?*anyopaque, n: usize, file: ?[*:0]const u8, line: c_int) callconv(.c) ?*anyopaque {
+        // the handshake message buffer is born here: BUF_MEM grows from nothing
+        if (p == null) return alloc(n, file, line);
         const i = index(@intFromPtr(p)) orelse return std.c.realloc(p, n);
         if (n == 0) {
             release(i);
@@ -91,7 +101,7 @@ pub fn enableBufferPool() void {
     if (!buffer_pool.installed or buffer_pool.base != 0) return;
     const region = std.heap.page_allocator.alloc(u8, buffer_pool.count * buffer_pool.block) catch return;
     buffer_pool.base = @intFromPtr(region.ptr);
-    buffer_pool.free_blocks.store(std.math.maxInt(u64), .release);
+    for (&buffer_pool.free_blocks) |*word| word.store(std.math.maxInt(u64), .release);
 }
 
 pub const SSL_CTX = opaque {};
@@ -739,6 +749,38 @@ test "ciphertext batching preserves bytes through short writes and repeated back
     try std.testing.expect(blocked > 100);
     try std.testing.expectEqual(expected.len, received);
     try std.testing.expectEqualSlices(u8, &expected, &actual);
+}
+
+test "buffer pool serves the buffers of a handshake and nothing that outlives it" {
+    if (builtin.os.tag != .linux or buffer_pool.base != 0) return error.SkipZigTest;
+    const pool = buffer_pool;
+    const region = try std.heap.page_allocator.alloc(u8, pool.count * pool.block);
+    defer std.heap.page_allocator.free(region);
+    pool.base = @intFromPtr(region.ptr);
+    for (&pool.free_blocks) |*word| word.store(std.math.maxInt(u64), .release);
+    defer {
+        pool.base = 0;
+        for (&pool.free_blocks) |*word| word.store(0, .release);
+    }
+    // the message buffer is born through realloc: BUF_MEM grows from nothing
+    const message = pool.realloc(null, 21848, null, 0).?;
+    try std.testing.expectEqual(@as(?usize, 0), pool.index(@intFromPtr(message)));
+    const io = pool.alloc(pool.handshake_io, null, 0).?;
+    try std.testing.expectEqual(@as(?usize, 1), pool.index(@intFromPtr(io)));
+    // record-layer state lives as long as the connection: it stays with malloc
+    const state = pool.alloc(4424, null, 0).?;
+    try std.testing.expectEqual(@as(?usize, null), pool.index(@intFromPtr(state)));
+    pool.free(state, null, 0);
+    // a freed block is the next one handed out
+    pool.free(message, null, 0);
+    try std.testing.expectEqual(@intFromPtr(message), @intFromPtr(pool.alloc(pool.smallest, null, 0).?));
+    // growing past a block moves the contents to malloc and frees the block
+    @as(*u8, @ptrCast(io)).* = 0x5a;
+    const grown = pool.realloc(io, pool.block + 1, null, 0).?;
+    defer std.c.free(grown);
+    try std.testing.expectEqual(@as(?usize, null), pool.index(@intFromPtr(grown)));
+    try std.testing.expectEqual(@as(u8, 0x5a), @as(*u8, @ptrCast(grown)).*);
+    try std.testing.expectEqual(@intFromPtr(io), @intFromPtr(pool.alloc(pool.handshake_io, null, 0).?));
 }
 
 test "TLS operations discard stale errors before nonblocking handshake retries" {
