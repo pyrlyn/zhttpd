@@ -69,7 +69,8 @@ static int run(const char *name, int version, const char *client_groups,
     if (sctx == NULL || cctx == NULL) goto done;
     SSL_CTX_set_mode(sctx, SSL_MODE_RELEASE_BUFFERS);
     if (!SSL_CTX_use_certificate(sctx, cert) || !SSL_CTX_use_PrivateKey(sctx, key)
-        || !SSL_CTX_set_min_proto_version(sctx, version)
+        || !SSL_CTX_set_min_proto_version(sctx, TLS1_2_VERSION)
+        || !SSL_CTX_set_min_proto_version(cctx, TLS1_2_VERSION)
         || !SSL_CTX_set_max_proto_version(sctx, version)
         || (client_groups && !SSL_CTX_set1_groups_list(cctx, client_groups))
         || (server_groups && !SSL_CTX_set1_groups_list(sctx, server_groups)))
@@ -94,6 +95,8 @@ static int run(const char *name, int version, const char *client_groups,
     }
     snprintf(msg, sizeof msg, "%s: handshake failed", name);
     if (!SSL_is_init_finished(s) || !SSL_is_init_finished(c)) { fail(msg); goto done; }
+    snprintf(msg, sizeof msg, "%s: negotiated %s", name, SSL_get_version(s));
+    if (SSL_version(s) != version) { fail(msg); goto done; }
     snprintf(msg, sizeof msg, "%s: negotiated %s, want %s", name,
         SSL_group_to_name(s, SSL_get_negotiated_group(s)), want_group);
     if (strcmp(SSL_group_to_name(s, SSL_get_negotiated_group(s)), want_group) != 0) {
