@@ -1,0 +1,11 @@
+--- a/include/openssl/ssl.h.in
++++ b/include/openssl/ssl.h.in
+@@ -69,7 +69,7 @@
+ /* SSL_MAX_MASTER_KEY_LENGTH is defined in prov_ssl.h */
+ 
+ /* The maximum number of encrypt/decrypt pipelines we can support */
+-#define SSL_MAX_PIPELINES 32
++#define SSL_MAX_PIPELINES 1
+ 
+ /* text strings for the ciphers */
+ 
