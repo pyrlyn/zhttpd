@@ -28,10 +28,10 @@ MASTER=; WORKER=; fault_around=
 
 mkdir -p "$W/bench/certs" "$W/bench/www/static" "$W/tests/fixtures/nginx-default" "$W/run/logs"
 cp "$ROOT/tests/fixtures/nginx-default/mime.types" "$W/tests/fixtures/nginx-default/"
-[ -f "$W/bench/certs/cert.pem" ] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+[[ -f "$W/bench/certs/cert.pem" ]] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -days 365 -subj "/CN=localhost" -keyout "$W/bench/certs/key.pem" -out "$W/bench/certs/cert.pem" 2>/dev/null
 head -c 612 /dev/zero | tr '\0' x > "$W/bench/www/static/small.html"
-[ -f "$W/bench/www/static/large.bin" ] || {
+[[ -f "$W/bench/www/static/large.bin" ]] || {
   head -c 65536 /dev/urandom > "$W/bench/www/static/medium.bin"
   head -c 1048576 /dev/urandom > "$W/bench/www/static/large.bin"
 }
@@ -55,7 +55,7 @@ serve() { # the directive that replaces "http2 off;"; sets MASTER and WORKER
   WORKER=$(awk '{print $1}' "/proc/$MASTER/task/$MASTER/children")
 }
 stop() {
-  [ -z "$MASTER" ] || { kill -TERM "$MASTER" 2>/dev/null || true; wait "$MASTER" 2>/dev/null || true; }
+  [[ -z "$MASTER" ]] || { kill -TERM "$MASTER" 2>/dev/null || true; wait "$MASTER" 2>/dev/null || true; }
   MASTER=
 }
 load() { # h1|tls|h2|h3, path, oha arguments
@@ -71,18 +71,18 @@ generate() { # output, then generate.py options
   python3 "$HERE/generate.py" "$1" --trace "$W/trace.worker" "$W/trace.master" "$W/extra" --data "$W/data" \
     "${@:2}" --archives "${ARCHIVES[@]}"
 }
-trap 'stop; [ -z "$fault_around" ] || echo "$fault_around" | sudo tee $FAULT_AROUND > /dev/null' EXIT
+trap 'stop; [[ -z "$fault_around" ]] || echo "$fault_around" | sudo tee $FAULT_AROUND > /dev/null' EXIT
 
 echo "== functions"
 build "$ROOT/src/hot-layout.ld"
 sudo rm -f "$W"/trace.*
 serve "http2 on; listen $TLSPORT quic reuseport;"
 for who in worker master; do
-  pid=$WORKER; [ $who = worker ] || pid=$MASTER
+  pid=$WORKER; [[ $who = worker ]] || pid=$MASTER
   sudo env TRACE_BIN="$BIN" TRACE_OUT="$W/trace.$who" gdb -q -batch -p "$pid" -x "$HERE/trace.py" > "$W/trace.$who.log" 2>&1 &
 done
 for _ in $(seq 1 1200); do
-  [ ! -e "$W/trace.worker.armed" ] || [ ! -e "$W/trace.master.armed" ] || break
+  [[ ! -e "$W/trace.worker.armed" || ! -e "$W/trace.master.armed" ]] || break
   sleep 0.5
 done
 for path in /static/small.html /static/large.bin /static/medium.bin /missing "/baseline11?a=1&b=2"; do
@@ -99,7 +99,7 @@ curl -s -o /dev/null -H 'If-Modified-Since: Sat, 21 Nov 2026 20:00:00 GMT' "http
 sleep 3
 stop
 wait # gdb writes its list when the traced process exits
-[ -s "$W/trace.worker" ] && [ -e "$W/trace.master" ] || { echo "tracing failed, see $W/trace.*.log" >&2; exit 1; }
+[[ -s "$W/trace.worker" && -e "$W/trace.master" ]] || { echo "tracing failed, see $W/trace.*.log" >&2; exit 1; }
 echo "worker $(wc -l < "$W/trace.worker"), master $(wc -l < "$W/trace.master")"
 
 # With fault-around the kernel maps the neighbours of every page that is read,
@@ -115,14 +115,14 @@ for round in $(seq 1 "$ROUNDS"); do
   for scenario in h1:64:/static/small.html tls:64:/static/small.html h2:16:/static/small.html \
       h3:16:/static/small.html h2:4:/static/large.bin h3:4:/static/large.bin master; do
     IFS=: read -r proto conns path <<< "$scenario"
-    [ "$scenario" != master ] || { proto=h1; conns=64; path=/static/small.html; }
+    [[ "$scenario" != master ]] || { proto=h1; conns=64; path=/static/small.html; }
     directive='http2 off;'; streams=()
     case $proto in
       h2) directive='http2 on;'; streams=(-p 16) ;;
       h3) directive="http2 on; listen $TLSPORT quic reuseport;"; streams=(-p 16) ;;
     esac
     serve "$directive"
-    pid=$WORKER; [ "$scenario" != master ] || pid=$MASTER
+    pid=$WORKER; [[ "$scenario" != master ]] || pid=$MASTER
     load "$proto" "$path" -c "$conns" -z 5s "${streams[@]}"
     sudo python3 "$HERE/pages.py" "$pid" "$BIN" --syms "$W/syms" > /dev/null
     cat "$W/syms" >> "$W/syms.all"; cat "$W/syms.literals" >> "$W/literals.all"
