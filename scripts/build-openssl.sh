@@ -26,7 +26,7 @@ export AR="$(mise which llvm-ar)"
 export RANLIB="$(mise which llvm-ranlib)"
 # SSL_MAX_PIPELINES sizes structs across libssl: never mix objects built
 # before and after a patch changed it.
-[ ! -f Makefile ] || mise exec -- make clean >/dev/null
+[[ ! -f Makefile ]] || mise exec -- make clean >/dev/null
 # One section per function and constant: src/hot-layout.ld places the used ones side by side.
 mise exec -- perl ./Configure no-shared no-tests no-docs --prefix="$D/openssl-install" --libdir=lib \
   -ffunction-sections -fdata-sections
