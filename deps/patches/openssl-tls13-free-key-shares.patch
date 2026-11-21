@@ -1,0 +1,19 @@
+--- a/ssl/statem/extensions_srvr.c
++++ b/ssl/statem/extensions_srvr.c
+@@ -2061,6 +2061,16 @@
+         }
+     }
+     s->s3.did_kex = 1;
++    /*
++     * The handshake secret is derived. Drop both key shares now instead of at
++     * SSL_free(), as TLS 1.2 ECDHE already does: an ML-KEM-768 peer key is
++     * several KiB per connection. SSL_get_peer_tmp_key() and SSL_get_tmp_key()
++     * report no key afterwards; the group stays in SSL_get_negotiated_group().
++     */
++    EVP_PKEY_free(s->s3.peer_tmp);
++    s->s3.peer_tmp = NULL;
++    EVP_PKEY_free(s->s3.tmp.pkey);
++    s->s3.tmp.pkey = NULL;
+     return EXT_RETURN_SENT;
+ #else
+     return EXT_RETURN_FAIL;
