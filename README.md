@@ -1,6 +1,4 @@
-<img src="src/http/assets/icon.svg" width="64" height="64" alt="zhttpd icon">
-
-# zhttpd
+<h1><img src="src/http/assets/icon.svg" width="32" height="32" alt="" align="absmiddle"> zhttpd</h1>
 
 A Zig HTTP/1.0, HTTP/1.1, HTTP/2 and HTTP/3 server with native TOML settings and nginx, Apache, OpenLiteSpeed and Caddy adapters.
 TLS uses OpenSSL 3.5+. HTTP/2 uses nghttp2; QUIC v1 and HTTP/3/QPACK come from the
